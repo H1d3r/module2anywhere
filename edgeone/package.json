@@ -1,0 +1,15 @@
+{
+  "name": "module2anywhere-edgeone",
+  "version": "1.0.0",
+  "description": "Loon/Surge/QuantumultX 模块转 Anywhere 规则 - EdgeOne Pages 部署版本",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "edgeone makers dev",
+    "deploy": "edgeone makers deploy",
+    "deploy:preview": "edgeone makers deploy -e preview"
+  },
+  "devDependencies": {
+    "edgeone": "^1.0.21"
+  }
+}
