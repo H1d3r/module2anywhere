@@ -1370,29 +1370,11 @@ function corsPreflight() {
 export async function onRequest(context) {
   if (context.request.method === 'OPTIONS') return corsPreflight();
 
-  const url = new URL(context.request.url);
-  const query = {};
-  url.searchParams.forEach((v, k) => { query[k] = v; });
+  var url = new URL(context.request.url);
+  var query = {};
+  url.searchParams.forEach(function (v, k) { query[k] = v; });
 
-  const to = (query.to || 'mitm').toLowerCase().trim();
-  let format;
-  switch (to) {
-    case 'mitm':
-    case 'amrs':
-      format = 'amrs';
-      break;
-    case 'rule':
-    case 'arrs':
-      format = 'arrs';
-      break;
-    default:
-      return new Response("Error: Invalid 'to' parameter. Use: mitm/rule", {
-        status: 400,
-        headers: buildCorsHeaders(),
-      });
-  }
-
-  const rawURL = query.url;
+  var rawURL = query.url;
   if (!rawURL) {
     return new Response('Error: url parameter is required', {
       status: 400,
@@ -1400,97 +1382,144 @@ export async function onRequest(context) {
     });
   }
 
-  let decodedURL;
+  // 解码 URL
+  var decodedURL;
   try {
     decodedURL = decodeURIComponent(rawURL);
-  } catch {
+  } catch (e) {
     return new Response('Error: Invalid URL encoding', {
       status: 400,
       headers: buildCorsHeaders(),
     });
   }
 
-  const name = query.name || '';
-  const fetchScripts = query.fetch === 'true';
-  const generalize = query.generalize !== 'false';
-  const sourceHint = query.source || '';
-  const initialUA = lib.getUserAgent(sourceHint);
+  var name = query.name || '';
+  var fetchScripts = query.fetch === 'true';
+  var generalize = query.generalize !== 'false';
+  var sourceHint = query.source || '';
+  var format = (query.format || '').toLowerCase().trim();
+  var initialUA = lib.getUserAgent(sourceHint);
 
-  // 解析 quantumult.app 一键订阅协议，否则取原始 URL
-  let sourceURL = decodedURL;
-  let inputURLs = [decodedURL];
-  let addResourceURL = '';
+  // 解析 quantumult.app 一键订阅协议
+  var sourceURL = decodedURL;
+  var inputURLs = [decodedURL];
+  var addResourceURL = '';
   if (lib.isAddResourceURL && lib.isAddResourceURL(decodedURL)) {
     addResourceURL = decodedURL;
     try {
       inputURLs = lib.extractAddResourceURLs(decodedURL);
       if (inputURLs.length === 0) inputURLs = [decodedURL];
     } catch (e) {
-      return new Response(`Error: add-resource 解析失败: ${e.message || e}`, {
+      return new Response('Error: add-resource 解析失败: ' + (e.message || e), {
         status: 400,
         headers: buildCorsHeaders(),
       });
     }
   }
 
-  // 构造本服务地址（用于注释 # this: ...）
-  const serviceURL = url.origin + url.pathname;
+  var serviceURL = url.origin + url.pathname;
+  var hasAmrs = false;
+  var hasArrs = false;
 
-  const allAmrs = [];
-  const allArrs = [];
-  for (const inputURL of inputURLs) {
-    let content;
+  for (var idx = 0; idx < inputURLs.length; idx++) {
+    var inputURL = inputURLs[idx];
+    var content;
     try {
       content = await lib.fetchRemoteWithProxy(inputURL, initialUA);
     } catch (e) {
-      return new Response(`Error: Failed to fetch remote file: ${e.message || e}`, {
+      return new Response('Error: Failed to fetch remote file: ' + (e.message || e), {
         status: 500,
         headers: buildCorsHeaders(),
       });
     }
 
-    const source = lib.detectSource(content, inputURL.split('/').pop() || '');
-    const m = lib.parse(content, source);
-
+    var source = lib.detectSource(content, inputURL.split('/').pop() || '');
+    var m = lib.parse(content, source);
     if (name) m.name = name;
     else if (!m.name) m.name = lib.deriveNameFromURL(inputURL);
 
-    const opts = {
+    var opts = {
       ...lib.defaultConvertOptions(),
       generalizeHost: generalize,
-      fetchScripts,
+      fetchScripts: fetchScripts,
       sourceURL: inputURL,
       serviceURL: serviceURL,
       addResourceURL: addResourceURL,
     };
 
     try {
-      const result = await lib.convert(m, opts);
-      if (result.amrs) allAmrs.push(result.amrs);
-      if (result.arrs) allArrs.push(result.arrs);
+      var result = await lib.convert(m, opts);
+      if (result.amrs) hasAmrs = true;
+      if (result.arrs) hasArrs = true;
     } catch (e) {
-      return new Response(`Error: convert failed: ${e.message || e}`, {
+      return new Response('Error: convert failed: ' + (e.message || e), {
         status: 500,
         headers: buildCorsHeaders(),
       });
     }
   }
 
-  const body = format === 'amrs' ? allAmrs.join('\n') : allArrs.join('\n');
-  const filename = (name || 'module2anywhere') + (format === 'amrs' ? '.amrs' : '.arrs');
-  if (!body) {
-    return new Response(`Error: no ${format} rules in module`, {
+  // 构造本服务的子链接 URL
+  var origin = url.origin;
+  var linkParams = 'url=' + encodeURIComponent(decodedURL) + '&fetch=' + fetchScripts + '&generalize=' + generalize;
+  if (sourceHint) linkParams += '&source=' + encodeURIComponent(sourceHint);
+  if (name) linkParams += '&name=' + encodeURIComponent(name);
+
+  var links = [];
+  if (hasAmrs) links.push(origin + '/mitm?' + linkParams);
+  if (hasArrs) links.push(origin + '/rule?' + linkParams);
+
+  if (links.length === 0) {
+    return new Response('Error: no rules to import', {
       status: 404,
       headers: buildCorsHeaders(),
     });
   }
-  return new Response(body, {
-    status: 200,
-    headers: {
-      ...buildCorsHeaders(),
-      'Content-Type': 'text/plain; charset=utf-8',
-      'Content-Disposition': `inline; filename=${filename}`,
-    },
-  });
+
+  // 构造 anywhere://add-rule-set deeplink
+  var deeplink = 'anywhere://add-rule-set?';
+  var linkParts = [];
+  for (var i = 0; i < links.length; i++) {
+    linkParts.push('link=' + encodeURIComponent(links[i]));
+  }
+  deeplink += linkParts.join('&');
+
+  // format=text 返回纯文本；否则根据 Accept 头决定
+  if (format === 'text') {
+    return new Response(deeplink, {
+      status: 200,
+      headers: { ...buildCorsHeaders(), 'Content-Type': 'text/plain; charset=utf-8' },
+    });
+  }
+
+  // 浏览器访问返回 HTML 页面
+  var accept = (context.request.headers.get('Accept') || '');
+  if (accept.indexOf('text/html') !== -1) {
+    var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">'
+      + '<title>导入 Anywhere</title>'
+      + '<style>body{font-family:-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:2rem}'
+      + '.card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:2rem;max-width:480px;width:100%;text-align:center}'
+      + 'h1{font-size:1.3rem;margin-bottom:1rem}'
+      + 'a.btn{display:inline-block;padding:0.75rem 2rem;background:#38bdf8;color:#0f172a;border-radius:8px;text-decoration:none;font-weight:600;font-size:1rem;margin:0.5rem}'
+      + 'a.btn:hover{background:#7dd3fc}'
+      + '.links{margin-top:1rem;font-size:0.8rem;color:#94a3b8;word-break:break-all}'
+      + '.links a{color:#38bdf8}</style></head>'
+      + '<body><div class="card">'
+      + '<h1>导入规则到 Anywhere</h1>'
+      + '<a class="btn" href="' + deeplink + '">打开 Anywhere 导入</a>'
+      + '<div class="links">';
+    for (var j = 0; j < links.length; j++) {
+      var label = links[j].indexOf('/mitm') !== -1 ? 'MITM 规则' : '路由规则';
+      html += '<p>' + label + '：<a href="' + links[j] + '" target="_blank">' + links[j] + '</a></p>';
+    }
+    html += '</div></div></body></html>';
+    return new Response(html, {
+      status: 200,
+      headers: { ...buildCorsHeaders(), 'Content-Type': 'text/html; charset=utf-8' },
+    });
+  }
+
+  // 非 HTML 请求返回 302 重定向到 deeplink
+  return Response.redirect(deeplink, 302);
 }
 

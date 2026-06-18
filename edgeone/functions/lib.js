@@ -865,12 +865,17 @@ function parseQuantumultX(content) {
     if (line.startsWith('[') && line.endsWith(']')) continue;
 
     const rule = parseQuantumultXLine(line);
-    if (!rule) continue;
-    if (rule.kind === 'rewrite') {
-      m.rewrites.push(rule.rewrite);
-    } else if (rule.kind === 'script') {
-      m.scripts.push(rule.script);
+    if (rule) {
+      if (rule.kind === 'rewrite') {
+        m.rewrites.push(rule.rewrite);
+      } else if (rule.kind === 'script') {
+        m.scripts.push(rule.script);
+      }
+      continue;
     }
+    // 路由规则：TYPE,value,action[,options...]
+    var rr = parseQXRoutingRule(line);
+    if (rr) m.rules.push(rr);
   }
 
   return m;
@@ -934,7 +939,11 @@ function parseQuantumultXLine(line) {
   if (action === 'echo-response') {
     const r = { raw: line, pattern, action, args: {}, rawJS: '' };
     if (tokens.length >= 4) r.args['content-type'] = tokens[3];
-    if (tokens.length >= 7) r.args.body = tokens[6];
+    if (tokens.length >= 7) {
+      let body = tokens.slice(6).join(' ');
+      if (body.startsWith('body ')) body = body.slice(5);
+      r.args.body = body;
+    }
     return { kind: 'rewrite', rewrite: r };
   }
   if (action === 'response-body') {
@@ -973,6 +982,24 @@ function splitQXTokens(line) {
   }
   if (buf) tokens.push(buf);
   return tokens;
+}
+
+// parseQXRoutingRule 解析 QX 行式路由规则。
+// 格式：TYPE,value,action[,options...]，例如 DOMAIN-SUFFIX,example.com,DIRECT。
+// 不是路由规则时返回 null。
+function parseQXRoutingRule(line) {
+  if (line[0] === '^') return null;
+  var fields = splitCSVFields(line);
+  if (fields.length < 3) return null;
+  var ruleType = fields[0].toUpperCase().trim();
+  var validTypes = ['DOMAIN', 'DOMAIN-SUFFIX', 'DOMAIN-KEYWORD', 'DOMAIN-SET', 'RULE-SET',
+    'IP-CIDR', 'IP-CIDR6', 'IP6-CIDR', 'GEOIP', 'USER-AGENT',
+    'DEST-PORT', 'SRC-PORT', 'SRC-IP', 'SRC-IP-CIDR', 'PROCESS-NAME',
+    'SUBNET', 'CELLULAR-RADIO'];
+  if (validTypes.indexOf(ruleType) < 0) return null;
+  var options = [];
+  for (var i = 3; i < fields.length; i++) options.push(fields[i].trim());
+  return { raw: line, type: ruleType, value: fields[1].trim(), action: fields[2].toUpperCase().trim(), options: options };
 }
 
 function parse(content, source) {

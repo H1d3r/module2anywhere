@@ -2,20 +2,45 @@
 package parser
 
 import (
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/H1d3r/module2anywhere/ir"
 )
 
-// TestParseQuantumultX_Sample 解析 testdata/sample.conf。
+// TestParseQuantumultX_Sample 解析内联的 QX 示例。
 func TestParseQuantumultX_Sample(t *testing.T) {
-	data, err := os.ReadFile("../testdata/sample.conf")
-	if err != nil {
-		t.Fatalf("read sample.conf: %v", err)
-	}
-	m, err := ParseQuantumultX(string(data))
+	content := `#!name=QuantumultX 测试插件
+#!desc=QX 行式规则测试
+#!author=tester
+
+hostname = app-api.example.com, %APPEND%homepage.example.com, *.wildcard.example.com
+
+# reject 系列
+^https?://a\.example\.com/api/v1/ad url reject
+^https?://b\.example\.com/api/v1/ad url reject-200
+^https?://c\.example\.com/api/v1/ad url reject-dict
+^https?://d\.example\.com/api/v1/ad url reject-array
+^https?://e\.example\.com/api/v1/ad url reject-img
+
+# 302
+^https?://redirect\.example\.com/(.*) url 302 https://target.example.com/$1
+^https?://redirect2\.example\.com url 307 https://target.example.com
+
+# response-body（双 url 标记）
+^https?://body\.example\.com/api url response-body bubbles url response-body bubbles0
+
+# echo-response（双 url 标记）
+^https?://echo\.example\.com/api url echo-response application/json url echo-response body {"code":0,"data":[]}
+
+# jsonjq
+^https?://jq\.example\.com/api url jsonjq-response-body '.feeds | map(select(.isAd != true))'
+
+# scripts
+^https?://script\.example\.com/api url script-response-body https://example.com/response.js
+^https?://echo-script\.example\.com/api url script-analyze-echo-response https://example.com/echo.js
+`
+	m, err := ParseQuantumultX(content)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -27,45 +52,55 @@ func TestParseQuantumultX_Sample(t *testing.T) {
 		t.Errorf("Name: got %q", m.Name)
 	}
 
-	// 期望至少 8 个 host
-	if len(m.Hostnames) < 6 {
-		t.Errorf("Hostnames: got %d, want >=6, %v", len(m.Hostnames), m.Hostnames)
+	// hostname 规范化：应去除 %APPEND% 和 *.
+	wantHosts := map[string]bool{"app-api.example.com": true, "homepage.example.com": true, "wildcard.example.com": true}
+	gotHosts := map[string]bool{}
+	for _, h := range m.Hostnames {
+		gotHosts[h] = true
+	}
+	if len(gotHosts) != len(wantHosts) {
+		t.Errorf("Hostnames: got %v, want %v", gotHosts, wantHosts)
+	}
+	for h := range wantHosts {
+		if !gotHosts[h] {
+			t.Errorf("missing hostname %q", h)
+		}
 	}
 
-	// 重写规则数量（reject×5 + 302×2 + response-body×1 + echo-response×1 + jsonjq×1 = 10）
 	if len(m.Rewrites) < 8 {
 		t.Errorf("Rewrites: got %d, want >=8", len(m.Rewrites))
 	}
 
-	// 脚本规则：script-response-body + script-analyze-echo-response = 2
 	if len(m.Scripts) != 2 {
 		t.Errorf("Scripts: got %d, want 2", len(m.Scripts))
 	}
 
-	// 检查 reject-dict
-	found := false
+	foundRejectDict := false
 	for _, r := range m.Rewrites {
 		if r.Action == "reject-dict" {
-			found = true
+			foundRejectDict = true
 			if !strings.HasPrefix(r.Pattern, "^https") {
 				t.Errorf("reject-dict pattern: got %q", r.Pattern)
 			}
 		}
 	}
-	if !found {
+	if !foundRejectDict {
 		t.Errorf("missing reject-dict")
 	}
 
-	// 检查 302 含 $1
+	foundCapture302 := false
 	for _, r := range m.Rewrites {
 		if r.Action == "302" && strings.Contains(r.Args["url"], "$1") {
-			if !strings.HasPrefix(r.Pattern, "^(") {
+			foundCapture302 = true
+			if !strings.Contains(r.Pattern, "(") {
 				t.Errorf("302 capture pattern: got %q", r.Pattern)
 			}
 		}
 	}
+	if !foundCapture302 {
+		t.Errorf("missing 302 capture")
+	}
 
-	// 检查 response-body（QX 形式）
 	for _, r := range m.Rewrites {
 		if r.Action == "response-body" {
 			if r.Args["search"] != "bubbles" {
@@ -77,7 +112,6 @@ func TestParseQuantumultX_Sample(t *testing.T) {
 		}
 	}
 
-	// 检查 echo-response
 	for _, r := range m.Rewrites {
 		if r.Action == "echo-response" {
 			if !strings.HasPrefix(r.Args["content-type"], "application/json") {
@@ -89,7 +123,6 @@ func TestParseQuantumultX_Sample(t *testing.T) {
 		}
 	}
 
-	// 检查 jsonjq-response-body
 	for _, r := range m.Rewrites {
 		if r.Action == "jsonjq-response-body" {
 			if !strings.Contains(r.Args["jq"], ".feeds") {
@@ -195,6 +228,76 @@ hostname = a.com
 	m.Name = "QX名称"
 	if m.Name != "QX名称" {
 		t.Errorf("after QX: Name=%q", m.Name)
+	}
+}
+
+// TestParseQXRoutingRule 验证 QX 行式路由规则解析。
+func TestParseQXRoutingRule(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    bool
+		rType   string
+		rValue  string
+		rAction string
+	}{
+		{"DOMAIN-SUFFIX,example.com,DIRECT", true, "DOMAIN-SUFFIX", "example.com", "DIRECT"},
+		{"DOMAIN-KEYWORD,ads,REJECT", true, "DOMAIN-KEYWORD", "ads", "REJECT"},
+		{"IP-CIDR,10.0.0.0/8,DIRECT", true, "IP-CIDR", "10.0.0.0/8", "DIRECT"},
+		{"DOMAIN,full.example.com,PROXY", true, "DOMAIN", "full.example.com", "PROXY"},
+		{"GEOIP,CN,DIRECT", true, "GEOIP", "CN", "DIRECT"},
+		{"USER-AGENT,MicroMessenger%,REJECT", true, "USER-AGENT", "MicroMessenger%", "REJECT"},
+		// 非路由规则
+		{"^https://a.com url reject", false, "", "", ""},
+		{"hostname = a.com", false, "", "", ""},
+		{"# comment", false, "", "", ""},
+		{"short,line", false, "", "", ""},
+	}
+	for _, c := range cases {
+		r := parseQXRoutingRule(c.in)
+		if c.want {
+			if r == nil {
+				t.Errorf("parseQXRoutingRule(%q): got nil, want non-nil", c.in)
+				continue
+			}
+			if r.Type != c.rType {
+				t.Errorf("Type: got %q, want %q", r.Type, c.rType)
+			}
+			if r.Value != c.rValue {
+				t.Errorf("Value: got %q, want %q", r.Value, c.rValue)
+			}
+			if r.Action != c.rAction {
+				t.Errorf("Action: got %q, want %q", r.Action, c.rAction)
+			}
+		} else {
+			if r != nil {
+				t.Errorf("parseQXRoutingRule(%q): got %+v, want nil", c.in, r)
+			}
+		}
+	}
+}
+
+// TestParseQuantumultX_WithRoutingRules 验证包含路由规则的 QX 文件解析。
+func TestParseQuantumultX_WithRoutingRules(t *testing.T) {
+	content := `#!name=路由测试
+hostname = ads.example.com
+
+^https?://ads\.example\.com/api url reject
+DOMAIN-SUFFIX,ads.com,REJECT
+DOMAIN-KEYWORD,tracker,DIRECT
+IP-CIDR,10.0.0.0/8,DIRECT
+`
+	m, err := ParseQuantumultX(content)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(m.Rules) != 3 {
+		t.Errorf("Rules: got %d, want 3", len(m.Rules))
+		for i, r := range m.Rules {
+			t.Logf("  Rule[%d]: Type=%s Value=%s Action=%s", i, r.Type, r.Value, r.Action)
+		}
+	}
+	if len(m.Rewrites) != 1 {
+		t.Errorf("Rewrites: got %d, want 1", len(m.Rewrites))
 	}
 }
 

@@ -45,6 +45,9 @@ const HTML = `<!DOCTYPE html>
   .tag { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; margin-left: 0.5rem; }
   .tag-mitm { background: #7c3aed33; color: #a78bfa; }
   .tag-rule { background: #0891b233; color: #22d3ee; }
+  .tag-deeplink { background: #05966933; color: #34d399; }
+  .btn-deeplink { background: #059669; color: #fff; }
+  .btn-deeplink:hover { background: #34d399; color: #0f172a; }
 </style>
 </head>
 <body>
@@ -63,6 +66,7 @@ const HTML = `<!DOCTYPE html>
     <div class="btn-group">
       <button class="btn-primary" onclick="doConvert('mitm')">转换 MITM 规则 <span class="tag tag-mitm">.amrs</span></button>
       <button class="btn-secondary" onclick="doConvert('rule')">转换路由规则 <span class="tag tag-rule">.arrs</span></button>
+      <button class="btn-deeplink" onclick="doDeeplink()">导入 Anywhere <span class="tag tag-deeplink">deeplink</span></button>
     </div>
   </div>
 
@@ -78,7 +82,7 @@ const HTML = `<!DOCTYPE html>
   <div id="error-area" class="error" style="display:none;"></div>
 
   <div class="links">
-    <p>API 接口：<a href="/mitm?url=EXAMPLE">GET /mitm?url=...</a> | <a href="/rule?url=EXAMPLE">GET /rule?url=...</a></p>
+    <p>API 接口：<a href="/mitm?url=EXAMPLE">GET /mitm?url=...</a> | <a href="/rule?url=EXAMPLE">GET /rule?url=...</a> | <a href="/deeplink?url=EXAMPLE">GET /deeplink?url=...</a></p>
     <p style="margin-top:0.5rem;">参考文档：<a href="https://github.com/NodePassProject/Anywhere" target="_blank">Anywhere</a> | <a href="https://github.com/H1d3r/module2anywhere" target="_blank">module2anywhere</a></p>
   </div>
 </div>
@@ -138,6 +142,23 @@ function copyResult() {
     btn.textContent = '已复制';
     setTimeout(() => { btn.textContent = '复制'; }, 1500);
   });
+}
+
+function doDeeplink() {
+  const urlInput = document.getElementById('url-input');
+  const url = urlInput.value.trim();
+  if (!url) { urlInput.focus(); return; }
+
+  const fetchScripts = document.getElementById('opt-fetch').checked;
+  const generalize = document.getElementById('opt-generalize').checked;
+  const origin = window.location.origin;
+  const params = 'url=' + encodeURIComponent(url) + '&fetch=' + fetchScripts + '&generalize=' + generalize;
+  const ruleURL = origin + '/rule?' + params;
+  const mitmURL = origin + '/mitm?' + params;
+
+  // 直接构造 deeplink 并跳转，唤起 Anywhere app
+  const deeplink = 'anywhere://add-rule-set?link=' + encodeURIComponent(ruleURL) + '&link=' + encodeURIComponent(mitmURL);
+  window.location.href = deeplink;
 }
 </script>
 </body>

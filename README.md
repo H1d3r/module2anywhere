@@ -1724,6 +1724,39 @@ module2anywhere --server --listen 0.0.0.0:8080
 | `fetch` | 否 | 是否下载远程脚本（仅 `mitm`） |
 | `generalize` | 否 | 是否泛化主机（仅 `mitm`） |
 
+**GET /deeplink** — 返回 Anywhere 深度链接（`anywhere://add-rule-set`）
+
+先执行完整转换，根据结果自动生成包含 MITM 和/或路由规则链接的深度链接。浏览器访问时返回 HTML 页面，非浏览器请求返回 302 重定向到深度链接。
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `url` | 是 | 远程模块文件的 URL（需 URL 编码） |
+| `name` | 否 | 规则集名称（默认从 URL 推导） |
+| `fetch` | 否 | 是否下载远程脚本：`true` / `false`（默认 `false`） |
+| `generalize` | 否 | 是否泛化主机：`true` / `false`（默认 `true`） |
+| `format` | 否 | 输出格式：`text` 返回纯文本深度链接；默认根据 Accept 头决定（浏览器 → HTML，其他 → 302 重定向） |
+
+**深度链接格式**：
+
+```
+anywhere://add-rule-set?link=<mitm-url>&link=<rule-url>
+```
+
+每个 `link` 是本服务 `/mitm` 或 `/rule` 端点的完整 URL（已 percent-encode）。仅包含有内容的规则类型（若模块无路由规则则不包含 rule link）。
+
+**请求示例**：
+
+```bash
+# 获取纯文本深度链接
+curl "http://localhost:8080/deeplink?url=https%3A%2F%2Fraw.githubusercontent.com%2Fkokoryh%2FScript%2Fmaster%2FLoon%2Fplugin%2Fbilibili.plugin&format=text"
+
+# 浏览器访问（返回 HTML 页面，含「打开 Anywhere 导入」按钮）
+# http://localhost:8080/deeplink?url=https%3A%2F%2Fraw.githubusercontent.com%2Fkokoryh%2FScript%2Fmaster%2FLoon%2Fplugin%2Fbilibili.plugin
+
+# 非 HTML 请求（返回 302 重定向到深度链接，Anywhere 可直接打开）
+curl -L "http://localhost:8080/deeplink?url=https%3A%2F%2Fraw.githubusercontent.com%2Fkokoryh%2FScript%2Fmaster%2FLoon%2Fplugin%2Fbilibili.plugin"
+```
+
 **URL 编码说明**：
 
 由于是 GET 请求，`url` 参数中的特殊字符需要进行 URL 编码：

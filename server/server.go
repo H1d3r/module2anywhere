@@ -45,6 +45,7 @@ func Run(cfg Config) error {
 	mux.HandleFunc("/mitm", srv.handleMitm)
 	mux.HandleFunc("/rule", srv.handleRule)
 	mux.HandleFunc("/convert", srv.handleConvert)
+	mux.HandleFunc("/deeplink", srv.handleDeeplink)
 	mux.HandleFunc("/health", srv.handleHealth)
 
 	httpSrv := &http.Server{
@@ -119,10 +120,65 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// convert 执行转换，返回 Result。
+// handleDeeplink 返回 Anywhere 深度链接（anywhere://add-rule-set）。
+// 默认返回 302 跳转到深度链接；若 format=text 则返回纯文本。
+// 参数：url（必填）、name、fetch、generalize、format
+func (s *Server) handleDeeplink(w http.ResponseWriter, r *http.Request) {
+	rawURL := r.URL.Query().Get("url")
+	if rawURL == "" {
+		http.Error(w, "Error: url parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	result, err := s.convertAll(r)
+	if err != nil {
+		http.Error(w, "Error: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	links := make([]string, 0, 2)
+	if result.Amrs != "" {
+		links = append(links, buildEndpointURL(r, "/mitm", rawURL))
+	}
+	if result.Arrs != "" {
+		links = append(links, buildEndpointURL(r, "/rule", rawURL))
+	}
+	if len(links) == 0 {
+		http.Error(w, "Error: no rules to import", http.StatusNotFound)
+		return
+	}
+
+	deepLink := "anywhere://add-rule-set?" + encodeLinks(links)
+	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+	if format == "text" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(deepLink))
+		return
+	}
+	http.Redirect(w, r, deepLink, http.StatusFound)
+}
+
+// convert 执行转换并按 format 校验，返回 Result。
 // 支持 Quantumult X 一键订阅协议：若 url 是 quantumult.app add-resource 链接，
 // 会先展开为多个远端订阅 URL 逐个转换后合并。
 func (s *Server) convert(r *http.Request, format string) (*converter.Result, error) {
+	merged, err := s.convertAll(r)
+	if err != nil {
+		return nil, err
+	}
+	// 若请求 arrs 但无内容，返回错误
+	if format == "arrs" && merged.Arrs == "" {
+		return nil, fmt.Errorf("no routing rules in module")
+	}
+	if format == "amrs" && merged.Amrs == "" {
+		return nil, fmt.Errorf("no MITM rules in module")
+	}
+	return merged, nil
+}
+
+// convertAll 执行完整转换，同时返回 .amrs 与 .arrs 结果。
+func (s *Server) convertAll(r *http.Request) (*converter.Result, error) {
 	rawURL := r.URL.Query().Get("url")
 	if rawURL == "" {
 		return nil, fmt.Errorf("url parameter is required")
@@ -200,15 +256,7 @@ func (s *Server) convert(r *http.Request, format string) (*converter.Result, err
 		results = append(results, modRes{mod: m, res: res})
 	}
 
-	merged := mergeServerResults(results)
-	// 若请求 arrs 但无内容，返回错误
-	if format == "arrs" && merged.Arrs == "" {
-		return nil, fmt.Errorf("no routing rules in module")
-	}
-	if format == "amrs" && merged.Amrs == "" {
-		return nil, fmt.Errorf("no MITM rules in module")
-	}
-	return merged, nil
+	return mergeServerResults(results), nil
 }
 
 // writeResult 写入响应。
@@ -313,6 +361,12 @@ func appendNonEmpty(a, b string) string {
 //
 // 注意：RequestURI 可能含 query，但实际写入注释时只取 Host + URL.Path。
 func buildServiceURL(r *http.Request) string {
+	scheme, host := deriveSchemeHost(r)
+	return scheme + "://" + host + r.URL.Path
+}
+
+// deriveSchemeHost 从请求中推导 scheme 与 host，支持 X-Forwarded-* 头。
+func deriveSchemeHost(r *http.Request) (string, string) {
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
@@ -324,7 +378,28 @@ func buildServiceURL(r *http.Request) string {
 	if xfProto := r.Header.Get("X-Forwarded-Proto"); xfProto != "" {
 		scheme = xfProto
 	}
-	return scheme + "://" + host + r.URL.Path
+	return scheme, host
+}
+
+// buildEndpointURL 构造本服务指定端点的完整 URL，并保留原请求参数。
+// rawURL 是用户传入的原始 url 参数值（将原样放入子链接的 url 参数）。
+// 会自动剔除 deeplink 接口自身的 format 参数，避免污染子链接。
+func buildEndpointURL(r *http.Request, path, rawURL string) string {
+	scheme, host := deriveSchemeHost(r)
+	q := r.URL.Query()
+	q.Del("format")
+	q.Set("url", rawURL)
+	return scheme + "://" + host + path + "?" + q.Encode()
+}
+
+// encodeLinks 把多个规则集 URL 编码为 anywhere://add-rule-set 的 query 字符串。
+// 每个 link 以 `link=...` 形式出现，保留传入顺序。
+func encodeLinks(links []string) string {
+	parts := make([]string, 0, len(links))
+	for _, link := range links {
+		parts = append(parts, "link="+url.QueryEscape(link))
+	}
+	return strings.Join(parts, "&")
 }
 
 // ensureIRImported 防止 ir 包被裁剪（占位）。

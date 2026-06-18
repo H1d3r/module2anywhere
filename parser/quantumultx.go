@@ -111,7 +111,7 @@ func ParseQuantumultX(content string) (*ir.Module, error) {
 	// 第二遍：解析行式规则
 	for _, raw := range rawLines {
 		line := strings.TrimSpace(raw)
-		if line == "" || isCommentLine(line) || isQXSectionHeader(line) {
+		if line == "" || isQXSectionHeader(line) {
 			continue
 		}
 		if strings.HasPrefix(line, "#!") {
@@ -121,18 +121,26 @@ func ParseQuantumultX(content string) (*ir.Module, error) {
 		if extractHostnameValue(line) != "" {
 			continue
 		}
-		// 解析单行规则
-		rule, kind := parseQuantumultXLine(line)
-		if rule == nil {
+		// 注释行（# 或 ; 开头）：跳过，但路由规则可能在注释后
+		if isCommentLine(line) {
 			continue
 		}
-		switch kind {
-		case qxRuleRewrite:
-			m.Rewrites = append(m.Rewrites, *rule)
-		case qxRuleScript:
-			if s, ok := ruleToScript(*rule); ok {
-				m.Scripts = append(m.Scripts, s)
+		// 解析单行规则
+		rule, kind := parseQuantumultXLine(line)
+		if rule != nil {
+			switch kind {
+			case qxRuleRewrite:
+				m.Rewrites = append(m.Rewrites, *rule)
+			case qxRuleScript:
+				if s, ok := ruleToScript(*rule); ok {
+					m.Scripts = append(m.Scripts, s)
+				}
 			}
+			continue
+		}
+		// 路由规则：TYPE,value,action[,options...]
+		if r := parseQXRoutingRule(line); r != nil {
+			m.Rules = append(m.Rules, *r)
 		}
 	}
 
@@ -302,13 +310,15 @@ func parseQuantumultXLine(line string) (*ir.RewriteRule, qxRuleKind) {
 		return r, qxRuleRewrite
 
 	case "echo-response":
-		// 形如：pattern url echo-response <content-type> url echo-response <body-or-url>
-		// parts: [0]=pattern [1]=url [2]=echo-response [3]=content-type [4]=url [5]=echo-response [6]=body
+		// 形如：pattern url echo-response <content-type> url echo-response [body] <body-or-url>
+		// parts: [0]=pattern [1]=url [2]=echo-response [3]=content-type [4]=url [5]=echo-response [6..]=body
 		if len(parts) >= 4 {
 			r.Args["content-type"] = parts[3]
 		}
 		if len(parts) >= 7 {
-			r.Args["body"] = parts[6]
+			body := strings.Join(parts[6:], " ")
+			body = strings.TrimPrefix(body, "body ")
+			r.Args["body"] = body
 		}
 		return r, qxRuleRewrite
 
@@ -340,6 +350,45 @@ func parseQuantumultXLine(line string) (*ir.RewriteRule, qxRuleKind) {
 		}
 		return r, qxRuleRewrite
 	}
+}
+
+// parseQXRoutingRule 解析 QX 行式路由规则。
+// 格式：TYPE,value,action[,options...]，例如 DOMAIN-SUFFIX,example.com,DIRECT。
+// 不是路由规则时返回 nil。
+func parseQXRoutingRule(line string) *ir.RoutingRule {
+	// 行式 rewrite 规则以 ^ 开头，已在 parseQuantumultXLine 处理；此处跳过。
+	if strings.HasPrefix(line, "^") {
+		return nil
+	}
+	fields := splitCSVFields(line)
+	if len(fields) < 3 {
+		return nil
+	}
+	ruleType := strings.ToUpper(strings.TrimSpace(fields[0]))
+	// QX 路由规则类型白名单
+	switch ruleType {
+	case "DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "DOMAIN-SET", "RULE-SET",
+		"IP-CIDR", "IP-CIDR6", "IP6-CIDR", "GEOIP", "USER-AGENT",
+		"DEST-PORT", "SRC-PORT", "SRC-IP", "SRC-IP-CIDR", "PROCESS-NAME",
+		"SUBNET", "CELLULAR-RADIO":
+	default:
+		return nil
+	}
+	return &ir.RoutingRule{
+		Raw:     line,
+		Type:    ruleType,
+		Value:   strings.TrimSpace(fields[1]),
+		Action:  strings.ToUpper(strings.TrimSpace(fields[2])),
+		Options: trimSpaces(fields[3:]),
+	}
+}
+
+// trimSpaces 批量去除字符串切片中每个元素的空白。
+func trimSpaces(ss []string) []string {
+	for i, s := range ss {
+		ss[i] = strings.TrimSpace(s)
+	}
+	return ss
 }
 
 // splitQXTokens 按空白切分 QX 行。
