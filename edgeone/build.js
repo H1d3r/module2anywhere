@@ -90,7 +90,9 @@ export async function onRequest(context) {
   // 解析 quantumult.app 一键订阅协议，否则取原始 URL
   let sourceURL = decodedURL;
   let inputURLs = [decodedURL];
+  let addResourceURL = '';
   if (lib.isAddResourceURL && lib.isAddResourceURL(decodedURL)) {
+    addResourceURL = decodedURL;
     try {
       inputURLs = lib.extractAddResourceURLs(decodedURL);
       if (inputURLs.length === 0) inputURLs = [decodedURL];
@@ -128,8 +130,9 @@ export async function onRequest(context) {
       ...lib.defaultConvertOptions(),
       generalizeHost: generalize,
       fetchScripts,
-      sourceURL: sourceURL,
+      sourceURL: inputURL,
       serviceURL: serviceURL,
+      addResourceURL: addResourceURL,
     };
 
     try {
@@ -211,7 +214,9 @@ export async function onRequest(context) {
   // 解析 quantumult.app 一键订阅协议，否则取原始 URL
   let sourceURL = decodedURL;
   let inputURLs = [decodedURL];
+  let addResourceURL = '';
   if (lib.isAddResourceURL && lib.isAddResourceURL(decodedURL)) {
+    addResourceURL = decodedURL;
     try {
       inputURLs = lib.extractAddResourceURLs(decodedURL);
       if (inputURLs.length === 0) inputURLs = [decodedURL];
@@ -249,8 +254,9 @@ export async function onRequest(context) {
       ...lib.defaultConvertOptions(),
       generalizeHost: generalize,
       fetchScripts,
-      sourceURL: sourceURL,
+      sourceURL: inputURL,
       serviceURL: serviceURL,
+      addResourceURL: addResourceURL,
     };
 
     try {
@@ -350,7 +356,9 @@ export async function onRequest(context) {
   // 解析 quantumult.app 一键订阅协议，否则取原始 URL
   let sourceURL = decodedURL;
   let inputURLs = [decodedURL];
+  let addResourceURL = '';
   if (lib.isAddResourceURL && lib.isAddResourceURL(decodedURL)) {
+    addResourceURL = decodedURL;
     try {
       inputURLs = lib.extractAddResourceURLs(decodedURL);
       if (inputURLs.length === 0) inputURLs = [decodedURL];
@@ -388,8 +396,9 @@ export async function onRequest(context) {
       ...lib.defaultConvertOptions(),
       generalizeHost: generalize,
       fetchScripts,
-      sourceURL: sourceURL,
+      sourceURL: inputURL,
       serviceURL: serviceURL,
+      addResourceURL: addResourceURL,
     };
 
     try {

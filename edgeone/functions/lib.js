@@ -991,7 +991,7 @@ function isRejectAction(action) {
 }
 
 function defaultConvertOptions() {
-  return { generalizeHost: true, encodingPreprocess: true, fetchScripts: true, includeMetadata: true, useStreamScript: false, autoContentType: true };
+  return { generalizeHost: true, encodingPreprocess: true, fetchScripts: true, includeMetadata: true, useStreamScript: false, autoContentType: true, addResourceURL: '' };
 }
 
 async function convert(m, opts) {
@@ -1242,13 +1242,15 @@ function inferContentType(lines) {
 
 function metadataComments(m, opts) {
   opts = opts || {};
-  const parts = [`# 由 module2anywhere 从 ${m.source} 模块转换`];
-  if (opts.sourceURL) parts.push(`# source: ${opts.sourceURL}`);
-  if (opts.serviceURL) parts.push(`# this: ${opts.serviceURL}`);
-  if (m.desc) parts.push(`# desc: ${m.desc}`);
-  if (m.author) parts.push(`# author: ${m.author}`);
-  if (m.homepage) parts.push(`# homepage: ${m.homepage}`);
-  if (m.date) parts.push(`# date: ${m.date}`);
+  const parts = ['# 由 module2anywhere 从 ' + m.source + ' 模块转换'];
+  if (opts.sourceURL) parts.push('# source: ' + opts.sourceURL);
+  // 如果是从 quantumult.app add-resource 链接提取的，添加解码后的原始地址
+  if (opts.addResourceURL) parts.push('# add-resource: ' + opts.addResourceURL);
+  if (opts.serviceURL) parts.push('# this: ' + opts.serviceURL);
+  if (m.desc) parts.push('# desc: ' + m.desc);
+  if (m.author) parts.push('# author: ' + m.author);
+  if (m.homepage) parts.push('# homepage: ' + m.homepage);
+  if (m.date) parts.push('# date: ' + m.date);
   parts.push('');
   return parts.join('\n');
 }
