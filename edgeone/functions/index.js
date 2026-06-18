@@ -57,7 +57,7 @@ const HTML = `<!DOCTYPE html>
     <input type="text" id="url-input" placeholder="https://raw.githubusercontent.com/.../bilibili.plugin">
     <div class="options">
       <label><input type="checkbox" id="opt-fetch" checked> 下载脚本</label>
-      <label><input type="checkbox" id="opt-generalize" checked> 主机泛化</label>
+      <label><input type="checkbox" id="opt-generalize"> 主机泛化</label>
       <label><input type="checkbox" id="opt-source" checked> 自动识别 Loon/Surge</label>
     </div>
     <div class="btn-group">
