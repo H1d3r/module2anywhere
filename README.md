@@ -70,6 +70,7 @@ hostname = example.com, api.example.org
 |-----|------|
 | `name` | 规则集显示名称（必填） |
 | `hostname` | 逗号分隔的域名后缀，决定哪些主机被拦截 |
+| `content-type` | 设置 reject/mock 响应的默认 Content-Type（如 `application/json; charset=utf-8`）；仅在需要自定义响应头时填写 |
 
 **规则行格式**：`<phase>, <operation>, <url-pattern> [, fields...]`
 
@@ -183,11 +184,13 @@ hostname = example.com, *.example.com
 | `307` | `pattern 307 <url>` | 307 重定向（支持 `$1` 捕获） |
 | `mock-response-body` | `pattern mock-response-body data-type=<type> data="<body>" status-code=<code>` | 模拟响应 |
 | `request-header` | `pattern request-header <JS>` | JS 改写请求头 |
-| `request-body` | `pattern request-body <JS>` | JS 改写请求体 |
+| `header-del` | `pattern header-del <header-name>` | 删除指定请求头（仅请求阶段） |
 | `response-body` | `pattern response-body <JS>` | JS 改写响应体 |
+| `request-body` | `pattern request-body <JS>` | JS 改写请求体 |
 | `response-body-json-del` | `pattern response-body-json-del <dot-path>` | 删除响应 JSON 路径 |
 | `response-body-json-add` | `pattern response-body-json-add <dot-path> <value>` | 添加响应 JSON 路径 |
 | `response-body-json-replace` | `pattern response-body-json-replace <dot-path> <value>` | 替换响应 JSON 路径 |
+| `response-body-replace-regex` | `pattern response-body-replace-regex <search-regex> <replacement>` | 用正则搜索响应 body 并替换（需引号包裹含空格的 pattern） |
 
 ### Loon [Script] 参数
 
@@ -416,6 +419,17 @@ Loon `[Rewrite]` / Surge `[URL Rewrite]` 中的重写规则转为 `.amrs`。
 
 ### 6.5 头部重写类
 
+**Loon `[Rewrite]` header 操作**：
+
+| Loon 动作 | Anywhere 操作 | 转换结果 | 说明 |
+|----------|--------------|---------|------|
+| `pattern header-del <name>` | header-delete (phase 0) | `0, 2, pattern, name` | 删除请求头 |
+| Surge `_header-del <name>` | header-delete (phase 0) | `0, 2, pattern, name` | 同上（Surge 用 `_` 前缀区分 rewrite 和 header 操作） |
+
+> 注意：Surge 的 `_header-del` 等属于 `[URL Rewrite]` 段，而非 `[Header Rewrite]` 段。二者在 Surge 中行为一致——`_header-del` 是简写，行为等同于 `[Header Rewrite] request-header delete <name>`。
+
+**Surge `[Header Rewrite]`**：
+
 | Surge `[Header Rewrite]` | Anywhere 操作 | 转换结果 | 说明 |
 |-------------------------|--------------|---------|------|
 | `pattern request-header add <name> <value>` | header-add (phase 0) | `0, 1, pattern, name, value` | — |
@@ -436,6 +450,15 @@ Loon `request-header <JS>` / `response-body <JS>` / `request-body <JS>` 和 Surg
 | `response-body <JS>` | script (op 100) | `1` | 同上 |
 
 > **注意**：这些内联 JS 使用 Loon/Surge 的 `$request`/`$response`/`$done` API，需改写为 Anywhere 的 `ctx`/`Anywhere.done()` API（见第 7 节）。
+
+### 6.7 正则替换响应体
+
+| Loon 动作 | Anywhere 操作 | 转换结果 | 说明 |
+|----------|--------------|---------|------|
+| `response-body-replace-regex <search> <replacement>` | body-replace (op 4) | `1, 4, pattern, search, replacement` | 在响应 body 中搜索正则并替换；phase 始终为 1（response） |
+
+> **search/replacement 格式**：正则中的引号需双写：`"pattern"` → `""pattern""`；整个字段若含逗号或含空白首尾须加引号。
+> **示例**：`response-body-replace-regex "list":\[.+\] "list":[]` → `1, 4, ^https://..., ""list"":\[.+\], ""list"":[]`
 
 ---
 
@@ -473,15 +496,63 @@ Loon `request-header <JS>` / `response-body <JS>` / `request-body <JS>` 和 Surg
 | `$done({response: {...}})` | `Anywhere.respond({status, headers, body})` | 请求阶段直接返回响应 |
 | `$persistentStore.read(key)` | `Anywhere.store.getString(key, true)` | 持久化存储读取 |
 | `$persistentStore.write(val, key)` | `Anywhere.store.set(key, val, true)` | 持久化存储写入 |
-| `$httpClient.get(url, cb)` | `await Anywhere.http.get(url)` | HTTP 请求（需 async） |
-| `$httpClient.post(url, opts, cb)` | `await Anywhere.http.post(url, opts)` | HTTP POST |
+| `$httpClient.get(url, cb)` | `await Anywhere.http.get(url)` | HTTP GET（需 async） |
+| `$httpClient.post(url, opts, cb)` | `await Anywhere.http.post(url, opts)` | HTTP POST（需 async） |
 | `$notification.post(title,sub,body)` | `Anywhere.log.info(...)` | Anywhere 无通知，降级为日志 |
 | `JSON.parse($response.body)` | `JSON.parse(Anywhere.codec.utf8.decode(ctx.body))` | body 需先 decode |
 | `body = JSON.stringify(obj)` | `ctx.body = Anywhere.codec.utf8.encode(JSON.stringify(obj))` | body 需 encode |
 
+**Anywhere.http.request 完整参数**（用于高级代理重写）：
+
+```javascript
+await Anywhere.http.request({
+    url: string,           // 必填：目标 URL
+    method: string,        // 可选，默认 "GET"
+    headers: [[name,value],...], // 可选，发送的请求头
+    body: Uint8Array,       // 可选，请求体
+    timeout: number,        // 可选，超时 ms（默认 8000）
+    redirect: "follow" | "manual" | "error"  // 可选，是否跟随重定向
+})
+// 返回 {status, headers: [[name,value],...], body: Uint8Array, url: string}
+```
+
+**Anywhere.respond 完整参数**（用于合成响应或代理上游）：
+
+```javascript
+Anywhere.respond({
+    status: number,         // 必填：HTTP 状态码
+    headers: [[name,value],...], // 可选，响应头
+    body: Uint8Array        // 可选，响应体
+})
+// 请求阶段直接返回，不走上游
+```
+
+**Anywhere.json 静态函数**（bytes-in/bytes-out，无需 decode/encode）：
+
+```javascript
+Anywhere.json.add(body: Uint8Array, path: string, value: any): Uint8Array
+Anywhere.json.replace(body: Uint8Array, path: string, value: any): Uint8Array
+Anywhere.json.delete(body: Uint8Array, path: string): Uint8Array
+Anywhere.json.replaceRecursive(body: Uint8Array, key: string, value: any): Uint8Array
+Anywhere.json.deleteRecursive(body: Uint8Array, key: string): Uint8Array
+// path 为 JSONPath 格式，如 $.data.user.is_premium
+// 与 body-json (op 5) 等价，但可在脚本中灵活调用
+```
+
+**ctx.state 跨帧持久化**（用于 stream-script 累积数据）：
+
+```javascript
+ctx.state        // 对象，在多次调用间共享状态
+// 示例：
+if (!ctx.state.buf) ctx.state.buf = [];
+ctx.state.buf.push(ctx.body);
+// 在 frame.end=true 时处理累积数据
+```
+
 ### 7.4 脚本改写模板
 
-**Loon/Surge 原始脚本**：
+**Loon/Surge 原始脚本**（简单 body 修改）：
+
 ```javascript
 function run() {
   var body = $response.body;
@@ -491,7 +562,8 @@ function run() {
 }
 ```
 
-**Anywhere 改写后**：
+**Anywhere 改写后（同步版）**：
+
 ```javascript
 function process(ctx) {
   if (ctx.phase !== "response" || !ctx.body) return;
@@ -506,17 +578,142 @@ function process(ctx) {
 }
 ```
 
-### 7.5 protobuf 脚本特殊处理
+**Anywhere 改写后（async/await 版，用于网络请求）**：
+
+> 当脚本需要向上游发请求（如 URL 替换、代理重写）时，必须使用 `async` 函数 + `await Anywhere.http.request()` + `Anywhere.respond()`。
+
+```javascript
+async function process(ctx) {
+  if (ctx.phase !== "request" || !ctx.url) return;
+  // 过滤掉不可转发的头部（Host, Content-Length, Connection 等）
+  var headers = [];
+  (ctx.headers || []).forEach(function(h) {
+    var name = String(h[0] || "");
+    var lower = name.toLowerCase();
+    if (!name || lower === "host" || lower === "content-length" || lower === "connection") return;
+    headers.push([name, String(h[1] || "")]);
+  });
+  try {
+    // 向上游发请求（如修改 URL）
+    var modifiedUrl = ctx.url.replace(/(?:[?&]?)platform=iphone/, "&platform=ipad");
+    var res = await Anywhere.http.request({
+      url: modifiedUrl,
+      method: ctx.method || "GET",
+      headers: headers,
+      timeout: 8000,
+      redirect: "follow"
+    });
+    // 用上游响应替代原始响应
+    Anywhere.respond({
+      status: res.status || 200,
+      headers: res.headers || [],
+      body: res.body || new Uint8Array()
+    });
+  } catch (e) {
+    Anywhere.log.warning("proxy failed: " + e);
+  }
+}
+```
+
+**Anywhere json 静态函数改写模板**：
+
+```javascript
+function process(ctx) {
+  if (ctx.phase !== "response" || !ctx.body) return;
+  try {
+    // 直接操作 body，无需手动 decode/encode
+    ctx.body = Anywhere.json.replace(ctx.body, "$.user.is_premium", true);
+    ctx.body = Anywhere.json.delete(ctx.body, "$.data.ads");
+  } catch (e) {
+    Anywhere.log.warning("json failed: " + e);
+  }
+  Anywhere.done();
+}
+```
+
+### 7.5 stream-script 映射 → op 101
+
+`stream-script` 用于处理流式响应（分块传输），通过 `ctx.frame` 控制帧边界，`ctx.state` 累积数据。
+
+| 源类型 | Anywhere op | phase | 说明 |
+|--------|------------|-------|------|
+| 流式处理脚本（Surge/Loon 不直接支持） | `stream-script` (101) | 0 或 1 | 用于处理大文件、分块响应 |
+
+**stream-script ctx 额外字段**：
+
+```javascript
+ctx.frame      // {index: number, end: boolean}
+// index: 当前帧序号（从 0 开始）
+// end: 当前帧是否为最后一帧
+
+ctx.state      // {}，跨帧共享状态对象
+// 用于在多帧间累积数据
+```
+
+**stream-script 改写模板（以京东价格比对为例）**：
+
+```javascript
+async function process(ctx) {
+  if (ctx.phase !== "response" || !ctx.body) return;
+  // 初始化累积状态
+  if (!ctx.state.buf) ctx.state.buf = [];
+  if (!ctx.state.cb) ctx.state.cb = "";
+
+  // 拼接 body
+  ctx.state.cb += Anywhere.codec.utf8.decode(ctx.body);
+
+  // 非最后一帧：保存状态后继续
+  if (!ctx.frame.end) {
+    ctx.state.buf.push(ctx.body);
+    return; // 不调用 done，等待后续帧
+  }
+
+  // 最后一帧：查找 JSON 中的价格字段并注入
+  var m = ctx.state.cb.match(/"lowestPrice":"(\d+)"/);
+  if (m) {
+    var targetPrice = parseInt(m[1]) - 1;
+    var newBody = ctx.state.cb.replace(
+      /"lowestPrice":"\d+"/g,
+      '"lowestPrice":"' + targetPrice + '"'
+    );
+    ctx.body = Anywhere.codec.utf8.encode(newBody);
+  }
+  Anywhere.done();
+}
+```
+
+> **何时用 script (100) vs stream-script (101)**：
+> - `100`：整个 body 可一次性获取，或只需最终处理结果。多数场景用此。
+> - `101`：body 分块传输（如大文件、分段 JSON 流），需逐帧处理后再组装。转换时可将 Loon/Surge 的普通脚本先转为 `100`，如有流式需求再手动优化为 `101`。
+
+### 7.6 脚本上传与 base64 编码
+
+转换脚本时需注意：
+
+1. **编码格式**：Base64(UTF-8(JS源码))，不得包含换行符
+2. **function 声明**：必须为 `function process(ctx)` 或 `async function process(ctx)`
+3. **不可用的 API**：Loon/Surge 的 `$notification`、`$prefs`、`$task`、`$done({raw:...})` 在 Anywhere 中无对应，需移除或降级
+4. **base64 填充**：Base64 字符串末尾可能需要 `=` 填充；Go 程序应使用标准库 base64 编码自动处理
+5. **URL 截断**：`base64` 字段在规则行末尾，长 URL pattern 后的 base64 可能被某些文本工具截断；Go 程序应确保完整输出
+
+```go
+// Go base64 编码示例
+import "encoding/base64"
+jsSource := `async function process(ctx) { ... }`
+encoded := base64.StdEncoding.EncodeToString([]byte(jsSource))
+```
+
+### 7.7 protobuf 脚本特殊处理
 
 Loon/Surge 的 `binary-body-mode=true` 脚本（如 bilibili protobuf 去广告）处理 protobuf 二进制数据。Anywhere 中：
 - `ctx.body` 始终为 `Uint8Array`，天然支持二进制
 - 可用 `Anywhere.codec.protobuf.decode(ctx.body)` 解码 protobuf
 - 可用 `Anywhere.codec.gzip.decode(ctx.body)` 解压
 
-### 7.6 argument 参数传递
+### 7.8 argument 参数传递
 
 Loon `[Script]` 的 `argument=[{showUpList}]` 参数在 Anywhere 中无直接对应。转换方案：
-- 将参数硬编码到脚本中
+- 将参数硬编码到脚本中（推荐）
 - 或使用 `Anywhere.store` 预存参数，脚本运行时读取
 
 ---
@@ -729,6 +926,8 @@ function process(ctx) {
 
 ### 10.9 路由规则转换 → .arrs
 
+Loon `[Rule]` 中的域名/IP 规则转入 `.arrs`，动作（DIRECT/REJECT/PROXY）在 App 内分配。
+
 ```
 源 (Loon [Rule]):
 URL-REGEX,"^http:\/\/upos-sz-static\.bilivideo\.com\/ssaxcode\/\w{2}\/\w{2}\/\w{32}-1-SPLASH",REJECT-DICT
@@ -737,7 +936,6 @@ URL-REGEX,"^http:\/\/upos-sz-static\.bilivideo\.com\/ssaxcode\/\w{2}\/\w{2}\/\w{
 0, 0, ^http://upos-sz-static\.bilivideo\.com/ssaxcode/\w{2}/\w{2}/\w{32}-1-SPLASH, 2, {}
 
 目标 (.arrs) — 纯域名 REJECT 规则：
-源 (无对应域名规则，BilibiliReject.arrs 为独立域名拒绝集)
 name = Bilibili Reject
 2, api.biliapi.com
 2, app.biliapi.com
@@ -757,6 +955,104 @@ name = Bilibili Reject
 **作用**：删除请求的 `accept-encoding` 头，再设为 `identity`，强制服务器返回未压缩响应。
 **原因**：虽然 Anywhere 的 script/body 规则会自动解压，但对某些需要精确控制 body 的场景，预先强制 identity 编码可避免边缘问题。
 **转换策略**：对每个有 body 处理脚本/JSON 编辑的 URL，可选择性添加此预处理对。
+
+### 10.11 Spotify 案例 — header-del + async 代理脚本
+
+**源 (app2smile bilibili.plugin)**：无直接对应（Spotify 去除在 bilibili 上游）
+**实际上游 (app2smile rules)**：`SpotifyUnlock.amrs` ← `spotify.plugin`
+
+| 上游特征 | 转换结果 |
+|---------|---------|
+| `header-del if-none-match` | `0, 2, ^..., if-none-match` |
+| `header-add-replace Content-Type` | `0, 1, ^..., Content-Type, application/json` |
+| header-add 时 value 含逗号 | `content-type = application/json; charset=utf-8` 头部字段 |
+| `http-response script binary-body-mode` | `1, 100, pattern, <base64>` |
+| `http-response script` 内含 `await $httpClient` | `async function process(ctx)` + `await Anywhere.http.request()` |
+| 脚本中用上游响应替代原始响应 | `Anywhere.respond({status, headers, body})` |
+
+**Spotify 脚本改写要点**：
+1. 过滤 Host/Content-Length/Connection 头部（不可转发）
+2. 修改 URL（如 `platform=iphone` → `platform=ipad`）
+3. `await Anywhere.http.request({..., redirect:"follow"})` 向上游发请求
+4. `Anywhere.respond(...)` 合成响应
+
+### 10.12 京东价格解锁 — stream-script (op 101)
+
+**源**：JDPriceUnlock.amrs ← (京东价格对比上游)
+**关键特征**：
+- 使用 `stream-script` (op 101) 而非普通 `script` (op 100)
+- `ctx.frame.end` 检测最后一帧
+- `ctx.state` 跨帧累积数据
+- `ctx.frame.index` 处理帧序号
+
+```
+1, 101, ^https://..., <base64>
+// ctx.state.buf 累积 body
+// ctx.frame.end 时处理累积 JSON
+// 正则搜索 "lowestPrice":"\d+" 并替换
+```
+
+### 10.13 夸克/广告拦截 — header-delete + content-type 组合
+
+**源**：KuanBlockAD.amrs ← (夸克广告拦截上游)
+**关键特征**：
+- 大量使用 `header-delete` (op 2) 配合 phase 0
+- `header-delete accept-encoding` 强制 identity 编码（与 Bilibili 相同）
+- `header-add` 设置特定 Content-Type
+- 多个 URL 合并为一条正则（URL 合并优化）
+
+```
+0, 2, ^https://[^/]+/query, accept-encoding
+0, 1, ^https://[^/]+/query, content-type, application/json
+1, 4, ^https://[^/]+/query, "ad":\[.*?\], "ad":[]
+```
+
+### 10.14 拼多多 — response-body-replace-regex
+
+**源**：PinduoduoBlockAD.amrs ← Pinduoduo.lpx (fmz200)
+**关键特征**：
+- `response-body-replace-regex` 替换 JSON 中的 ad 数组为 `[]`
+- 多条 URL 用一个正则覆盖
+- `.amrs` 中 `1, 4` (body-replace) 等价于 Loon 的 `response-body-replace-regex`
+
+```
+源 (Pinduoduo.lpx):
+^https?://mobile.yangkeduo.com/proxy/api/api/express/... response-body-replace-regex "list":\[.+\] "list":[]
+
+目标 (.amrs):
+1, 4, ^https://[^/]+/proxy/api/api/express/post/waybill/red_packet/goods_list, ""list"":\[.+\], ""list":[]
+```
+
+**转换注意**：
+- 逗号分隔：`"list":[.+]` → `"list":[.+]`（引号内逗号无需引号）
+- 两段均为 `key:value` 格式，无含逗号字段，无需额外引号
+- 实际文件中多对 URL 被合并
+
+### 10.15 知乎/Pixiv — reject-img 精确替换
+
+**源**：PixivBlockAD.amrs ← pixiv.plugin (chaoscard/proxyrules)
+**关键特征**：
+- `reject-img` → `0, 0, pattern, 3`
+- 多个 ad 域名合并为一条 reject-img
+- hostname 合并了多个上游（pixiv 域名 + 知乎域名）
+
+### 10.16 BankBlockAD — replace-recursive 深层替换
+
+**源**：BankBlockAD.amrs ← Bank.plugin (luestr/ProxyResource)
+**关键特征**：
+- `body-json replace-recursive` 深度替换所有 ad 字段
+- `1, 5, pattern, replace-recursive, ad, null`（替换为 null 即删除效果）
+- 配合 `header-delete accept-encoding` 确保 body 可读
+
+### 10.17 GoodbilityUnlock — content-type 头部字段
+
+**源**：GoodbilityUnlock.amrs ← Goodbility.vip.js (ddgksf2013)
+**关键特征**：
+- `.amrs` 中定义了 `content-type = application/json; charset=utf-8` 头部字段
+- 这是 Anywhere 规则集的全局 Content-Type 设置，用于 reject/mock 响应的默认 MIME 类型
+- 配合 `header-add` 设置空值（删除效果）和 `header-replace` 改写
+
+**content-type 头部字段说明**：Anywhere 规则集可在 `hostname` 行后定义 `content-type` 字段，设置 reject/mock 等响应的默认 Content-Type。当 rewrite reject/mock 返回 JSON 内容时，Anywhere 会自动设置合适的 Content-Type，但显式设置可覆盖默认行为。
 
 ---
 
@@ -880,6 +1176,16 @@ func ConvertRewriteRule(r RewriteRule) string {
         path := DotPathToJSONPath(r.Args["path"])
         value := r.Args["value"]
         return fmt.Sprintf("1, 5, %s, replace, %s, %s", pattern, path, QuoteField(value))
+    case "header-del":
+        // Loon header-del: 删除请求头
+        // Surge _header-del: 同上
+        headerName := r.Args["header"]
+        return fmt.Sprintf("0, 2, %s, %s", pattern, headerName)
+    case "response-body-replace-regex":
+        // Loon response-body-replace-regex: 用正则搜索响应 body 并替换
+        search := r.Args["search"]
+        replacement := r.Args["replacement"]
+        return fmt.Sprintf("1, 4, %s, %s, %s", pattern, QuoteField(search), QuoteField(replacement))
     default:
         return "" // JS 类需特殊处理
     }
@@ -928,29 +1234,166 @@ func QuoteField(field string) string {
     return field
 }
 
+// FetchURLWithProxy 下载远程文件，对 GitHub 原始域名使用加速代理
+// 代理优先级：ghfast.top → ph.ipv9.win → 原始 URL
+func FetchURLWithProxy(rawURL string) ([]byte, error) {
+    // GitHub 加速代理列表
+    githubProxies := []string{
+        "https://ghfast.top/",
+        "https://ph.ipv9.win/",
+    }
+
+    // 检测是否为 GitHub 原始内容域名
+    githubHosts := []string{
+        "raw.githubusercontent.com",
+        "github.com",
+        "gist.githubusercontent.com",
+        "codeload.github.com",
+    }
+
+    isGitHub := false
+    for _, host := range githubHosts {
+        if strings.Contains(rawURL, host) {
+            isGitHub = true
+            break
+        }
+    }
+
+    // 非 GitHub URL 直接请求
+    if !isGitHub {
+        return fetchRawURL(rawURL)
+    }
+
+    // GitHub URL：依次尝试代理
+    for _, proxy := range githubProxies {
+        // 构造代理 URL：proxy + 原始 URL（去除 https:// 前缀）
+        // 示例：https://raw.githubusercontent.com/... → https://ghfast.top/raw.githubusercontent.com/...
+        proxyURL := proxy + strings.TrimPrefix(rawURL, "https://")
+        data, err := fetchRawURL(proxyURL)
+        if err == nil && len(data) > 0 {
+            return data, nil
+        }
+        // 代理失败，继续尝试下一个
+    }
+
+    // 所有代理失败，回退到原始 URL
+    return fetchRawURL(rawURL)
+}
+
+// fetchRawURL 执行实际的 HTTP GET 请求
+func fetchRawURL(url string) ([]byte, error) {
+    client := &http.Client{
+        Timeout: 30 * time.Second,
+    }
+
+    resp, err := client.Get(url)
+    if err != nil {
+        return nil, fmt.Errorf("fetch %s failed: %w", url, err)
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode != http.StatusOK {
+        return nil, fmt.Errorf("fetch %s returned status %d", url, resp.StatusCode)
+    }
+
+    data, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return nil, fmt.Errorf("read %s body failed: %w", url, err)
+    }
+
+    return data, nil
+}
+
 // FetchAndEncodeScript 下载脚本，改写 API，base64 编码
+// 使用 FetchURLWithProxy 自动处理 GitHub 加速
 func FetchAndEncodeScript(scriptPath string) (string, error) {
-    // 1. 下载 JS
-    source, err := fetchURL(scriptPath)
+    data, err := FetchURLWithProxy(scriptPath)
     if err != nil {
         return "", err
     }
-    // 2. 改写 API（$request → ctx, $done → Anywhere.done 等）
+    source := string(data)
     rewritten := RewriteScriptAPI(source)
-    // 3. base64 编码
     return base64.StdEncoding.EncodeToString([]byte(rewritten)), nil
 }
 
 // RewriteScriptAPI 将 Loon/Surge 脚本 API 改写为 Anywhere API
+// 支持：$request/$response → ctx；$done → Anywhere.done()
+//       $httpClient → Anywhere.http（自动包装为 async）；自动包装为 async function process(ctx)
+// 注意：复杂脚本可能需要人工审核
 func RewriteScriptAPI(source string) string {
-    // 这是最复杂的部分，可能需要：
-    // - 正则替换 $request.url → ctx.url
-    // - 正则替换 $response.body → ctx.body (需 codec 转换)
-    // - 正则替换 $done({body:x}) → ctx.body=x; Anywhere.done()
-    // - 包装为 function process(ctx) {...}
-    // - 添加 codec encode/decode
-    // 注意：复杂脚本可能需要人工审核
-    return rewritten
+    // 1. 包装为 async function process(ctx)
+    // 检测是否含 $httpClient（需要 async）
+    needsAsync := strings.Contains(source, "$httpClient")
+    funcDecl := "function process(ctx)"
+    if needsAsync {
+        funcDecl = "async " + funcDecl
+    }
+    source = funcDecl + " {\n" + source + "\n}"
+
+    // 2. $request / $response 替换
+    source = strings.ReplaceAll(source, "$request.url", "ctx.url")
+    source = strings.ReplaceAll(source, "$request.method", "ctx.method")
+    source = strings.ReplaceAll(source, "$request.headers", "ctx.headers")
+    source = strings.ReplaceAll(source, "$request.body", "ctx.body")
+    source = strings.ReplaceAll(source, "$response.status", "ctx.status")
+    source = strings.ReplaceAll(source, "$response.headers", "ctx.headers")
+    source = strings.ReplaceAll(source, "$response.body", "ctx.body")
+
+    // 3. $done 替换
+    source = rewriteDone(source)
+
+    // 4. $httpClient 替换为 Anywhere.http.request
+    source = rewriteHttpClient(source, needsAsync)
+
+    // 5. JSON parse/encode 包装
+    source = wrapJSONOps(source)
+
+    // 6. $persistentStore 替换
+    source = strings.ReplaceAll(source, "$persistentStore.read", "Anywhere.store.getString")
+    source = strings.ReplaceAll(source, "$persistentStore.write", "Anywhere.store.set")
+
+    // 7. $notification 降级为日志
+    source = rewriteNotification(source)
+
+    return source
+}
+
+// rewriteDone 处理 $done 调用转换
+func rewriteDone(s string) string {
+    // {body: x} → ctx.body = x; Anywhere.done()
+    re := regexp.MustCompile(`\$done\(\{body:\s*([^}]+)\}\)`)
+    s = re.ReplaceAllString(s, "ctx.body = $1; Anywhere.done()")
+    // {response: {status, headers, body}} → Anywhere.respond({...})
+    re2 := regexp.MustCompile(`\$done\(\{response:\s*\{([^}]+)\}\}\)`)
+    s = re2.ReplaceAllString(s, "Anywhere.respond({$1})")
+    // 裸 $done() / $done({})
+    s = strings.ReplaceAll(s, "$done({})", "Anywhere.done()")
+    s = strings.ReplaceAll(s, "$done()", "Anywhere.done()")
+    return s
+}
+
+// rewriteHttpClient 将 $httpClient 回调式调用转为 async/await
+func rewriteHttpClient(s string, async bool) string {
+    re := regexp.MustCompile(`\$httpClient\.get\(\s*([^,]+),\s*([\w$]+)\s*\)`)
+    s = re.ReplaceAllString(s, `await Anywhere.http.get($1)`)
+    re2 := regexp.MustCompile(`\$httpClient\.post\(\s*([^,]+),\s*([^,]+),\s*([\w$]+)\s*\)`)
+    s = re2.ReplaceAllString(s, `await Anywhere.http.post($1, $2)`)
+    return s
+}
+
+// wrapJSONOps 为 JSON.parse/JSON.stringify 添加 codec 转换
+func wrapJSONOps(s string) string {
+    re := regexp.MustCompile(`JSON\.parse\(\s*([^)]+)\)`)
+    s = re.ReplaceAllString(s, `JSON.parse(Anywhere.codec.utf8.decode($1))`)
+    re2 := regexp.MustCompile(`JSON\.stringify\(\s*([^)]+)\)`)
+    s = re2.ReplaceAllString(s, `Anywhere.codec.utf8.encode(JSON.stringify($1))`)
+    return s
+}
+
+// rewriteNotification 将 $notification 降级为 Anywhere.log
+func rewriteNotification(s string) string {
+    re := regexp.MustCompile(`\$notification\.post\([^)]+\)`)
+    return re.ReplaceAllString(s, "// notification removed")
 }
 ```
 
@@ -996,7 +1439,7 @@ func GenerateAmrs(name string, hostnames []string, rules []string) string {
 ### 11.7 CLI 参数建议
 
 ```
-loon2anywhere -i <input.plugin|input.sgmodule> -o <output-dir> [--fetch-scripts] [--generalize-host] [--no-encoding-preprocess]
+loon2anywhere -i <input.plugin|input.sgmodule> -o <output-dir> [--fetch-scripts] [--generalize-host] [--no-encoding-preprocess] [--proxy ghfast.top]
 ```
 
 | 参数 | 说明 |
@@ -1007,6 +1450,37 @@ loon2anywhere -i <input.plugin|input.sgmodule> -o <output-dir> [--fetch-scripts]
 | `--generalize-host` | URL pattern 主机泛化为 `[^/]+`（默认开启） |
 | `--no-encoding-preprocess` | 不自动添加 accept-encoding 预处理对 |
 | `--format` | 输出格式：`both`(默认) / `arrs` / `amrs` |
+| `--proxy` | GitHub 加速代理：`ghfast.top`(默认) / `ph.ipv9.win` / `none`（直连） |
+| `--proxy-retry` | 代理失败时尝试备用代理（默认开启，依次尝试 ghfast.top → ph.ipv9.win → 直连） |
+
+**代理使用说明**：
+
+程序在下载远程文件（`.plugin`/`.sgmodule` 模块文件、JS 脚本文件）时，会自动检测 URL 是否为 GitHub 原始域名：
+
+- `raw.githubusercontent.com`
+- `github.com`
+- `gist.githubusercontent.com`
+- `codeload.github.com`
+
+对于 GitHub URL，默认通过加速代理下载，提高国内访问成功率：
+
+```
+原始 URL：
+https://raw.githubusercontent.com/kokoryh/Script/master/js/bilibili.protobuf.js
+
+代理 URL（优先）：
+https://ghfast.top/raw.githubusercontent.com/kokoryh/Script/master/js/bilibili.protobuf.js
+
+备用代理：
+https://ph.ipv9.win/raw.githubusercontent.com/kokoryh/Script/master/js/bilibili.protobuf.js
+```
+
+**代理优先级**（默认）：
+1. `ghfast.top`（首选）
+2. `ph.ipv9.win`（备用）
+3. 原始 URL（直连回退）
+
+使用 `--proxy none` 可禁用代理，直接请求原始 URL。
 
 ---
 
