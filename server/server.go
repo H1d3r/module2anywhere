@@ -1,0 +1,331 @@
+// Package server 提供 Web 服务模式，允许通过 HTTP GET 请求转换远程模块文件。
+//
+// 提供三个接口：
+//   - GET /mitm    返回 MITM 规则（.amrs 格式）
+//   - GET /rule    返回路由规则（.arrs 格式）
+//   - GET /convert 统一转换接口（兼容旧版）
+//
+// 所有接口的 url 参数需 URL 编码。响应为 text/plain，可直接被 Anywhere 订阅导入。
+package server
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/url"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/H1d3r/module2anywhere/converter"
+	"github.com/H1d3r/module2anywhere/fetcher"
+	"github.com/H1d3r/module2anywhere/ir"
+	"github.com/H1d3r/module2anywhere/parser"
+)
+
+// Config Web 服务配置。
+type Config struct {
+	Listen             string
+	GeneralizeHost     bool
+	FetchScripts       bool
+	EncodingPreprocess bool
+	IncludeMetadata    bool
+	UseStreamScript    bool
+	AutoContentType    bool
+	ProxyMode          string
+	ProxyRetry         bool
+	Concurrency        int
+	ScriptTimeoutSec   int
+}
+
+// Run 启动 Web 服务。
+func Run(cfg Config) error {
+	srv := &Server{cfg: cfg}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mitm", srv.handleMitm)
+	mux.HandleFunc("/rule", srv.handleRule)
+	mux.HandleFunc("/convert", srv.handleConvert)
+	mux.HandleFunc("/health", srv.handleHealth)
+
+	httpSrv := &http.Server{
+		Addr:              cfg.Listen,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      120 * time.Second,
+	}
+	return httpSrv.ListenAndServe()
+}
+
+// Server Web 服务实现。
+type Server struct {
+	cfg Config
+}
+
+// handleHealth 健康检查。
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintln(w, "ok")
+}
+
+// handleMitm 返回 MITM 规则（.amrs 格式）。
+// 参数：url（必填）、name、fetch、generalize
+func (s *Server) handleMitm(w http.ResponseWriter, r *http.Request) {
+	result, err := s.convert(r, "amrs")
+	if err != nil {
+		http.Error(w, "Error: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.writeResult(w, result.Amrs, result.AmrsName)
+}
+
+// handleRule 返回路由规则（.arrs 格式）。
+// 参数：url（必填）、name
+func (s *Server) handleRule(w http.ResponseWriter, r *http.Request) {
+	result, err := s.convert(r, "arrs")
+	if err != nil {
+		http.Error(w, "Error: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.writeResult(w, result.Arrs, result.ArrsName)
+}
+
+// handleConvert 统一转换接口（兼容旧版）。
+// 参数：url（必填）、to（mitm/rule，默认 mitm）、name、fetch、generalize
+func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
+	to := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("to")))
+	if to == "" {
+		to = "mitm"
+	}
+	var format string
+	switch to {
+	case "mitm", "amrs":
+		format = "amrs"
+	case "rule", "arrs":
+		format = "arrs"
+	default:
+		http.Error(w, "Error: Invalid 'to' parameter. Use: mitm/rule", http.StatusBadRequest)
+		return
+	}
+	result, err := s.convert(r, format)
+	if err != nil {
+		http.Error(w, "Error: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if format == "amrs" {
+		s.writeResult(w, result.Amrs, result.AmrsName)
+	} else {
+		s.writeResult(w, result.Arrs, result.ArrsName)
+	}
+}
+
+// convert 执行转换，返回 Result。
+// 支持 Quantumult X 一键订阅协议：若 url 是 quantumult.app add-resource 链接，
+// 会先展开为多个远端订阅 URL 逐个转换后合并。
+func (s *Server) convert(r *http.Request, format string) (*converter.Result, error) {
+	rawURL := r.URL.Query().Get("url")
+	if rawURL == "" {
+		return nil, fmt.Errorf("url parameter is required")
+	}
+
+	decodedURL, err := url.QueryUnescape(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL encoding: %w", err)
+	}
+
+	name := r.URL.Query().Get("name")
+	// Web 服务默认开启脚本下载（避免每次都拿占位符）
+	// 通过 fetch=false 显式关闭
+	fetchScripts := r.URL.Query().Get("fetch") != "false"
+	generalize := r.URL.Query().Get("generalize") != "false"
+
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+
+	f := fetcher.New()
+	configureProxy(f, s.cfg.ProxyMode, s.cfg.ProxyRetry)
+
+	// 展开输入：quantumult.app add-resource 协议会拆为多个 URL
+	inputs, isAddResource, err := expandInputs(decodedURL)
+	if err != nil {
+		return nil, err
+	}
+
+	type modRes = serverModRes
+	results := make([]modRes, 0, len(inputs))
+	for _, in := range inputs {
+		content, err := f.Fetch(ctx, in)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch remote file: %w", err)
+		}
+
+		source := parser.DetectSource(content, filepath.Base(in))
+		f.Source = source
+		m, err := parser.Parse(content, source)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse module: %w", err)
+		}
+
+		if name != "" {
+			m.Name = name
+		} else if m.Name == "" {
+			m.Name = deriveNameFromURL(in)
+		}
+
+		opts := converter.Options{
+			GeneralizeHost:     generalize && s.cfg.GeneralizeHost,
+			EncodingPreprocess: s.cfg.EncodingPreprocess,
+			FetchScripts:       fetchScripts && s.cfg.FetchScripts,
+			IncludeMetadata:    s.cfg.IncludeMetadata,
+			UseStreamScript:    s.cfg.UseStreamScript,
+			AutoContentType:    s.cfg.AutoContentType,
+			Concurrency:        s.cfg.Concurrency,
+			ScriptTimeoutSec:   s.cfg.ScriptTimeoutSec,
+		}
+		conv := converter.New(f, opts)
+		conv.BaseURL = in
+		// 记录来源 URL 与本服务 URL（用于在 .amrs/.arrs 头部添加注释）
+		// 量子态 add-resource 链接时记录展开前的链接，其他远程 URL 记录原始 URL。
+		if isAddResource {
+			conv.SourceURL = decodedURL
+		} else {
+			conv.SourceURL = in
+		}
+		conv.ServiceURL = buildServiceURL(r)
+
+		res, err := conv.Convert(ctx, m)
+		if err != nil {
+			return nil, fmt.Errorf("convert failed: %w", err)
+		}
+		results = append(results, modRes{mod: m, res: res})
+	}
+
+	merged := mergeServerResults(results)
+	// 若请求 arrs 但无内容，返回错误
+	if format == "arrs" && merged.Arrs == "" {
+		return nil, fmt.Errorf("no routing rules in module")
+	}
+	if format == "amrs" && merged.Amrs == "" {
+		return nil, fmt.Errorf("no MITM rules in module")
+	}
+	return merged, nil
+}
+
+// writeResult 写入响应。
+func (s *Server) writeResult(w http.ResponseWriter, content, filename string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%s", filename))
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(content))
+}
+
+// deriveNameFromURL 从 URL 推导规则集名称。
+func deriveNameFromURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "Unnamed"
+	}
+	path := parsed.Path
+	parts := strings.Split(path, "/")
+	filename := parts[len(parts)-1]
+	for _, ext := range []string{".plugin", ".sgmodule", ".lpx", ".conf", ".list"} {
+		filename = strings.TrimSuffix(filename, ext)
+	}
+	if filename == "" {
+		filename = "Unnamed"
+	}
+	return filename
+}
+
+// configureProxy 根据字符串参数配置 fetcher 代理模式。
+func configureProxy(f *fetcher.Fetcher, mode string, retry bool) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "none":
+		f.Proxy.Mode = fetcher.ProxyModeNone
+	case "only":
+		f.Proxy.Mode = fetcher.ProxyModeOnly
+	default:
+		f.Proxy.Mode = fetcher.ProxyModeAuto
+	}
+	f.Proxy.RetryAll = retry
+}
+
+// expandInputs 展开 Quantumult X 一键订阅协议为多个远端 URL。
+// 普通 URL 原样返回 [url]；quantumult.app add-resource 链接展开为内嵌的订阅列表。
+// 同时返回 isAddResource 标志，标识是否走了一键订阅协议。
+func expandInputs(input string) ([]string, bool, error) {
+	if !fetcher.IsQuantumultXAddResourceURL(input) {
+		return []string{input}, false, nil
+	}
+	urls, err := fetcher.ExtractQuantumultXResourceURLs(input)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(urls) == 0 {
+		return nil, false, fmt.Errorf("add-resource 链接未包含任何可下载的订阅 URL")
+	}
+	return urls, true, nil
+}
+
+// serverModRes 单 URL 转换结果。
+type serverModRes struct {
+	mod *ir.Module
+	res *converter.Result
+}
+
+// mergeServerResults 合并多个 module 的转换结果。
+func mergeServerResults(results []serverModRes) *converter.Result {
+	if len(results) == 0 {
+		return &converter.Result{Report: converter.Report{}}
+	}
+	if len(results) == 1 {
+		return results[0].res
+	}
+	base := results[0].res
+	report := base.Report
+	for _, r := range results[1:] {
+		base.Amrs = appendNonEmpty(base.Amrs, r.res.Amrs)
+		base.Arrs = appendNonEmpty(base.Arrs, r.res.Arrs)
+		report.Skipped = append(report.Skipped, r.res.Report.Skipped...)
+		report.Degraded = append(report.Degraded, r.res.Report.Degraded...)
+		report.ScriptErr = append(report.ScriptErr, r.res.Report.ScriptErr...)
+	}
+	base.Report = report
+	return base
+}
+
+// appendNonEmpty 用换行把 b 拼到 a 后面，去掉重复的尾部换行。
+func appendNonEmpty(a, b string) string {
+	if a == "" {
+		return b
+	}
+	if b == "" {
+		return a
+	}
+	return strings.TrimRight(a, "\n") + "\n" + b
+}
+
+// buildServiceURL 推导本服务的可访问地址（用于在 .amrs/.arrs 头部添加「本链接」注释）。
+// 优先级：
+//  1. X-Forwarded-Proto + X-Forwarded-Host（反向代理场景）
+//  2. r.TLS != nil（直接 HTTPS）→ https://<Host><RequestURI>
+//  3. r.TLS == nil（直接 HTTP）  → http://<Host><RequestURI>
+//
+// 注意：RequestURI 可能含 query，但实际写入注释时只取 Host + URL.Path。
+func buildServiceURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	host := r.Host
+	if xfHost := r.Header.Get("X-Forwarded-Host"); xfHost != "" {
+		host = xfHost
+	}
+	if xfProto := r.Header.Get("X-Forwarded-Proto"); xfProto != "" {
+		scheme = xfProto
+	}
+	return scheme + "://" + host + r.URL.Path
+}
+
+// ensureIRImported 防止 ir 包被裁剪（占位）。
+var _ = ir.SourceLoon

@@ -16,14 +16,15 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/Loon2Anywhere/loon2anywhere/fetcher"
-	"github.com/Loon2Anywhere/loon2anywhere/ir"
+	"github.com/H1d3r/module2anywhere/fetcher"
+	"github.com/H1d3r/module2anywhere/ir"
 )
 
 // FetchAndEncodeScript 下载脚本，改写 API，base64 编码。
 // scriptPath 可以是 URL 或本地路径。baseURL 用于解析相对路径。
 // 若 fetchScripts=false，返回占位符 base64。
-func FetchAndEncodeScript(ctx context.Context, f *fetcher.Fetcher, scriptPath, baseURL string, fetchScripts bool, phase int) (string, error) {
+// 若 useStreamScript=true，将改写后的脚本再包装为 stream-script (op 101) 形式。
+func FetchAndEncodeScript(ctx context.Context, f *fetcher.Fetcher, scriptPath, baseURL string, fetchScripts bool, phase int, useStreamScript bool) (string, error) {
 	if !fetchScripts {
 		// 占位符：返回一个空 process 函数
 		placeholder := `function process(ctx){Anywhere.log.warning("script not fetched: ` + scriptPath + `");}`
@@ -42,6 +43,9 @@ func FetchAndEncodeScript(ctx context.Context, f *fetcher.Fetcher, scriptPath, b
 		return "", fmt.Errorf("下载脚本失败 %q: %w", resolved, err)
 	}
 	rewritten := RewriteScriptAPI(src, phase)
+	if useStreamScript {
+		rewritten = WrapAsStreamScript(rewritten, phase)
+	}
 	return base64.StdEncoding.EncodeToString([]byte(rewritten)), nil
 }
 
@@ -68,10 +72,14 @@ func EncodeInlineScript(rawJS string, phase int) string {
 //   - $persistentStore.read(k)   → Anywhere.store.getString(k, true)
 //   - $persistentStore.write(v,k) → Anywhere.store.set(k, v, true)
 //   - $notification.post(...)    → Anywhere.log.info(...)
-//   - $httpClient.get/post(...)  → await Anywhere.http.get/post(...)
+//   - $httpClient.get/post(...)  → await Anywhere.http.get/post(...)（自动 async 包装）
 //
+// 当检测到 $httpClient 调用时，自动将 process 函数声明为 async。
 // 注意：复杂脚本可能需要人工审核。本函数做尽力改写。
 func RewriteScriptAPI(src string, phase int) string {
+	// 0. 检测是否需要 async（含 $httpClient 或 await 关键字）
+	needsAsync := strings.Contains(src, "$httpClient") || strings.Contains(src, "$done({response:")
+
 	// 1. 简单符号替换
 	out := src
 
@@ -101,22 +109,42 @@ func RewriteScriptAPI(src string, phase int) string {
 	out = regexp.MustCompile(`\$notification\.post\(\s*([^,]+?)\s*,\s*([^,]*?)\s*,\s*([^)]+?)\s*\)`).
 		ReplaceAllString(out, "Anywhere.log.info($1 + \" \" + $2 + \" \" + $3)")
 
-	// 5. $httpClient.get(url, cb) → await Anywhere.http.get(url)
-	//    Surge 回调式：(error, response, data) => {...}
-	//    Anywhere Promise 式：const r = await Anywhere.http.get(url); const data = Anywhere.codec.utf8.decode(r.body);
+	// 5. $httpClient 回调式 → async/await Promise 式
+	//    Surge/Loon: $httpClient.get(url, (error, response, data) => {...})
+	//    Anywhere:   const res = await Anywhere.http.get(url); const data = Anywhere.codec.utf8.decode(res.body);
 	//    复杂回调无法自动转换，仅做简单替换并提示
-	out = regexp.MustCompile(`\$httpClient\.get\(`).
-		ReplaceAllString(out, "Anywhere.http.get(")
-	out = regexp.MustCompile(`\$httpClient\.post\(`).
-		ReplaceAllString(out, "Anywhere.http.post(")
+	out = rewriteHttpClientCalls(out)
 
-	// 6. JSON.parse($response.body) → JSON.parse(Anywhere.codec.utf8.decode(ctx.body))
+	// 6. JSON.parse($response.body) / JSON.parse(ctx.body) → 需 codec decode
 	out = strings.ReplaceAll(out, "JSON.parse(ctx.body)", "JSON.parse(Anywhere.codec.utf8.decode(ctx.body))")
 	out = strings.ReplaceAll(out, "JSON.parse($response.body)", "JSON.parse(Anywhere.codec.utf8.decode(ctx.body))")
 
-	// 7. 包装为 function process(ctx) {...}
-	out = wrapAsProcess(out, phase)
+	// 7. 包装为 function process(ctx) {...}（按需 async）
+	out = wrapAsProcess(out, phase, needsAsync)
 
+	return out
+}
+
+// rewriteHttpClientCalls 改写 $httpClient.get/post 回调式调用为 await Anywhere.http.*。
+// 由于 Loon/Surge 使用回调式而 Anywhere 使用 Promise 式，完整转换需解析回调体。
+// 此处做尽力改写：将 $httpClient.get(url, cb) 替换为 await Anywhere.http.get(url)，
+// 并保留原回调体作为后续处理（用户需手动调整）。
+func rewriteHttpClientCalls(src string) string {
+	out := src
+	// $httpClient.get(url, cb) → await Anywhere.http.get(url)
+	out = regexp.MustCompile(`\$httpClient\.get\(\s*([^,]+?)\s*,`).
+		ReplaceAllString(out, "await Anywhere.http.get($1")
+	// $httpClient.post(url, opts, cb) → await Anywhere.http.post(url, opts)
+	out = regexp.MustCompile(`\$httpClient\.post\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,`).
+		ReplaceAllString(out, "await Anywhere.http.post($1, $2")
+	// $httpClient.put/delete 类似
+	out = regexp.MustCompile(`\$httpClient\.put\(\s*([^,]+?)\s*,`).
+		ReplaceAllString(out, "await Anywhere.http.put($1")
+	out = regexp.MustCompile(`\$httpClient\.delete\(\s*([^,]+?)\s*,`).
+		ReplaceAllString(out, "await Anywhere.http.delete($1")
+	// 通用 $httpClient.request(opts, cb) → await Anywhere.http.request(opts)
+	out = regexp.MustCompile(`\$httpClient\.request\(\s*([^,]+?)\s*,`).
+		ReplaceAllString(out, "await Anywhere.http.request($1")
 	return out
 }
 
@@ -144,11 +172,22 @@ func rewriteDoneCalls(src string) string {
 
 // wrapAsProcess 将脚本包装为 function process(ctx) {...}。
 // 若源码已定义 process(ctx) 则不重复包装。
-func wrapAsProcess(src string, phase int) string {
+// needsAsync 为 true 时使用 async function 声明（用于含 await 的脚本）。
+func wrapAsProcess(src string, phase int, needsAsync bool) string {
 	trimmed := strings.TrimSpace(src)
-	// 已有 process 函数定义
-	if regexp.MustCompile(`(?m)^function\s+process\s*\(\s*ctx\s*\)`).MatchString(trimmed) ||
-		regexp.MustCompile(`(?m)^async\s+function\s+process\s*\(\s*ctx\s*\)`).MatchString(trimmed) {
+	asyncKw := ""
+	if needsAsync {
+		asyncKw = "async "
+	}
+	// 已有 process 函数定义（同步或异步）
+	if regexp.MustCompile(`(?m)^function\s+process\s*\(\s*ctx\s*\)`).MatchString(trimmed) {
+		// 若需要 async 但原函数非 async，则升级为 async
+		if needsAsync && !strings.HasPrefix(trimmed, "async ") {
+			trimmed = "async " + trimmed
+		}
+		return trimmed
+	}
+	if regexp.MustCompile(`(?m)^async\s+function\s+process\s*\(\s*ctx\s*\)`).MatchString(trimmed) {
 		return trimmed
 	}
 
@@ -158,7 +197,7 @@ func wrapAsProcess(src string, phase int) string {
 		if phase == 1 {
 			phaseCheck = "response"
 		}
-		return fmt.Sprintf(`function process(ctx) {
+		return fmt.Sprintf(`%sfunction process(ctx) {
   if (ctx.phase !== "%s") return;
   try {
     run();
@@ -168,7 +207,7 @@ func wrapAsProcess(src string, phase int) string {
 }
 
 %s
-`, phaseCheck, trimmed)
+`, asyncKw, phaseCheck, trimmed)
 	}
 
 	// 否则整体包装
@@ -176,7 +215,7 @@ func wrapAsProcess(src string, phase int) string {
 	if phase == 1 {
 		phaseCheck = "response"
 	}
-	return fmt.Sprintf(`function process(ctx) {
+	return fmt.Sprintf(`%sfunction process(ctx) {
   if (ctx.phase !== "%s") return;
   try {
 %s
@@ -185,7 +224,7 @@ func wrapAsProcess(src string, phase int) string {
   }
   Anywhere.done();
 }
-`, phaseCheck, indent(trimmed, "    "))
+`, asyncKw, phaseCheck, indent(trimmed, "    "))
 }
 
 // indent 给每行加缩进。
@@ -294,3 +333,74 @@ func InlineJSPhase(action string) int {
 
 // ensureIRImported 防止 ir 包被裁剪（占位）。
 var _ = ir.SourceLoon
+
+// WrapAsStreamScript 将已改写的脚本包装为 stream-script (op 101) 形式。
+// stream-script 用于处理流式响应（分块传输），通过 ctx.frame 控制帧边界，ctx.state 累积数据。
+//
+// 包装策略：
+//   - 保留原脚本逻辑，但在末尾添加帧检测：非最后一帧时累积 body 到 ctx.state，不调用 done
+//   - 最后一帧时执行原逻辑
+//
+// 注意：此函数为尽力包装，复杂流式逻辑可能需人工调整。
+func WrapAsStreamScript(rewrittenSrc string, phase int) string {
+	phaseCheck := "request"
+	if phase == 1 {
+		phaseCheck = "response"
+	}
+	// 移除已包装的 process 函数，提取内部逻辑
+	inner := extractProcessBody(rewrittenSrc)
+	if inner == "" {
+		inner = rewrittenSrc
+	}
+
+	tmpl := fmt.Sprintf(`async function process(ctx) {
+  if (ctx.phase !== "%s" || !ctx.body) return;
+  // 初始化跨帧状态
+  if (!ctx.state.buf) ctx.state.buf = [];
+  if (!ctx.state.text) ctx.state.text = "";
+
+  // 累积当前帧 body
+  ctx.state.buf.push(ctx.body);
+  try {
+    ctx.state.text += Anywhere.codec.utf8.decode(ctx.body);
+  } catch (e) {
+    Anywhere.log.warning("decode frame failed: " + e);
+  }
+
+  // 非最后一帧：保存状态后等待后续帧
+  if (!ctx.frame || !ctx.frame.end) {
+    return;
+  }
+
+  // 最后一帧：用累积的完整 body 执行原逻辑
+  try {
+    ctx.body = Anywhere.codec.utf8.encode(ctx.state.text);
+%s
+  } catch (e) {
+    Anywhere.log.warning("stream process failed: " + e);
+  }
+  Anywhere.done();
+}
+`, phaseCheck, indent(inner, "    "))
+	return tmpl
+}
+
+// extractProcessBody 从已包装的 process(ctx) 函数中提取内部逻辑。
+// 若不是 process 函数则返回空字符串。
+func extractProcessBody(src string) string {
+	// 匹配 async function process(ctx) {...} 或 function process(ctx) {...}
+	// 简化：找到第一个 { 与最后一个 }
+	trimmed := strings.TrimSpace(src)
+	if !strings.Contains(trimmed, "function process(ctx)") {
+		return ""
+	}
+	firstBrace := strings.Index(trimmed, "{")
+	lastBrace := strings.LastIndex(trimmed, "}")
+	if firstBrace < 0 || lastBrace < 0 || lastBrace <= firstBrace {
+		return ""
+	}
+	body := trimmed[firstBrace+1 : lastBrace]
+	// 移除 phase 检查与 try/catch 包装，保留核心逻辑
+	// 简化处理：直接返回 body，由 stream 包装重新组织
+	return strings.TrimSpace(body)
+}

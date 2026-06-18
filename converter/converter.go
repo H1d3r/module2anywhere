@@ -3,11 +3,14 @@ package converter
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
-	"github.com/Loon2Anywhere/loon2anywhere/fetcher"
-	"github.com/Loon2Anywhere/loon2anywhere/ir"
+	"github.com/H1d3r/module2anywhere/fetcher"
+	"github.com/H1d3r/module2anywhere/ir"
 )
 
 // Result 转换结果。
@@ -82,9 +85,20 @@ func (r *Report) String() string {
 
 // Converter 转换器。
 type Converter struct {
-	Fetcher *fetcher.Fetcher
-	Opts    Options
-	BaseURL string // 远程模块的 base URL，用于解析相对 script-path
+	Fetcher   *fetcher.Fetcher
+	Opts      Options
+	BaseURL   string   // 远程模块的 base URL，用于解析相对 script-path
+	Hostnames []string // MITM hostname 列表（用于安全主机泛化判断）
+
+	// SourceURL 注释中显示的「模块来源 URL」。
+	//   - 本地文件：留空
+	//   - 远程模块：原始 URL（量子态 add-resource 链接展开前）
+	//   - Web 服务中转：原始请求 URL
+	SourceURL string
+
+	// ServiceURL Web 服务的本机地址（用于在 .amrs/.arrs 头部添加「本链接」注释）。
+	// 仅在 Web 服务模式下设置。
+	ServiceURL string
 }
 
 // New 创建转换器。
@@ -97,10 +111,13 @@ func (c *Converter) Convert(ctx context.Context, m *ir.Module) (*Result, error) 
 	res := &Result{Report: Report{}}
 	baseName := m.Name
 	if baseName == "" {
-		baseName = "Loon2Anywhere"
+		baseName = "module2anywhere"
 	}
 	res.ArrsName = baseName + ".arrs"
 	res.AmrsName = baseName + ".amrs"
+
+	// 注入 hostname 列表供后续 pattern 主机泛化判断使用
+	c.Hostnames = m.Hostnames
 
 	// 0. 清理 hostname：去除含通配符 ? / * 的项（Anywhere 不支持）
 	cleanedHosts := make([]string, 0, len(m.Hostnames))
@@ -127,6 +144,13 @@ func (c *Converter) Convert(ctx context.Context, m *ir.Module) (*Result, error) 
 	// 3. accept-encoding 预处理对（可选）
 	if c.Opts.EncodingPreprocess {
 		amrsLines = c.addEncodingPreprocess(amrsLines)
+	}
+
+	// 4. 自动推断 content-type 头部字段（当存在 JSON reject/mock 内容时）
+	if c.Opts.AutoContentType && m.ContentType == "" {
+		if ct := c.inferContentType(amrsLines); ct != "" {
+			m.ContentType = ct
+		}
 	}
 
 	res.Amrs = c.generateAmrs(baseName, m.Hostnames, amrsLines, m)
@@ -171,7 +195,7 @@ func (c *Converter) convertRoutingRules(rules []ir.RoutingRule, report *Report) 
 
 // convertURLRegexReject 转换 URL-REGEX REJECT 类规则为 .amrs rewrite 行。
 func (c *Converter) convertURLRegexReject(r ir.RoutingRule, report *Report) string {
-	pattern := ConvertURLPattern(r.Value, c.Opts.GeneralizeHost)
+	pattern := ConvertURLPatternWithHostnames(r.Value, c.Opts.GeneralizeHost, c.Hostnames)
 	switch r.Action {
 	case "REJECT", "REJECT-200":
 		return fmt.Sprintf("0, 0, %s, 2", pattern)
@@ -205,7 +229,7 @@ func (c *Converter) convertRewriteRules(ctx context.Context, m *ir.Module, repor
 
 // convertRewriteRule 转换单条重写规则。
 func (c *Converter) convertRewriteRule(ctx context.Context, r ir.RewriteRule, report *Report) (string, error) {
-	pattern := ConvertURLPattern(r.Pattern, c.Opts.GeneralizeHost)
+	pattern := ConvertURLPatternWithHostnames(r.Pattern, c.Opts.GeneralizeHost, c.Hostnames)
 
 	switch r.Action {
 	// 拒绝类
@@ -259,15 +283,67 @@ func (c *Converter) convertRewriteRule(ctx context.Context, r ir.RewriteRule, re
 	case "request-header", "request-body":
 		b64 := EncodeInlineRewriteJS(r.RawJS, 0)
 		return fmt.Sprintf("0, 100, %s, %s", pattern, b64), nil
-	case "response-body":
-		b64 := EncodeInlineRewriteJS(r.RawJS, 1)
-		return fmt.Sprintf("1, 100, %s, %s", pattern, b64), nil
 	case "_request-header", "_request-body":
 		b64 := EncodeInlineRewriteJS(r.RawJS, 0)
 		return fmt.Sprintf("0, 100, %s, %s", pattern, b64), nil
 	case "_response-body":
 		b64 := EncodeInlineRewriteJS(r.RawJS, 1)
 		return fmt.Sprintf("1, 100, %s, %s", pattern, b64), nil
+
+	// response-body 兼容 Loon 内联 JS 与 QX body-replace（双 url response-body 标记）两种语法：
+	//   - Loon: 内联 JS，r.RawJS 非空
+	//   - QX:   search/replacement 都在 args
+	case "response-body":
+		if r.RawJS != "" {
+			b64 := EncodeInlineRewriteJS(r.RawJS, 1)
+			return fmt.Sprintf("1, 100, %s, %s", pattern, b64), nil
+		}
+		search := r.Args["search"]
+		replacement := r.Args["replacement"]
+		if search == "" {
+			return "", fmt.Errorf("response-body 缺少 search")
+		}
+		// QX body-replace 形式：phase=1, op=4
+		return fmt.Sprintf("1, 4, %s, %s, %s", pattern, QuoteField(search), QuoteField(replacement)), nil
+
+	// header-del：删除请求头（Loon header-del / Surge _header-del 已归一化）
+	case "header-del":
+		headerName := r.Args["header"]
+		if headerName == "" {
+			return "", fmt.Errorf("header-del 缺少 header 名")
+		}
+		return fmt.Sprintf("0, 2, %s, %s", pattern, QuoteField(headerName)), nil
+
+	// response-body-replace-regex：正则替换响应体 → body-replace (op 4)
+	case "response-body-replace-regex":
+		search := r.Args["search"]
+		replacement := r.Args["replacement"]
+		if search == "" {
+			return "", fmt.Errorf("response-body-replace-regex 缺少 search")
+		}
+		return fmt.Sprintf("1, 4, %s, %s, %s", pattern, QuoteField(search), QuoteField(replacement)), nil
+
+	// QX echo-response：content-type + body 模拟响应
+	case "echo-response":
+		body := r.Args["body"]
+		if body == "" {
+			return "", fmt.Errorf("echo-response 缺少 body")
+		}
+		// phase=1, op=2 (reject 带 body)。Anywhere 用此 op 配合 content-type 头部模拟响应
+		return fmt.Sprintf("1, 0, %s, 2, %s", pattern, QuoteField(body)), nil
+
+	// QX jsonjq-response-body：phase=1, op=5 (json-manipulate), pattern, jq
+	case "jsonjq-response-body":
+		jq := r.Args["jq"]
+		if jq == "" {
+			return "", fmt.Errorf("jsonjq-response-body 缺少 jq 表达式")
+		}
+		return fmt.Sprintf("1, 5, %s, %s", pattern, QuoteField(jq)), nil
+
+	// QX script-analyze-echo-response：脚本分析后模拟响应（已转为 ScriptRule，理论上不会进入此处）
+	case "script-analyze-echo-response":
+		report.AddDegraded(fmt.Sprintf("script-analyze-echo-response 转为脚本处理: %s", r.Raw))
+		return "", nil
 
 	default:
 		report.AddSkipped(fmt.Sprintf("未知重写动作 %s: %s", r.Action, r.Raw))
@@ -279,7 +355,7 @@ func (c *Converter) convertRewriteRule(ctx context.Context, r ir.RewriteRule, re
 func (c *Converter) convertHeaderRules(rules []ir.HeaderRule, report *Report) []string {
 	var lines []string
 	for _, r := range rules {
-		pattern := ConvertURLPattern(r.Pattern, c.Opts.GeneralizeHost)
+		pattern := ConvertURLPatternWithHostnames(r.Pattern, c.Opts.GeneralizeHost, c.Hostnames)
 		switch r.Op {
 		case "add":
 			lines = append(lines, fmt.Sprintf("%d, 1, %s, %s, %s", r.Phase, pattern, QuoteField(r.Name), QuoteField(r.Value)))
@@ -299,7 +375,7 @@ func (c *Converter) convertHeaderRules(rules []ir.HeaderRule, report *Report) []
 func (c *Converter) convertMapLocals(ctx context.Context, rules []ir.MapLocalRule, report *Report) []string {
 	var lines []string
 	for _, r := range rules {
-		pattern := ConvertURLPattern(r.Pattern, c.Opts.GeneralizeHost)
+		pattern := ConvertURLPatternWithHostnames(r.Pattern, c.Opts.GeneralizeHost, c.Hostnames)
 		if r.DataURL == "" {
 			report.AddSkipped(fmt.Sprintf("Map Local 无 data: %s", r.Raw))
 			continue
@@ -321,20 +397,73 @@ func (c *Converter) convertMapLocals(ctx context.Context, rules []ir.MapLocalRul
 }
 
 // convertScriptRules 转换 [Script] 段规则。
+// 脚本下载采用并发控制：每个脚本独立超时（ScriptTimeoutSec），最大并发数 Concurrency。
+// 失败的脚本降级为占位符并记录 ScriptErr，整体流程不被阻塞。
 func (c *Converter) convertScriptRules(ctx context.Context, m *ir.Module, report *Report) []string {
-	var lines []string
-	for _, s := range m.Scripts {
-		pattern := ConvertURLPattern(s.Pattern, c.Opts.GeneralizeHost)
-		if s.ScriptPath == "" {
-			report.AddSkipped(fmt.Sprintf("脚本无 script-path: %s", s.Raw))
-			continue
+	scripts := m.Scripts
+	lines := make([]string, 0, len(scripts))
+
+	// 预计算每条脚本的行模板
+	type result struct {
+		index int
+		line  string
+	}
+	results := make([]result, len(scripts))
+
+	// 信号量控制并发
+	concurrency := c.Opts.Concurrency
+	if concurrency <= 0 {
+		concurrency = 8
+	}
+	timeoutSec := c.Opts.ScriptTimeoutSec
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+
+	for i, s := range scripts {
+		i, s := i, s
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			pattern := ConvertURLPatternWithHostnames(s.Pattern, c.Opts.GeneralizeHost, c.Hostnames)
+			results[i].index = i
+
+			if s.ScriptPath == "" {
+				report.AddSkipped(fmt.Sprintf("脚本无 script-path: %s", s.Raw))
+				return
+			}
+
+			// 单个脚本下载独立超时
+			sctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+			defer cancel()
+
+			b64, err := FetchAndEncodeScript(sctx, c.Fetcher, s.ScriptPath, c.BaseURL, c.Opts.FetchScripts, s.Phase, c.Opts.UseStreamScript)
+			if err != nil {
+				report.AddScriptErr(fmt.Sprintf("脚本下载失败 %s: %v", s.ScriptPath, err))
+				// 降级为占位符，保证输出文件完整
+				placeholder := fmt.Sprintf(`function process(ctx){Anywhere.log.warning("script not fetched: %s");}`, s.ScriptPath)
+				b64 = base64.StdEncoding.EncodeToString([]byte(placeholder))
+			}
+			// op 100 = script，op 101 = stream-script（流式响应处理）
+			op := "100"
+			if c.Opts.UseStreamScript {
+				op = "101"
+			}
+			results[i].line = fmt.Sprintf("%d, %s, %s, %s", s.Phase, op, pattern, b64)
+		}()
+	}
+	wg.Wait()
+
+	// 按原顺序输出
+	for i := range scripts {
+		if results[i].line != "" {
+			lines = append(lines, results[i].line)
 		}
-		b64, err := FetchAndEncodeScript(ctx, c.Fetcher, s.ScriptPath, c.BaseURL, c.Opts.FetchScripts, s.Phase)
-		if err != nil {
-			report.AddScriptErr(fmt.Sprintf("脚本下载失败 %s: %v", s.ScriptPath, err))
-			continue
-		}
-		lines = append(lines, fmt.Sprintf("%d, 100, %s, %s", s.Phase, pattern, b64))
 	}
 	return lines
 }
@@ -415,7 +544,7 @@ func (c *Converter) generateArrs(name string, lines []string, m *ir.Module) stri
 }
 
 // generateAmrs 生成 .amrs 文件内容。
-func (c *Converter) generateAmrs(name string, hostnames, lines []string, m *ir.Module) string {
+func (c *Converter) generateAmrs(name string, hostnames []string, lines []string, m *ir.Module) string {
 	if len(lines) == 0 && len(hostnames) == 0 {
 		return ""
 	}
@@ -427,6 +556,10 @@ func (c *Converter) generateAmrs(name string, hostnames, lines []string, m *ir.M
 	if len(hostnames) > 0 {
 		buf.WriteString(fmt.Sprintf("hostname = %s\n", strings.Join(hostnames, ", ")))
 	}
+	// content-type 头部字段（可选）：设置 reject/mock 响应的默认 Content-Type
+	if m.ContentType != "" {
+		buf.WriteString(fmt.Sprintf("content-type = %s\n", m.ContentType))
+	}
 	buf.WriteString("\n")
 	for _, l := range lines {
 		buf.WriteString(l + "\n")
@@ -434,10 +567,48 @@ func (c *Converter) generateAmrs(name string, hostnames, lines []string, m *ir.M
 	return buf.String()
 }
 
+// inferContentType 根据规则行推断合适的 content-type 头部字段。
+// 当存在 reject-dict (返回 {}) 或 mock-response-body (返回 JSON) 时，自动设置为 application/json; charset=utf-8。
+func (c *Converter) inferContentType(lines []string) string {
+	hasJSON := false
+	for _, line := range lines {
+		// rewrite reject sub-mode 2 带 {} 或 [] 内容
+		// 形如：0, 0, pattern, 2, {}  或  0, 0, pattern, 2, {...JSON...}
+		if strings.HasPrefix(line, "0, 0, ") {
+			// 提取 sub-mode 与 content
+			rest := strings.TrimPrefix(line, "0, 0, ")
+			// 跳过 pattern，找到 ", 2, " 或 ", 3"
+			if idx := strings.Index(rest, ", 2, "); idx >= 0 {
+				content := strings.TrimSpace(rest[idx+len(", 2, "):])
+				if strings.HasPrefix(content, "{") || strings.HasPrefix(content, `"{"`) || strings.Contains(content, `"code"`) {
+					hasJSON = true
+					break
+				}
+			}
+		}
+	}
+	if hasJSON {
+		return "application/json; charset=utf-8"
+	}
+	return ""
+}
+
 // metadataComments 生成元数据注释头。
+// 注释规则：
+//   - 首行：`# 由 module2anywhere 从 <source> 模块转换`
+//   - 远程模块：追加 `# source: <原始 URL>`
+//   - 量子态 add-resource 链接：追加 `# source: <展开前 URL>`（与上一行相同，标识走了一键订阅协议）
+//   - Web 服务：追加 `# this: <本服务 URL>`
+//   - 模块自身元数据（desc/author/homepage/date）依次追加
 func (c *Converter) metadataComments(m *ir.Module) string {
 	var buf strings.Builder
-	buf.WriteString(fmt.Sprintf("# 由 loon2anywhere 从 %s 模块转换\n", m.Source))
+	buf.WriteString(fmt.Sprintf("# 由 module2anywhere 从 %s 模块转换\n", m.Source))
+	if c.SourceURL != "" {
+		buf.WriteString(fmt.Sprintf("# source: %s\n", c.SourceURL))
+	}
+	if c.ServiceURL != "" {
+		buf.WriteString(fmt.Sprintf("# this: %s\n", c.ServiceURL))
+	}
 	if m.Desc != "" {
 		buf.WriteString(fmt.Sprintf("# desc: %s\n", m.Desc))
 	}

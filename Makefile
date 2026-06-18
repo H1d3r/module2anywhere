@@ -1,4 +1,4 @@
-BINARY_NAME := loon2anywhere
+BINARY_NAME := module2anywhere
 BUILD_LDFLAGS := -s -w -extldflags=-static
 GARBLE_FLAGS := -seed=random -literals -tiny
 

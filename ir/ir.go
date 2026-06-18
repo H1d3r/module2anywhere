@@ -11,6 +11,10 @@ const (
 	SourceUnknown Source = iota
 	SourceLoon
 	SourceSurge
+	// SourceQuantumultX 标识 QuantumultX 格式（.conf 行式规则）。
+	// 与 Loon/Surge 不同，QX 大多数插件不使用段头，而是逐行写 "pattern url action [args]"。
+	// 参考：https://github.com/Script-Hub-Org/Script-Hub
+	SourceQuantumultX
 )
 
 // String 返回来源的可读名称。
@@ -20,6 +24,8 @@ func (s Source) String() string {
 		return "loon"
 	case SourceSurge:
 		return "surge"
+	case SourceQuantumultX:
+		return "quantumultx"
 	default:
 		return "unknown"
 	}
@@ -27,20 +33,21 @@ func (s Source) String() string {
 
 // Module 表示解析后的 Loon/Surge 模块。
 type Module struct {
-	Source    Source            // 来源格式
-	Name      string            // #!name
-	Desc      string            // #!desc
-	Author    string            // #!author
-	Homepage  string            // #!homepage
-	Date      string            // #!date
-	RawMeta   map[string]string // 其他元数据（icon/tag/category 等会被丢弃，但保留原始以便日志）
-	Hostnames []string          // MITM hostname 列表（已规范化，去除 *. 与 %APPEND%）
-	Rules     []RoutingRule     // [Rule] 段
-	Rewrites  []RewriteRule     // [Rewrite] / [URL Rewrite] 段
-	Scripts   []ScriptRule      // [Script] 段
-	HeaderRWs []HeaderRule      // [Header Rewrite] 段（Surge）
-	MapLocals []MapLocalRule    // [Map Local] 段（Surge）
-	Arguments []Argument        // [Argument] 段（Loon，仅记录，不参与转换）
+	Source      Source            // 来源格式
+	Name        string            // #!name
+	Desc        string            // #!desc
+	Author      string            // #!author
+	Homepage    string            // #!homepage
+	Date        string            // #!date
+	RawMeta     map[string]string // 其他元数据（icon/tag/category 等会被丢弃，但保留原始以便日志）
+	Hostnames   []string          // MITM hostname 列表（已规范化，去除 *. 与 %APPEND%）
+	ContentType string            // .amrs content-type 头部字段（可选，用于 reject/mock 响应默认 MIME）
+	Rules       []RoutingRule     // [Rule] 段
+	Rewrites    []RewriteRule     // [Rewrite] / [URL Rewrite] 段
+	Scripts     []ScriptRule      // [Script] 段
+	HeaderRWs   []HeaderRule      // [Header Rewrite] 段（Surge）
+	MapLocals   []MapLocalRule    // [Map Local] 段（Surge）
+	Arguments   []Argument        // [Argument] 段（Loon，仅记录，不参与转换）
 }
 
 // RoutingRule 路由规则（[Rule] 段）。

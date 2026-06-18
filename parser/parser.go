@@ -1,26 +1,30 @@
-// Package parser 解析 Loon .plugin 与 Surge .sgmodule 模块文件为统一 IR。
+// Package parser 解析 Loon .plugin / Surge .sgmodule / QuantumultX .conf 模块文件为统一 IR。
 //
-// 两种格式都是 INI 风格分段，但段名与字段语法略有差异：
-//   - Loon:  [Rule] / [Rewrite] / [Script] / [Argument] / [MitM]
-//   - Surge: [Rule] / [URL Rewrite] / [Header Rewrite] / [Map Local] / [Script] / [MITM]
+// 三种格式的特点：
+//   - Loon (.plugin / .lpx):   [Rule] / [Rewrite] / [Script] / [Argument] / [MitM] 段，#!name 元数据
+//   - Surge (.sgmodule):       [Rule] / [URL Rewrite] / [Header Rewrite] / [Map Local] / [Script] / [MITM] 段
+//   - QuantumultX (.conf):     行式规则，格式 "<pattern> url <action> [args...]"，无强制段头
 //
 // 本包提供 Parse(content, source) 统一入口，根据 source 分派到具体解析器。
+// 也提供 DetectSource 用于在未知 source 时根据文件名/内容特征自动识别。
 package parser
 
 import (
 	"fmt"
 	"strings"
 
-	"github.com/Loon2Anywhere/loon2anywhere/ir"
+	"github.com/H1d3r/module2anywhere/ir"
 )
 
-// Parse 根据来源格式分派解析器。source 决定使用 Loon 还是 Surge 语法。
+// Parse 根据来源格式分派解析器。source 决定使用 Loon/Surge/QuantumultX 语法。
 func Parse(content string, source ir.Source) (*ir.Module, error) {
 	switch source {
 	case ir.SourceLoon:
 		return ParseLoon(content)
 	case ir.SourceSurge:
 		return ParseSurge(content)
+	case ir.SourceQuantumultX:
+		return ParseQuantumultX(content)
 	default:
 		return nil, fmt.Errorf("未知来源格式: %v", source)
 	}
@@ -30,15 +34,24 @@ func Parse(content string, source ir.Source) (*ir.Module, error) {
 // 优先看文件名后缀；其次用段名特征：
 //   - Surge 独有：[URL Rewrite] / [Header Rewrite] / [Map Local]
 //   - Loon  独有：[Rewrite]（单数）/ [Argument]
-//   - [MitM] vs [MITM] 大小写敏感区分（Loon 用 [MitM]，Surge 用 [MITM]）
+//   - [MitM]/[MITM]/[mitm] 写法不区分（两侧都接受）
+//   - Loon [Script] 行通常以 "http-request"/"http-response" 开头；Surge [Script] 行为 name = key=val,key=val 形式
+//   - QX 行式：开头是 "pattern url action ..." 形式（pattern 是 URL 正则）
+//
+// 文件后缀约定：
+//   - .plugin / .lpx → Loon（.lpx 是 Loon 插件的 XML 格式压缩包，但文本外壳可同样按 Loon 处理）
+//   - .sgmodule     → Surge
+//   - .conf         → QuantumultX
 func DetectSource(content, filename string) ir.Source {
 	// 1. 文件名后缀最可靠
 	lowerName := strings.ToLower(filename)
 	switch {
-	case strings.HasSuffix(lowerName, ".plugin"):
+	case strings.HasSuffix(lowerName, ".plugin"), strings.HasSuffix(lowerName, ".lpx"):
 		return ir.SourceLoon
 	case strings.HasSuffix(lowerName, ".sgmodule"):
 		return ir.SourceSurge
+	case strings.HasSuffix(lowerName, ".conf"):
+		return ir.SourceQuantumultX
 	}
 
 	// 2. 内容特征：Surge 独有段
@@ -54,16 +67,75 @@ func DetectSource(content, filename string) ir.Source {
 		return ir.SourceLoon
 	}
 
-	// 4. MITM 段大小写敏感区分
-	if strings.Contains(content, "[MitM]") {
-		return ir.SourceLoon
-	}
-	if strings.Contains(content, "[MITM]") {
-		return ir.SourceSurge
+	// 4. [Script] 段语法差异：Loon 行首为 phase，Surge 行首为 name=...
+	//    Loon  示例：http-request ^... script-path=...
+	//    Surge 示例：name1 = type=http-request,pattern=...
+	if strings.Contains(lowerContent, "[script]") {
+		// 提取 [Script] 段后第一非空行
+		if firstScriptLine := extractFirstScriptLine(content); firstScriptLine != "" {
+			lowerLine := strings.ToLower(strings.TrimSpace(firstScriptLine))
+			if strings.HasPrefix(lowerLine, "http-request ") || strings.HasPrefix(lowerLine, "http-response ") {
+				return ir.SourceLoon
+			}
+			if strings.Contains(lowerLine, "=type=") || strings.Contains(lowerLine, "type=http-") {
+				return ir.SourceSurge
+			}
+		}
 	}
 
-	// 5. 默认按 Loon 处理
+	// 5. 内容特征：QuantumultX 行式特征
+	//    - 出现 " hostname = " 或 " hostname=" 行（QX 风格，可能在 # 注释行之后）
+	//    - 出现 " url reject" / " url 302" / " url response-body" 等（行式规则）
+	if detectQuantumultXContent(content) {
+		return ir.SourceQuantumultX
+	}
+
+	// 6. 默认按 Loon 处理
 	return ir.SourceLoon
+}
+
+// detectQuantumultXContent 粗略判断内容是否符合 QX 行式特征。
+// 关键特征：
+//   - "hostname = ..."  出现在注释行（# 或 ; 开头）之后
+//   - 多行以 " url reject" / " url 302" / " url response-body" / " url echo-response" /
+//     " url script-response-body" / " url jsonjq-response-body" 等动作开头
+func detectQuantumultXContent(content string) bool {
+	// 出现 "hostname = ..." 段（可能在注释行内）
+	if strings.Contains(content, "hostname =") || strings.Contains(content, "hostname=") {
+		// 进一步看是否同时存在 QX 风格动作
+		lower := strings.ToLower(content)
+		if strings.Contains(lower, " url reject") ||
+			strings.Contains(lower, " url 302") ||
+			strings.Contains(lower, " url response-body") ||
+			strings.Contains(lower, " url echo-response") ||
+			strings.Contains(lower, " url script-response-body") ||
+			strings.Contains(lower, " url script-request-body") ||
+			strings.Contains(lower, " url script-request-header") ||
+			strings.Contains(lower, " url script-response-header") ||
+			strings.Contains(lower, " url jsonjq-response-body") ||
+			strings.Contains(lower, " url script-analyze-echo-response") {
+			return true
+		}
+	}
+	return false
+}
+
+// extractFirstScriptLine 提取 [Script] 段后第一非空、非注释行。
+func extractFirstScriptLine(content string) string {
+	lower := strings.ToLower(content)
+	idx := strings.Index(lower, "[script]")
+	if idx < 0 {
+		return ""
+	}
+	rest := content[idx+len("[script]"):]
+	for _, line := range strings.Split(rest, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		return trimmed
+	}
+	return ""
 }
 
 // splitSections 将原始内容切分为 (section, body) 列表。

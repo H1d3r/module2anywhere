@@ -336,9 +336,87 @@ function run() {
 
 | 源 | 目标 | 转换说明 |
 |----|------|---------|
-| Loon `[MitM] hostname = a.com, *.b.com` | `hostname = a.com, b.com` | 去除 `*.` 通配符（Anywhere 用后缀匹配，`b.com` 已覆盖 `*.b.com`） |
+| Loon `[MitM] hostname = a.com, *.b.com` | `hostname = a.com, b.com` | 去除 `*.` 前缀（Anywhere 用 base domain 已覆盖所有子域名） |
 | Surge `[MITM] hostname = %APPEND% a.com, b.com` | `hostname = a.com, b.com` | 去除 `%APPEND%` 前缀 |
 | Surge `[MITM] hostname = a.com, b.com` | `hostname = a.com, b.com` | 直接映射 |
+
+### 4.1 hostname 通配符展开（重要）
+
+Loon/Surge 的 hostname 字段支持 `*` 和 `?` 通配符，而 Anywhere **不支持通配符**，使用 **label-aligned suffix** 匹配。转换时需要将通配符展开为具体的域名条目。
+
+#### Anywhere label-aligned suffix 匹配规则
+
+ Anywhere hostname 的 suffix 匹配是**标签对齐**的：
+
+- `example.com` → 匹配 `www.example.com`（因为 `example.com` 是 `www.example.com` 的后缀标签）
+- `api.bilibili.com` → **只匹配** `api.bilibili.com`，**不匹配** `api01.bilibili.com`（因为 `api01` 整体是一个标签，`api` 不是它的后缀标签）
+- `bilibili.com` → 匹配 `api.bilibili.com`、`app.bilibili.com`、`api01.bilibili.com` 等所有 bilibili.com 的子域名
+
+#### `*` 通配符展开
+
+`*` 匹配零个或多个字符（可以跨越标签边界）。
+
+| Loon/Surge 写法 | 展开目标 | 转换结果 |
+|-----------------|---------|---------|
+| `*bilibili.com` | 覆盖所有 bilibili.com 子域名 | `bilibili.com` |
+| `*.bilibili.com` | 同上（`*` 匹配任意前缀） | `bilibili.com` |
+| `api.*.bilibili.com` | `api` 后接任意内容再接 `.bilibili.com` | 展开为多个常见子域名 |
+| `*live.bilibili.com` | `live.bilibili.com` 及其所有子域名 | `live.bilibili.com, www.live.bilibili.com` |
+
+**结论**：`*.xxx.com` / `*xxx.com` → 直接用 base domain `xxx.com`。这是因为 Anywhere 的 suffix 匹配中，写 `xxx.com` 就已经覆盖了所有 `xxx.com` 的子域名。
+
+#### `?` 通配符展开
+
+`?` 匹配**单个任意字符**（不跨越标签边界，即每个 `?` 在一个标签内）。
+
+| Loon/Surge 写法 | 展开目标 | 转换结果 |
+|-----------------|---------|---------|
+| `api?.bilibili.com` | `api0`~`api9`、`apiA`~`apiZ` 等单个字符变体 | `api0.bilibili.com, api1.bilibili.com, ..., api9.bilibili.com` |
+| `app?.bilibili.com` | `app1`~`app9` 等 | `app1.bilibili.com, app2.bilibili.com, ..., app9.bilibili.com` |
+| `ap?.bilibili.com` | `ap0`~`ap9` | `ap0.bilibili.com, ap1.bilibili.com, ..., ap9.bilibili.com` |
+
+**常见 `?` 展开的字符集**：数字 `0-9`、字母 `a-z`（实际应用中字母较少见）
+
+**实际案例**（来自 bilibili.plugin）：
+
+```
+源 Loon: hostname=ap?.bilibili.com
+转换: hostname=api.bilibili.com, app.bilibili.com
+```
+
+> **为什么 `ap?` 只展开为 `api` 和 `app`？**
+> 在 bilibili 的实际场景中，`?` 最常用于匹配数字后缀（`api0`~`api9`）和区分不同域名变体（`api`/`app`）。由于无法预知远程服务器具体使用了哪些域名，最安全的方案是：
+> 1. 尝试常见变体（`api`、`app`、`ap0`~`ap9`）
+> 2. 如不确定，可直接用 base domain `bilibili.com` 覆盖全部
+> 3. 保留原始 `?` 模式作为注释，便于用户后续调整
+
+#### 转换策略总结
+
+| 源通配符 | 转换策略 | 示例 |
+|---------|---------|------|
+| `*.domain.com` / `*domain.com` | 展开为 base domain | `*bilibili.com` → `bilibili.com` |
+| `*sub.domain.com` | 展开为 base + 常见子域名 | `*live.bilibili.com` → `live.bilibili.com, www.live.bilibili.com` |
+| `prefix?.domain.com` | 展开为 `prefix0`~`prefix9` | `api?.bilibili.com` → `api0.bilibili.com, ..., api9.bilibili.com` |
+| 字符类不确定 | 用 base domain 覆盖 | `ap?.bilibili.com` → `bilibili.com` |
+
+#### 不兼容的替代方案（脚本兜底）
+
+如果展开后的 hostname 仍然无法完全覆盖原始意图，可以：
+
+1. **扩展 hostname**：将 base domain 加入（如 `bilibili.com`），确保所有相关子域名都被拦截
+2. **脚本兜底**：对于 hostname 未覆盖到的域名，如果仍有重写规则需要生效，可在脚本中添加域名检查：
+
+```javascript
+// 如果原始 pattern 包含不在 hostname 中的域名，在此做额外检查
+// 但注意：Anywhere 的 hostname 拦截在 TLS 层完成，
+// 脚本无法处理未进入 MITM 拦截的流量
+function process(ctx) {
+    // ctx.url 在这里可用，但域名本身应在 hostname 中声明
+    // 脚本层无法补获 hostname 未拦截的域名
+}
+```
+
+> **限制**：Anywhere 的 hostname 拦截发生在 TLS 层，在脚本之前。如果某个域名不在 hostname 字段中，流量根本不会进入 MITM 流程，脚本无法处理。所以 **hostname 必须尽可能完整展开**。
 
 ---
 
@@ -730,19 +808,27 @@ Loon `[Script]` 的 `argument=[{showUpList}]` 参数在 Anywhere 中无直接对
 
 ### 8.2 主机泛化策略
 
-Anywhere 的 `.amrs` 已有 `hostname` 头部字段做主机拦截门控，URL pattern 中的主机部分可泛化为 `[^/]+` 以简化匹配：
+Anywhere 的 `.amrs` 已有 `hostname` 头部字段做主机拦截门控，URL pattern 中的主机部分可泛化为 `[^/]+` 以简化匹配。
 
-| 源 pattern | 转换后 pattern | 说明 |
-|-----------|--------------|------|
-| `^https:\/\/app\.bilibili\.com\/x\/v2\/feed\/index` | `^https://[^/]+/x/v2/feed/index(?:\?|$)` | 主机泛化 + 结尾锚定 |
-| `^https:\/\/api\.bilibili\.com\/x\/v2\/dm\/qoe\/show\?` | `^https://[^/]+/x/v2/dm/qoe/show(?:\?|$)` | `\?` 结尾 → `(?:\?|$)` |
+⚠️ **安全警告**：默认 **不** 泛化主机（`--generalize-host=false`）。原因：
+- `^https?://example\.com/...` 泛化为 `^https?://[^/]+/...` 后会匹配 **所有 HTTPS 域名**
+- 即便 hostname 字段做门控，rewrite 规则评估仍需先匹配 pattern
+- 若 QX 模块缺少 `hostname = ...` 行或不完整，所有 HTTPS 域名都会进入 MITM 评估
+- 用户手工往 hostname 字段加新域名时，已有泛化规则会立刻扩展作用范围
 
-**泛化规则**：
-1. `^https:\/\/<host>\/` → `^https://[^/]+/`（主机由 hostname 字段门控）
-2. `\/` → `/`（去除不必要的转义）
-3. 结尾 `\?` → `(?:\?|$)`（匹配查询参数开头或行尾）
-4. 结尾 `$` 保持不变
-5. 多主机 alternation `(?:app\.bilibili\.com|grpc\.biliapi\.net)` → `[^/]+`（如果所有主机都在 hostname 中）
+**何时可以开启 `--generalize-host`**：
+- 已确认模块的 hostname 字段完整覆盖所有 pattern 主机
+- 显式确认安全后再加 `--generalize-host` 标志
+
+**安全泛化条件**（仅当以下全部满足时才会执行）：
+1. 用户显式传 `--generalize-host`
+2. pattern 主机段不含通配形式（`.*` / `[^/]+` / `*` / `+` 等）
+3. pattern 中每个具体主机都已被 hostname 列表覆盖（精确匹配或子域匹配）
+4. pattern 不含真正捕获组（`(?:...)` 非捕获组除外）
+
+否则保留原始主机。
+
+> **示例**：多主机 alternation `(?:app\.bilibili\.com|grpc\.biliapi\.net)` → `[^/]+`（如果所有主机都在 hostname 中）。
 
 > **注意**：泛化是可选的优化，保留原始主机正则也能工作。但当多个主机共享同一 path 时，泛化可大幅简化规则。
 
@@ -1234,6 +1320,120 @@ func QuoteField(field string) string {
     return field
 }
 
+// ExpandHostnameWildcards 将 Loon/Surge 的 hostname 通配符展开为 Anywhere 兼容格式
+// Loon/Surge 支持 * 和 ? 通配符，Anywhere 不支持通配符，需展开为具体域名
+// 规则：
+//   *.domain.com / *domain.com → domain.com
+//   prefix?.domain.com         → prefix0...prefix9.domain.com（数字展开）
+//   已知变体                   → 直接展开（如 api/app）
+func ExpandHostnameWildcards(hostname string) []string {
+    var result []string
+
+    // 按逗号分割（Loon/Surge hostname 格式）
+    parts := strings.Split(hostname, ",")
+    for _, part := range parts {
+        part = strings.TrimSpace(part)
+        if part == "" {
+            continue
+        }
+
+        // 去除 %APPEND% 前缀（Surge）
+        part = strings.TrimPrefix(part, "%APPEND%")
+        part = strings.TrimSpace(part)
+
+        // 去除首尾空白
+        part = strings.TrimSpace(part)
+        if part == "" {
+            continue
+        }
+
+        // 处理 *.domain.com / *domain.com
+        if strings.HasPrefix(part, "*.") {
+            // *.example.com → example.com（base domain 覆盖全部子域名）
+            baseDomain := strings.TrimPrefix(part, "*.")
+            result = append(result, baseDomain)
+            continue
+        }
+        if strings.HasPrefix(part, "*") && !strings.Contains(part, ".") {
+            // *example.com → example.com
+            baseDomain := strings.TrimPrefix(part, "*")
+            result = append(result, baseDomain)
+            continue
+        }
+
+        // 处理 prefix?.domain.com（? 通配符）
+        if strings.Contains(part, "?") {
+            // 尝试展开为常见变体
+            expanded := expandQuestionMark(part)
+            result = append(result, expanded...)
+            continue
+        }
+
+        // 普通域名直接添加
+        result = append(result, part)
+    }
+
+    // 去重
+    seen := make(map[string]bool)
+    unique := []string{}
+    for _, h := range result {
+        if !seen[h] {
+            seen[h] = true
+            unique = append(unique, h)
+        }
+    }
+    return unique
+}
+
+// expandQuestionMark 展开 ? 通配符
+// 例如：api?.bilibili.com → [api0.bilibili.com, api1.bilibili.com, ..., api9.bilibili.com]
+func expandQuestionMark(pattern string) []string {
+    // 已知常见应用的域名变体映射（经验值，可扩展）
+    knownVariants := map[string][]string{
+        // bilibili
+        "ap?.bilibili.com":  {"api.bilibili.com", "app.bilibili.com"},
+        "app?.bilibili.com": {"app.bilibili.com", "app0.bilibili.com", "app1.bilibili.com", "app2.bilibili.com", "app3.bilibili.com", "app4.bilibili.com", "app5.bilibili.com", "app6.bilibili.com", "app7.bilibili.com", "app8.bilibili.com", "app9.bilibili.com"},
+        // 可按需添加更多应用的已知变体
+    }
+
+    // 先检查已知变体映射
+    if variants, ok := knownVariants[pattern]; ok {
+        return variants
+    }
+
+    // 通用展开：统计 ? 的数量，生成所有组合
+    questionCount := strings.Count(pattern, "?")
+    if questionCount == 0 {
+        return []string{pattern}
+    }
+
+    // 限制展开数量（最多 10 个组合，避免过多）
+    var results []string
+    chars := []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
+
+    var expand func(pos int, current string)
+    expand = func(pos int, current string) {
+        if pos == len(pattern) {
+            results = append(results, current)
+            return
+        }
+        if string(pattern[pos]) == "?" {
+            for _, c := range chars {
+                expand(pos+1, current+c)
+                // 限制数量
+                if len(results) >= 10 {
+                    return
+                }
+            }
+        } else {
+            expand(pos+1, current+string(pattern[pos]))
+        }
+    }
+
+    expand(0, "")
+    return results
+}
+
 // FetchURLWithProxy 下载远程文件，对 GitHub 原始域名使用加速代理
 // 代理优先级：ghfast.top → ph.ipv9.win → 原始 URL
 func FetchURLWithProxy(rawURL string) ([]byte, error) {
@@ -1439,7 +1639,7 @@ func GenerateAmrs(name string, hostnames []string, rules []string) string {
 ### 11.7 CLI 参数建议
 
 ```
-loon2anywhere -i <input.plugin|input.sgmodule> -o <output-dir> [--fetch-scripts] [--generalize-host] [--no-encoding-preprocess] [--proxy ghfast.top]
+module2anywhere -i <input.plugin|input.sgmodule> -o <output-dir> [--fetch-scripts] [--generalize-host] [--no-encoding-preprocess] [--proxy ghfast.top]
 ```
 
 | 参数 | 说明 |
@@ -1447,7 +1647,7 @@ loon2anywhere -i <input.plugin|input.sgmodule> -o <output-dir> [--fetch-scripts]
 | `-i` | 输入文件路径（Loon .plugin 或 Surge .sgmodule） |
 | `-o` | 输出目录（生成 .arrs 和 .amrs） |
 | `--fetch-scripts` | 远程下载脚本并改写（默认只生成占位符） |
-| `--generalize-host` | URL pattern 主机泛化为 `[^/]+`（默认开启） |
+| `--generalize-host` | URL pattern 主机泛化为 `[^/]+`（**默认关闭**，谨慎开启） |
 | `--no-encoding-preprocess` | 不自动添加 accept-encoding 预处理对 |
 | `--format` | 输出格式：`both`(默认) / `arrs` / `amrs` |
 | `--proxy` | GitHub 加速代理：`ghfast.top`(默认) / `ph.ipv9.win` / `none`（直连） |
@@ -1481,6 +1681,344 @@ https://ph.ipv9.win/raw.githubusercontent.com/kokoryh/Script/master/js/bilibili.
 3. 原始 URL（直连回退）
 
 使用 `--proxy none` 可禁用代理，直接请求原始 URL。
+
+### 11.8 Web 服务中转功能
+
+程序支持部署为 Web 服务，用户可通过 HTTP GET 请求转换远程模块文件，**直接返回规则文件内容**，支持 Anywhere 直接订阅导入。
+
+#### 11.8.1 启动 Web 服务
+
+```bash
+# 默认端口 8080
+module2anywhere --server
+
+# 指定端口
+module2anywhere --server --listen 0.0.0.0:8080
+```
+
+#### 11.8.2 API 接口
+
+**GET /mitm** — 返回 MITM 规则（`.amrs` 格式）
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `url` | 是 | 远程模块文件的 URL（需 URL 编码） |
+| `name` | 否 | 规则集名称（默认从 URL 推导） |
+| `fetch` | 否 | 是否下载远程脚本：`true` / `false`（默认 `false`） |
+| `generalize` | 否 | 是否泛化主机：`true` / `false`（默认 `true`） |
+
+**GET /rule** — 返回路由规则（`.arrs` 格式）
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `url` | 是 | 远程模块文件的 URL（需 URL 编码） |
+| `name` | 否 | 规则集名称（默认从 URL 推导） |
+
+**GET /convert** — 统一转换接口（兼容旧版）
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `url` | 是 | 远程模块文件的 URL（需 URL 编码） |
+| `to` | 是 | 转换类型：`mitm` / `rule` |
+| `name` | 否 | 规则集名称（默认从 URL 推导） |
+| `fetch` | 否 | 是否下载远程脚本（仅 `mitm`） |
+| `generalize` | 否 | 是否泛化主机（仅 `mitm`） |
+
+**URL 编码说明**：
+
+由于是 GET 请求，`url` 参数中的特殊字符需要进行 URL 编码：
+
+| 字符 | 编码 |
+|------|------|
+| `&` | `%26` |
+| `=` | `%3D` |
+| `?` | `%3F` |
+
+**请求示例**：
+
+```bash
+# 获取 MITM 规则（可直接在 Anywhere 中订阅）
+curl "http://localhost:8080/mitm?url=https%3A%2F%2Fraw.githubusercontent.com%2Fkokoryh%2FScript%2Fmaster%2FLoon%2Fplugin%2Fbilibili.plugin&name=Bilibili%E5%8E%BB%E5%B9%BF&fetch=true"
+
+# 获取路由规则
+curl "http://localhost:8080/rule?url=https%3A%2F%2Fraw.githubusercontent.com%2Fxxx%2Frules%2Fmain%2Fbilibili.sgmodule&name=Bilibili"
+
+# 统一接口
+curl "http://localhost:8080/convert?url=https%3A%2F%2Fxxx&to=mitm&name=MyRule"
+```
+
+**Anywhere 订阅示例**：
+
+在 Anywhere 中添加订阅：
+```
+# MITM 规则订阅地址
+http://your-server:8080/mitm?url=https%3A%2F%2Fraw.githubusercontent.com%2Fkokoryh%2FScript%2Fmaster%2FLoon%2Fplugin%2Fbilibili.plugin&fetch=true
+
+# 路由规则订阅地址
+http://your-server:8080/rule?url=https%3A%2F%2Fraw.githubusercontent.com%2Fxxx%2Frules%2Fmain%2Fbilibili.sgmodule
+```
+
+**响应格式**：
+
+直接返回规则文件内容（`text/plain; charset=utf-8`）：
+
+```
+# Bilibili去广告 - 转换自远程模块
+name = Bilibili去广告
+hostname = api.bilibili.com, app.bilibili.com
+0, 0, ^https://[^/]+/x/v2/feed/index(?:/story)?(?:\?|$), 2, {}
+0, 0, ^https://[^/]+/x/v2/splash/list(?:\?|$), 2, {}
+...
+```
+
+**错误响应**：
+
+当参数错误或转换失败时，返回 HTTP 错误码 + 错误信息：
+
+```
+Error: url parameter is required
+```
+
+#### 11.8.3 服务端代码实现
+
+```go
+package main
+
+import (
+    "fmt"
+    "net/http"
+    "net/url"
+    "strings"
+)
+
+func main() {
+    http.HandleFunc("/mitm", handleMitm)
+    http.HandleFunc("/rule", handleRule)
+    http.HandleFunc("/convert", handleConvert)
+    fmt.Println("Server started on :8080")
+    http.ListenAndServe(":8080", nil)
+}
+
+// handleMitm 返回 MITM 规则（.amrs 格式）
+func handleMitm(w http.ResponseWriter, r *http.Request) {
+    rawURL := r.URL.Query().Get("url")
+    name := r.URL.Query().Get("name")
+    fetchScripts := r.URL.Query().Get("fetch") == "true"
+    generalizeHost := r.URL.Query().Get("generalize") != "false"
+
+    if rawURL == "" {
+        http.Error(w, "Error: url parameter is required", http.StatusBadRequest)
+        return
+    }
+
+    decodedURL, err := url.QueryUnescape(rawURL)
+    if err != nil {
+        http.Error(w, "Error: Invalid URL encoding", http.StatusBadRequest)
+        return
+    }
+
+    data, err := FetchURLWithProxy(decodedURL)
+    if err != nil {
+        http.Error(w, fmt.Sprintf("Error: Failed to fetch remote file: %v", err), http.StatusInternalServerError)
+        return
+    }
+
+    module, err := ParseModule(data)
+    if err != nil {
+        http.Error(w, fmt.Sprintf("Error: Failed to parse module: %v", err), http.StatusBadRequest)
+        return
+    }
+
+    if name != "" {
+        module.Name = name
+    } else if module.Name == "" {
+        module.Name = deriveNameFromURL(decodedURL)
+    }
+
+    result := GenerateAmrs(module.Name, module.Hostnames, convertRules(module, generalizeHost, fetchScripts))
+
+    // 设置响应头，支持直接订阅
+    w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+    w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%s.amrs", module.Name))
+    w.WriteHeader(http.StatusOK)
+    w.Write([]byte(result))
+}
+
+// handleRule 返回路由规则（.arrs 格式）
+func handleRule(w http.ResponseWriter, r *http.Request) {
+    rawURL := r.URL.Query().Get("url")
+    name := r.URL.Query().Get("name")
+
+    if rawURL == "" {
+        http.Error(w, "Error: url parameter is required", http.StatusBadRequest)
+        return
+    }
+
+    decodedURL, err := url.QueryUnescape(rawURL)
+    if err != nil {
+        http.Error(w, "Error: Invalid URL encoding", http.StatusBadRequest)
+        return
+    }
+
+    data, err := FetchURLWithProxy(decodedURL)
+    if err != nil {
+        http.Error(w, fmt.Sprintf("Error: Failed to fetch remote file: %v", err), http.StatusInternalServerError)
+        return
+    }
+
+    module, err := ParseModule(data)
+    if err != nil {
+        http.Error(w, fmt.Sprintf("Error: Failed to parse module: %v", err), http.StatusBadRequest)
+        return
+    }
+
+    if name != "" {
+        module.Name = name
+    } else if module.Name == "" {
+        module.Name = deriveNameFromURL(decodedURL)
+    }
+
+    result := GenerateArrs(module.Name, convertRoutingRules(module))
+
+    w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+    w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%s.arrs", module.Name))
+    w.WriteHeader(http.StatusOK)
+    w.Write([]byte(result))
+}
+
+// handleConvert 统一转换接口（兼容旧版）
+func handleConvert(w http.ResponseWriter, r *http.Request) {
+    rawURL := r.URL.Query().Get("url")
+    convertTo := r.URL.Query().Get("to")
+    name := r.URL.Query().Get("name")
+    fetchScripts := r.URL.Query().Get("fetch") == "true"
+    generalizeHost := r.URL.Query().Get("generalize") != "false"
+
+    if rawURL == "" {
+        http.Error(w, "Error: url parameter is required", http.StatusBadRequest)
+        return
+    }
+
+    if convertTo == "" {
+        convertTo = "mitm"
+    }
+
+    decodedURL, err := url.QueryUnescape(rawURL)
+    if err != nil {
+        http.Error(w, "Error: Invalid URL encoding", http.StatusBadRequest)
+        return
+    }
+
+    data, err := FetchURLWithProxy(decodedURL)
+    if err != nil {
+        http.Error(w, fmt.Sprintf("Error: Failed to fetch remote file: %v", err), http.StatusInternalServerError)
+        return
+    }
+
+    module, err := ParseModule(data)
+    if err != nil {
+        http.Error(w, fmt.Sprintf("Error: Failed to parse module: %v", err), http.StatusBadRequest)
+        return
+    }
+
+    if name != "" {
+        module.Name = name
+    } else if module.Name == "" {
+        module.Name = deriveNameFromURL(decodedURL)
+    }
+
+    var result string
+    var filename string
+
+    switch convertTo {
+    case "mitm":
+        result = GenerateAmrs(module.Name, module.Hostnames, convertRules(module, generalizeHost, fetchScripts))
+        filename = module.Name + ".amrs"
+    case "rule":
+        result = GenerateArrs(module.Name, convertRoutingRules(module))
+        filename = module.Name + ".arrs"
+    default:
+        http.Error(w, "Error: Invalid 'to' parameter. Use: mitm/rule", http.StatusBadRequest)
+        return
+    }
+
+    w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+    w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%s", filename))
+    w.WriteHeader(http.StatusOK)
+    w.Write([]byte(result))
+}
+
+func deriveNameFromURL(rawURL string) string {
+    parsed, err := url.Parse(rawURL)
+    if err != nil {
+        return "Unnamed"
+    }
+    path := parsed.Path
+    parts := strings.Split(path, "/")
+    filename := parts[len(parts)-1]
+    filename = strings.TrimSuffix(filename, ".plugin")
+    filename = strings.TrimSuffix(filename, ".sgmodule")
+    filename = strings.TrimSuffix(filename, ".lpx")
+    return filename
+}
+```
+
+#### 11.8.4 Anywhere 订阅配置
+
+在 Anywhere 中添加规则集订阅：
+
+1. **打开 Anywhere** → **Routing Rules** → **Add Rule Set** → **Add from URL**
+2. **输入订阅地址**：
+   ```
+   http://your-server:8080/mitm?url=https%3A%2F%2Fraw.githubusercontent.com%2Fkokoryh%2FScript%2Fmaster%2FLoon%2Fplugin%2Fbilibili.plugin&fetch=true
+   ```
+3. **选择策略**：根据需求选择 `DIRECT`、`REJECT` 或代理策略
+
+#### 11.8.5 部署建议
+
+**使用 systemd 部署（Linux）**：
+
+```ini
+[Unit]
+Description=module2anywhere Conversion Service
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+ExecStart=/usr/local/bin/module2anywhere --server --listen 127.0.0.1:8080
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**配合 Nginx 反向代理**：
+
+```nginx
+server {
+    listen 80;
+    server_name convert.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # 设置合理的超时时间
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 60s;
+    }
+}
+```
+
+**安全注意事项**：
+
+1. **URL 白名单**：建议对 `url` 参数设置域名白名单
+2. **请求频率限制**：使用 Nginx limit_req 限制请求频率
+3. **HTTPS**：生产环境应启用 HTTPS
+4. **缓存控制**：可添加 `Cache-Control` 头控制客户端缓存
 
 ---
 

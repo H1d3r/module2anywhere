@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Loon2Anywhere/loon2anywhere/ir"
+	"github.com/H1d3r/module2anywhere/ir"
 )
 
 // ParseLoon 解析 Loon .plugin 内容为 IR Module。
@@ -40,7 +40,8 @@ func ParseLoon(content string) (*ir.Module, error) {
 			m.Scripts = append(m.Scripts, parseLoonScripts(sec.body)...)
 		case "Argument":
 			m.Arguments = append(m.Arguments, parseLoonArguments(sec.body)...)
-		case "MitM":
+		case "MitM", "MITM", "mitm":
+			// 兼容 [MitM] / [MITM] / [mitm] 任意大小写写法
 			m.Hostnames = append(m.Hostnames, parseLoonMitM(sec.body)...)
 		}
 	}
@@ -171,6 +172,19 @@ func parseLoonRewriteAction(rest string) (string, map[string]string, string) {
 		// 内联 JS：request-header { ... }
 		// remain 即 JS 源码（可能含空格、花括号）
 		return action, args, strings.TrimSpace(remain)
+
+	case "header-del":
+		// header-del <header-name>（仅请求阶段）
+		args["header"] = strings.TrimSpace(remain)
+		return action, args, ""
+
+	case "response-body-replace-regex":
+		// response-body-replace-regex <search> <replacement>
+		// search 与 replacement 以空白分隔；含空格时需引号包裹
+		search, repl := splitFirstWhitespace(remain)
+		args["search"] = trimQuotes(search)
+		args["replacement"] = trimQuotes(repl)
+		return action, args, ""
 
 	default:
 		// 未知动作：保留原始 remain 以便日志

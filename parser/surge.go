@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Loon2Anywhere/loon2anywhere/ir"
+	"github.com/H1d3r/module2anywhere/ir"
 )
 
 // ParseSurge 解析 Surge .sgmodule 内容为 IR Module。
@@ -42,7 +42,8 @@ func ParseSurge(content string) (*ir.Module, error) {
 			m.MapLocals = append(m.MapLocals, parseSurgeMapLocals(sec.body)...)
 		case "Script":
 			m.Scripts = append(m.Scripts, parseSurgeScripts(sec.body)...)
-		case "MITM":
+		case "MITM", "MitM", "mitm":
+			// 兼容 [MITM] / [MitM] / [mitm] 任意大小写写法
 			m.Hostnames = append(m.Hostnames, parseSurgeMITM(sec.body)...)
 		}
 	}
@@ -102,6 +103,12 @@ func parseSurgeURLRewriteAction(rest string) (string, map[string]string, string)
 	case "_request-header", "_request-body", "_response-body":
 		// 内联 JS
 		return action, args, strings.TrimSpace(remain)
+
+	case "_header-del":
+		// Surge _header-del <name>：删除请求头（与 Loon header-del 等价）
+		args["header"] = strings.TrimSpace(remain)
+		// 归一化为 header-del 动作，便于 converter 统一处理
+		return "header-del", args, ""
 
 	default:
 		// Surge 还有 header rewrite 等动作，但通常在独立段
