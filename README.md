@@ -1698,7 +1698,9 @@ module2anywhere --server --listen 0.0.0.0:8080
 
 #### 11.8.2 API 接口
 
-**GET /mitm** — 返回 MITM 规则（`.amrs` 格式）
+**GET /mitm.amrs** — 返回 MITM 规则（`.amrs` 格式）
+
+> Anywhere 订阅要求 URL path 以 `.amrs` 结尾，请优先使用 `/mitm.amrs`。`/mitm` 仍可访问（兼容旧版）。
 
 | 参数 | 必填 | 说明 |
 |------|------|------|
@@ -1707,7 +1709,9 @@ module2anywhere --server --listen 0.0.0.0:8080
 | `fetch` | 否 | 是否下载远程脚本：`true` / `false`（默认 `false`） |
 | `generalize` | 否 | 是否泛化主机：`true` / `false`（默认 `true`） |
 
-**GET /rule** — 返回路由规则（`.arrs` 格式）
+**GET /rule.arrs** — 返回路由规则（`.arrs` 格式）
+
+> Anywhere 订阅要求 URL path 以 `.arrs` 结尾，请优先使用 `/rule.arrs`。`/rule` 仍可访问（兼容旧版）。
 
 | 参数 | 必填 | 说明 |
 |------|------|------|
@@ -1742,7 +1746,7 @@ module2anywhere --server --listen 0.0.0.0:8080
 anywhere://add-rule-set?link=<mitm-url>&link=<rule-url>
 ```
 
-每个 `link` 是本服务 `/mitm` 或 `/rule` 端点的完整 URL（已 percent-encode）。仅包含有内容的规则类型（若模块无路由规则则不包含 rule link）。
+每个 `link` 是本服务 `/mitm.amrs` 或 `/rule.arrs` 端点的完整 URL（已 percent-encode）。URL path 以 `.amrs` / `.arrs` 结尾，满足 Anywhere 订阅的路径校验要求。仅包含有内容的规则类型（若模块无路由规则则不包含 rule link）。
 
 **请求示例**：
 

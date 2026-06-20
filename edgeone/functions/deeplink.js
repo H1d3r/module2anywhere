@@ -1466,8 +1466,8 @@ export async function onRequest(context) {
   if (name) linkParams += '&name=' + encodeURIComponent(name);
 
   var links = [];
-  if (hasAmrs) links.push(origin + '/mitm?' + linkParams);
-  if (hasArrs) links.push(origin + '/rule?' + linkParams);
+  if (hasAmrs) links.push(origin + '/mitm.amrs?' + linkParams);
+  if (hasArrs) links.push(origin + '/rule.arrs?' + linkParams);
 
   if (links.length === 0) {
     return new Response('Error: no rules to import', {

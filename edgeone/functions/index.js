@@ -82,7 +82,7 @@ const HTML = `<!DOCTYPE html>
   <div id="error-area" class="error" style="display:none;"></div>
 
   <div class="links">
-    <p>API 接口：<a href="/mitm?url=EXAMPLE">GET /mitm?url=...</a> | <a href="/rule?url=EXAMPLE">GET /rule?url=...</a> | <a href="/deeplink?url=EXAMPLE">GET /deeplink?url=...</a></p>
+    <p>API 接口：<a href="/mitm.amrs?url=EXAMPLE">GET /mitm.amrs?url=...</a> | <a href="/rule.arrs?url=EXAMPLE">GET /rule.arrs?url=...</a> | <a href="/deeplink?url=EXAMPLE">GET /deeplink?url=...</a></p>
     <p style="margin-top:0.5rem;">参考文档：<a href="https://github.com/NodePassProject/Anywhere" target="_blank">Anywhere</a> | <a href="https://github.com/H1d3r/module2anywhere" target="_blank">module2anywhere</a></p>
   </div>
 </div>
@@ -111,7 +111,7 @@ async function doConvert(type) {
 
   try {
     const params = new URLSearchParams({ url: url, fetch: fetchScripts, generalize: generalize });
-    const endpoint = type === 'mitm' ? '/mitm' : '/rule';
+    const endpoint = type === 'mitm' ? '/mitm.amrs' : '/rule.arrs';
     const resp = await fetch(endpoint + '?' + params.toString());
 
     if (!resp.ok) {
@@ -153,8 +153,8 @@ function doDeeplink() {
   const generalize = document.getElementById('opt-generalize').checked;
   const origin = window.location.origin;
   const params = 'url=' + encodeURIComponent(url) + '&fetch=' + fetchScripts + '&generalize=' + generalize;
-  const ruleURL = origin + '/rule?' + params;
-  const mitmURL = origin + '/mitm?' + params;
+  const ruleURL = origin + '/rule.arrs?' + params;
+  const mitmURL = origin + '/mitm.amrs?' + params;
 
   // 直接构造 deeplink 并跳转，唤起 Anywhere app
   const deeplink = 'anywhere://add-rule-set?link=' + encodeURIComponent(ruleURL) + '&link=' + encodeURIComponent(mitmURL);

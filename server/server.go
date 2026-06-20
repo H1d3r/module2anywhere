@@ -1,9 +1,12 @@
 // Package server 提供 Web 服务模式，允许通过 HTTP GET 请求转换远程模块文件。
 //
-// 提供三个接口：
-//   - GET /mitm    返回 MITM 规则（.amrs 格式）
-//   - GET /rule    返回路由规则（.arrs 格式）
-//   - GET /convert 统一转换接口（兼容旧版）
+// 提供以下接口：
+//   - GET /mitm.amrs  返回 MITM 规则（.amrs 格式，Anywhere 订阅要求 URL path 以 .amrs 结尾）
+//   - GET /rule.arrs   返回路由规则（.arrs 格式，Anywhere 订阅要求 URL path 以 .arrs 结尾）
+//   - GET /mitm        同 /mitm.amrs（兼容旧版）
+//   - GET /rule        同 /rule.arrs（兼容旧版）
+//   - GET /convert     统一转换接口（兼容旧版）
+//   - GET /deeplink    返回 Anywhere 深度链接
 //
 // 所有接口的 url 参数需 URL 编码。响应为 text/plain，可直接被 Anywhere 订阅导入。
 package server
@@ -42,6 +45,10 @@ type Config struct {
 func Run(cfg Config) error {
 	srv := &Server{cfg: cfg}
 	mux := http.NewServeMux()
+	// 带 .amrs/.arrs 后缀的路由（Anywhere 订阅要求 URL path 以对应扩展名结尾）
+	mux.HandleFunc("/mitm.amrs", srv.handleMitm)
+	mux.HandleFunc("/rule.arrs", srv.handleRule)
+	// 兼容旧版无后缀路由
 	mux.HandleFunc("/mitm", srv.handleMitm)
 	mux.HandleFunc("/rule", srv.handleRule)
 	mux.HandleFunc("/convert", srv.handleConvert)
@@ -138,10 +145,10 @@ func (s *Server) handleDeeplink(w http.ResponseWriter, r *http.Request) {
 
 	links := make([]string, 0, 2)
 	if result.Amrs != "" {
-		links = append(links, buildEndpointURL(r, "/mitm", rawURL))
+		links = append(links, buildEndpointURL(r, "/mitm.amrs", rawURL))
 	}
 	if result.Arrs != "" {
-		links = append(links, buildEndpointURL(r, "/rule", rawURL))
+		links = append(links, buildEndpointURL(r, "/rule.arrs", rawURL))
 	}
 	if len(links) == 0 {
 		http.Error(w, "Error: no rules to import", http.StatusNotFound)
