@@ -87,6 +87,16 @@ export async function onRequest(context) {
   const sourceHint = query.source || '';
   const initialUA = lib.getUserAgent(sourceHint);
 
+  // 检查缓存
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize);
+  var cached = lib.cacheGet(ck + ':amrs');
+  if (cached.hit) {
+    return new Response(cached.value, {
+      status: 200,
+      headers: { ...buildCorsHeaders(), 'Content-Type': 'text/plain; charset=utf-8', 'X-Cache': 'HIT' },
+    });
+  }
+
   // 解析 quantumult.app 一键订阅协议，否则取原始 URL
   let sourceURL = decodedURL;
   let inputURLs = [decodedURL];
@@ -155,6 +165,7 @@ export async function onRequest(context) {
       headers: buildCorsHeaders(),
     });
   }
+  lib.cachePut(ck + ':amrs', body);
   return new Response(body, {
     status: 200,
     headers: {
@@ -211,6 +222,16 @@ export async function onRequest(context) {
   const sourceHint = query.source || '';
   const initialUA = lib.getUserAgent(sourceHint);
 
+  // 检查缓存
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize);
+  var cached = lib.cacheGet(ck + ':arrs');
+  if (cached.hit) {
+    return new Response(cached.value, {
+      status: 200,
+      headers: { ...buildCorsHeaders(), 'Content-Type': 'text/plain; charset=utf-8', 'X-Cache': 'HIT' },
+    });
+  }
+
   // 解析 quantumult.app 一键订阅协议，否则取原始 URL
   let sourceURL = decodedURL;
   let inputURLs = [decodedURL];
@@ -279,6 +300,7 @@ export async function onRequest(context) {
       headers: buildCorsHeaders(),
     });
   }
+  lib.cachePut(ck + ':arrs', body);
   return new Response(body, {
     status: 200,
     headers: {
@@ -334,6 +356,16 @@ export async function onRequest(context) {
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
   const initialUA = lib.getUserAgent(sourceHint);
+
+  // 检查缓存
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize);
+  var cached = lib.cacheGet(ck + ':amrs');
+  if (cached.hit) {
+    return new Response(cached.value, {
+      status: 200,
+      headers: { ...buildCorsHeaders(), 'Content-Type': 'text/plain; charset=utf-8', 'X-Cache': 'HIT' },
+    });
+  }
 
   let sourceURL = decodedURL;
   let inputURLs = [decodedURL];
@@ -401,6 +433,7 @@ export async function onRequest(context) {
       headers: buildCorsHeaders(),
     });
   }
+  lib.cachePut(ck + ':amrs', body);
   return new Response(body, {
     status: 200,
     headers: {
@@ -456,6 +489,16 @@ export async function onRequest(context) {
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
   const initialUA = lib.getUserAgent(sourceHint);
+
+  // 检查缓存
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize);
+  var cached = lib.cacheGet(ck + ':arrs');
+  if (cached.hit) {
+    return new Response(cached.value, {
+      status: 200,
+      headers: { ...buildCorsHeaders(), 'Content-Type': 'text/plain; charset=utf-8', 'X-Cache': 'HIT' },
+    });
+  }
 
   let sourceURL = decodedURL;
   let inputURLs = [decodedURL];
@@ -523,6 +566,7 @@ export async function onRequest(context) {
       headers: buildCorsHeaders(),
     });
   }
+  lib.cachePut(ck + ':arrs', body);
   return new Response(body, {
     status: 200,
     headers: {
@@ -597,6 +641,16 @@ export async function onRequest(context) {
   const sourceHint = query.source || '';
   const initialUA = lib.getUserAgent(sourceHint);
 
+  // 检查缓存
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize);
+  var cached = lib.cacheGet(ck + ':' + format);
+  if (cached.hit) {
+    return new Response(cached.value, {
+      status: 200,
+      headers: { ...buildCorsHeaders(), 'Content-Type': 'text/plain; charset=utf-8', 'X-Cache': 'HIT' },
+    });
+  }
+
   // 解析 quantumult.app 一键订阅协议，否则取原始 URL
   let sourceURL = decodedURL;
   let inputURLs = [decodedURL];
@@ -665,6 +719,7 @@ export async function onRequest(context) {
       headers: buildCorsHeaders(),
     });
   }
+  lib.cachePut(ck + ':' + format, body);
   return new Response(body, {
     status: 200,
     headers: {

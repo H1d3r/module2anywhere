@@ -1349,9 +1349,50 @@ function extractAddResourceURLs(rawURL) {
 // ===================== 共享库对象 =====================
 // 端点文件通过 `const lib = { ... }` 直接访问这些函数
 // 不需要 import 任何模块
+// ===================== 缓存 =====================
+
+// SimpleTTLCache 带过期时间的内存缓存，用于缓存转换结果。
+// EdgeOne 边缘节点上全局变量在实例生命周期内持久，可跨请求复用。
+const _cacheStore = new Map();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 分钟
+const CACHE_MAX_SIZE = 256;
+
+// cacheGet 读取缓存，命中且未过期返回 { hit: true, value }，否则 { hit: false }。
+function cacheGet(key) {
+  var entry = _cacheStore.get(key);
+  if (!entry) return { hit: false };
+  if (Date.now() > entry.expiresAt) {
+    _cacheStore.delete(key);
+    return { hit: false };
+  }
+  return { hit: true, value: entry.value };
+}
+
+// cachePut 写入缓存。
+function cachePut(key, value) {
+  // 容量超限时淘汰过期条目
+  if (_cacheStore.size >= CACHE_MAX_SIZE) {
+    for (var [k, v] of _cacheStore) {
+      if (Date.now() > v.expiresAt) _cacheStore.delete(k);
+    }
+    // 仍超限则删除最早的
+    if (_cacheStore.size >= CACHE_MAX_SIZE) {
+      var firstKey = _cacheStore.keys().next().value;
+      if (firstKey !== undefined) _cacheStore.delete(firstKey);
+    }
+  }
+  _cacheStore.set(key, { value: value, expiresAt: Date.now() + CACHE_TTL_MS });
+}
+
+// cacheKey 生成缓存键。
+function cacheKey(url, name, fetchScripts, generalize) {
+  return url + '|' + name + '|' + fetchScripts + '|' + generalize;
+}
+
 const lib = {
   detectSource, parse, deriveNameFromURL, defaultConvertOptions, convert,
   fetchRemoteWithProxy, getUserAgent, isAddResourceURL, extractAddResourceURLs,
+  cacheGet, cachePut, cacheKey,
 };
 
 
@@ -1397,6 +1438,16 @@ export async function onRequest(context) {
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
   const initialUA = lib.getUserAgent(sourceHint);
+
+  // 检查缓存
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize);
+  var cached = lib.cacheGet(ck + ':amrs');
+  if (cached.hit) {
+    return new Response(cached.value, {
+      status: 200,
+      headers: { ...buildCorsHeaders(), 'Content-Type': 'text/plain; charset=utf-8', 'X-Cache': 'HIT' },
+    });
+  }
 
   // 解析 quantumult.app 一键订阅协议，否则取原始 URL
   let sourceURL = decodedURL;
@@ -1466,6 +1517,7 @@ export async function onRequest(context) {
       headers: buildCorsHeaders(),
     });
   }
+  lib.cachePut(ck + ':amrs', body);
   return new Response(body, {
     status: 200,
     headers: {

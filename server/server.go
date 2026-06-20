@@ -43,7 +43,10 @@ type Config struct {
 
 // Run 启动 Web 服务。
 func Run(cfg Config) error {
-	srv := &Server{cfg: cfg}
+	srv := &Server{
+		cfg:   cfg,
+		cache: NewCache(5*time.Minute, 256), // 缓存 5 分钟，最多 256 条
+	}
 	mux := http.NewServeMux()
 	// 带 .amrs/.arrs 后缀的路由（Anywhere 订阅要求 URL path 以对应扩展名结尾）
 	mux.HandleFunc("/mitm.amrs", srv.handleMitm)
@@ -67,7 +70,8 @@ func Run(cfg Config) error {
 
 // Server Web 服务实现。
 type Server struct {
-	cfg Config
+	cfg   Config
+	cache *Cache
 }
 
 // handleHealth 健康检查。
@@ -185,6 +189,7 @@ func (s *Server) convert(r *http.Request, format string) (*converter.Result, err
 }
 
 // convertAll 执行完整转换，同时返回 .amrs 与 .arrs 结果。
+// 支持结果缓存：相同 URL+参数 在 TTL 内直接返回缓存结果，避免重复下载。
 func (s *Server) convertAll(r *http.Request) (*converter.Result, error) {
 	rawURL := r.URL.Query().Get("url")
 	if rawURL == "" {
@@ -202,6 +207,16 @@ func (s *Server) convertAll(r *http.Request) (*converter.Result, error) {
 	fetchScripts := r.URL.Query().Get("fetch") != "false"
 	// 默认 generalize=false（不泛化主机），通过 generalize=true 显式开启
 	generalize := r.URL.Query().Get("generalize") == "true"
+
+	// 检查缓存
+	ck := cacheKey(decodedURL, name, fetchScripts, generalize)
+	if cached, ok := s.cache.Get(ck); ok {
+		var res converter.Result
+		if err := res.UnmarshalBinary([]byte(cached)); err == nil {
+			return &res, nil
+		}
+		// 反序列化失败，忽略缓存继续转换
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
@@ -264,7 +279,14 @@ func (s *Server) convertAll(r *http.Request) (*converter.Result, error) {
 		results = append(results, modRes{mod: m, res: res})
 	}
 
-	return mergeServerResults(results), nil
+	merged := mergeServerResults(results)
+
+	// 写入缓存
+	if data, err := merged.MarshalBinary(); err == nil {
+		s.cache.Put(ck, string(data))
+	}
+
+	return merged, nil
 }
 
 // writeResult 写入响应。
@@ -412,3 +434,8 @@ func encodeLinks(links []string) string {
 
 // ensureIRImported 防止 ir 包被裁剪（占位）。
 var _ = ir.SourceLoon
+
+// cacheKey 生成缓存键，由 URL + 参数组合而成。
+func cacheKey(decodedURL, name string, fetchScripts, generalize bool) string {
+	return fmt.Sprintf("%s|%s|%v|%v", decodedURL, name, fetchScripts, generalize)
+}

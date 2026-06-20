@@ -4,6 +4,7 @@ package converter
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -20,6 +21,16 @@ type Result struct {
 	ArrsName string // .arrs 文件名（不含扩展名）
 	AmrsName string // .amrs 文件名（不含扩展名）
 	Report   Report // 转换报告
+}
+
+// MarshalBinary 将 Result 序列化为 JSON 字节（用于缓存存储）。
+func (r *Result) MarshalBinary() ([]byte, error) {
+	return json.Marshal(r)
+}
+
+// UnmarshalBinary 从 JSON 字节反序列化 Result（用于缓存读取）。
+func (r *Result) UnmarshalBinary(data []byte) error {
+	return json.Unmarshal(data, r)
 }
 
 // Report 转换报告，记录跳过/降级项。

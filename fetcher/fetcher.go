@@ -9,6 +9,7 @@
 package fetcher
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -276,6 +277,7 @@ func (f *Fetcher) fetchRemote(ctx context.Context, url string) (string, error) {
 }
 
 // fetchRemoteWithUA 通过 HTTP GET 拉取远程内容，使用指定 UA。
+// 自动处理 gzip 响应以减少传输量。
 func (f *Fetcher) fetchRemoteWithUA(ctx context.Context, url, ua string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -287,6 +289,7 @@ func (f *Fetcher) fetchRemoteWithUA(ctx context.Context, url, ua string) (string
 		req.Header.Set("User-Agent", f.UserAgent)
 	}
 	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Encoding", "gzip") // 请求 gzip 压缩以减少传输量
 
 	resp, err := f.Client.Do(req)
 	if err != nil {
@@ -298,7 +301,18 @@ func (f *Fetcher) fetchRemoteWithUA(ctx context.Context, url, ua string) (string
 		return "", fmt.Errorf("远程资源 %q 返回非 2xx 状态码: %d", url, resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	// 自动解压 gzip 响应
+	var reader io.Reader = resp.Body
+	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		gz, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			return "", fmt.Errorf("解压 gzip 失败 %q: %w", url, err)
+		}
+		defer gz.Close()
+		reader = gz
+	}
+
+	body, err := io.ReadAll(reader)
 	if err != nil {
 		return "", fmt.Errorf("读取远程响应失败 %q: %w", url, err)
 	}
