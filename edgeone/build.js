@@ -82,8 +82,8 @@ export async function onRequest(context) {
   }
 
   const name = query.name || '';
-  const fetchScripts = query.fetch === 'true';
-  const generalize = query.generalize !== 'false';
+  const fetchScripts = query.fetch !== 'false';
+  const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
   const initialUA = lib.getUserAgent(sourceHint);
 
@@ -206,8 +206,8 @@ export async function onRequest(context) {
   }
 
   const name = query.name || '';
-  const fetchScripts = query.fetch === 'true';
-  const generalize = query.generalize !== 'false';
+  const fetchScripts = query.fetch !== 'false';
+  const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
   const initialUA = lib.getUserAgent(sourceHint);
 
@@ -330,8 +330,8 @@ export async function onRequest(context) {
   }
 
   const name = query.name || '';
-  const fetchScripts = query.fetch === 'true';
-  const generalize = query.generalize !== 'false';
+  const fetchScripts = query.fetch !== 'false';
+  const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
   const initialUA = lib.getUserAgent(sourceHint);
 
@@ -452,8 +452,8 @@ export async function onRequest(context) {
   }
 
   const name = query.name || '';
-  const fetchScripts = query.fetch === 'true';
-  const generalize = query.generalize !== 'false';
+  const fetchScripts = query.fetch !== 'false';
+  const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
   const initialUA = lib.getUserAgent(sourceHint);
 
@@ -592,8 +592,8 @@ export async function onRequest(context) {
   }
 
   const name = query.name || '';
-  const fetchScripts = query.fetch === 'true';
-  const generalize = query.generalize !== 'false';
+  const fetchScripts = query.fetch !== 'false';
+  const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
   const initialUA = lib.getUserAgent(sourceHint);
 
@@ -717,8 +717,8 @@ export async function onRequest(context) {
   }
 
   var name = query.name || '';
-  var fetchScripts = query.fetch === 'true';
-  var generalize = query.generalize !== 'false';
+  var fetchScripts = query.fetch !== 'false';
+  var generalize = query.generalize === 'true';
   var sourceHint = query.source || '';
   var format = (query.format || '').toLowerCase().trim();
   var initialUA = lib.getUserAgent(sourceHint);

@@ -5,9 +5,10 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "node build.js",
     "dev": "edgeone makers dev",
-    "deploy": "edgeone makers deploy",
-    "deploy:preview": "edgeone makers deploy -e preview"
+    "deploy": "node build.js && edgeone makers deploy",
+    "deploy:preview": "node build.js && edgeone makers deploy -e preview"
   },
   "devDependencies": {
     "edgeone": "^1.0.21"

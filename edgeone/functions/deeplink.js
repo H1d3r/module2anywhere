@@ -1394,8 +1394,8 @@ export async function onRequest(context) {
   }
 
   var name = query.name || '';
-  var fetchScripts = query.fetch === 'true';
-  var generalize = query.generalize !== 'false';
+  var fetchScripts = query.fetch !== 'false';
+  var generalize = query.generalize === 'true';
   var sourceHint = query.source || '';
   var format = (query.format || '').toLowerCase().trim();
   var initialUA = lib.getUserAgent(sourceHint);

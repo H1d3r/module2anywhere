@@ -1706,8 +1706,8 @@ module2anywhere --server --listen 0.0.0.0:8080
 |------|------|------|
 | `url` | 是 | 远程模块文件的 URL（需 URL 编码） |
 | `name` | 否 | 规则集名称（默认从 URL 推导） |
-| `fetch` | 否 | 是否下载远程脚本：`true` / `false`（默认 `false`） |
-| `generalize` | 否 | 是否泛化主机：`true` / `false`（默认 `true`） |
+| `fetch` | 否 | 是否下载远程脚本：`true` / `false`（默认 `true`） |
+| `generalize` | 否 | 是否泛化主机：`true` / `false`（默认 `false`） |
 
 **GET /rule.arrs** — 返回路由规则（`.arrs` 格式）
 
@@ -1725,8 +1725,8 @@ module2anywhere --server --listen 0.0.0.0:8080
 | `url` | 是 | 远程模块文件的 URL（需 URL 编码） |
 | `to` | 是 | 转换类型：`mitm` / `rule` |
 | `name` | 否 | 规则集名称（默认从 URL 推导） |
-| `fetch` | 否 | 是否下载远程脚本（仅 `mitm`） |
-| `generalize` | 否 | 是否泛化主机（仅 `mitm`） |
+| `fetch` | 否 | 是否下载远程脚本：`true` / `false`（默认 `true`） |
+| `generalize` | 否 | 是否泛化主机：`true` / `false`（默认 `false`） |
 
 **GET /deeplink** — 返回 Anywhere 深度链接（`anywhere://add-rule-set`）
 
@@ -1736,8 +1736,8 @@ module2anywhere --server --listen 0.0.0.0:8080
 |------|------|------|
 | `url` | 是 | 远程模块文件的 URL（需 URL 编码） |
 | `name` | 否 | 规则集名称（默认从 URL 推导） |
-| `fetch` | 否 | 是否下载远程脚本：`true` / `false`（默认 `false`） |
-| `generalize` | 否 | 是否泛化主机：`true` / `false`（默认 `true`） |
+| `fetch` | 否 | 是否下载远程脚本：`true` / `false`（默认 `true`） |
+| `generalize` | 否 | 是否泛化主机：`true` / `false`（默认 `false`） |
 | `format` | 否 | 输出格式：`text` 返回纯文本深度链接；默认根据 Accept 头决定（浏览器 → HTML，其他 → 302 重定向） |
 
 **深度链接格式**：

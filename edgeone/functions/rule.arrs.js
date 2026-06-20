@@ -1374,24 +1374,6 @@ export async function onRequest(context) {
   const query = {};
   url.searchParams.forEach((v, k) => { query[k] = v; });
 
-  const to = (query.to || 'mitm').toLowerCase().trim();
-  let format;
-  switch (to) {
-    case 'mitm':
-    case 'amrs':
-      format = 'amrs';
-      break;
-    case 'rule':
-    case 'arrs':
-      format = 'arrs';
-      break;
-    default:
-      return new Response("Error: Invalid 'to' parameter. Use: mitm/rule", {
-        status: 400,
-        headers: buildCorsHeaders(),
-      });
-  }
-
   const rawURL = query.url;
   if (!rawURL) {
     return new Response('Error: url parameter is required', {
@@ -1416,7 +1398,6 @@ export async function onRequest(context) {
   const sourceHint = query.source || '';
   const initialUA = lib.getUserAgent(sourceHint);
 
-  // 解析 quantumult.app 一键订阅协议，否则取原始 URL
   let sourceURL = decodedURL;
   let inputURLs = [decodedURL];
   let addResourceURL = '';
@@ -1433,7 +1414,6 @@ export async function onRequest(context) {
     }
   }
 
-  // 构造本服务地址（用于注释 # this: ...）
   const serviceURL = url.origin + url.pathname;
 
   const allAmrs = [];
@@ -1476,10 +1456,10 @@ export async function onRequest(context) {
     }
   }
 
-  const body = format === 'amrs' ? allAmrs.join('\n') : allArrs.join('\n');
-  const filename = (name || 'module2anywhere') + (format === 'amrs' ? '.amrs' : '.arrs');
+  const body = allArrs.join('\n');
+  const filename = (name || 'module2anywhere') + '.arrs';
   if (!body) {
-    return new Response(`Error: no ${format} rules in module`, {
+    return new Response('Error: no routing rules in module', {
       status: 404,
       headers: buildCorsHeaders(),
     });

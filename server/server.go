@@ -198,9 +198,10 @@ func (s *Server) convertAll(r *http.Request) (*converter.Result, error) {
 
 	name := r.URL.Query().Get("name")
 	// Web 服务默认开启脚本下载（避免每次都拿占位符）
-	// 通过 fetch=false 显式关闭
+	// 通过 fetch=false 显式关闭；默认 fetch=true
 	fetchScripts := r.URL.Query().Get("fetch") != "false"
-	generalize := r.URL.Query().Get("generalize") != "false"
+	// 默认 generalize=false（不泛化主机），通过 generalize=true 显式开启
+	generalize := r.URL.Query().Get("generalize") == "true"
 
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()

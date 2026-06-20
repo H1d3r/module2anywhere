@@ -1393,8 +1393,8 @@ export async function onRequest(context) {
   }
 
   const name = query.name || '';
-  const fetchScripts = query.fetch === 'true';
-  const generalize = query.generalize !== 'false';
+  const fetchScripts = query.fetch !== 'false';
+  const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
   const initialUA = lib.getUserAgent(sourceHint);
 
