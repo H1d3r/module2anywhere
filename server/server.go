@@ -51,6 +51,8 @@ func Run(cfg Config) error {
 	// 带 .amrs/.arrs 后缀的路由（Anywhere 订阅要求 URL path 以对应扩展名结尾）
 	mux.HandleFunc("/mitm.amrs", srv.handleMitm)
 	mux.HandleFunc("/rule.arrs", srv.handleRule)
+	mux.HandleFunc("/direct.arrs", srv.handleDirect)
+	mux.HandleFunc("/reject.arrs", srv.handleReject)
 	// 兼容旧版无后缀路由
 	mux.HandleFunc("/mitm", srv.handleMitm)
 	mux.HandleFunc("/rule", srv.handleRule)
@@ -88,10 +90,11 @@ func (s *Server) handleMitm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Error: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.writeResult(w, result.Amrs, result.AmrsName)
+	s.writeResultWithRequest(w, r, result.Amrs, result.AmrsName)
 }
 
-// handleRule 返回路由规则（.arrs 格式）。
+// handleRule 返回路由规则（.arrs 格式，不含 routing 字段）。
+// 仅返回 PROXY 等非 DIRECT/非 REJECT 类路由规则。
 // 参数：url（必填）、name
 func (s *Server) handleRule(w http.ResponseWriter, r *http.Request) {
 	result, err := s.convert(r, "arrs")
@@ -99,7 +102,46 @@ func (s *Server) handleRule(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Error: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.writeResult(w, result.Arrs, result.ArrsName)
+	// 优先返回 routing=0 的分组（PROXY 等非 DIRECT/非 REJECT 规则）
+	group := findArrsGroup(result.ArrsGroups, 0)
+	if group != nil && group.Content != "" {
+		s.writeResultWithRequest(w, r, group.Content, group.Name)
+		return
+	}
+	// 兼容：若无分组则返回合并版 arrs
+	s.writeResultWithRequest(w, r, result.Arrs, result.ArrsName)
+}
+
+// handleDirect 返回 DIRECT 路由规则（.arrs 格式，routing=1）。
+// 参数：url（必填）、name
+func (s *Server) handleDirect(w http.ResponseWriter, r *http.Request) {
+	result, err := s.convert(r, "arrs")
+	if err != nil {
+		http.Error(w, "Error: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	group := findArrsGroup(result.ArrsGroups, 1)
+	if group == nil || group.Content == "" {
+		http.Error(w, "Error: no DIRECT routing rules in module", http.StatusNotFound)
+		return
+	}
+	s.writeResultWithRequest(w, r, group.Content, group.Name)
+}
+
+// handleReject 返回 REJECT 路由规则（.arrs 格式，routing=2）。
+// 参数：url（必填）、name
+func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
+	result, err := s.convert(r, "arrs")
+	if err != nil {
+		http.Error(w, "Error: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	group := findArrsGroup(result.ArrsGroups, 2)
+	if group == nil || group.Content == "" {
+		http.Error(w, "Error: no REJECT routing rules in module", http.StatusNotFound)
+		return
+	}
+	s.writeResultWithRequest(w, r, group.Content, group.Name)
 }
 
 // handleConvert 统一转换接口（兼容旧版）。
@@ -125,9 +167,9 @@ func (s *Server) handleConvert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if format == "amrs" {
-		s.writeResult(w, result.Amrs, result.AmrsName)
+		s.writeResultWithRequest(w, r, result.Amrs, result.AmrsName)
 	} else {
-		s.writeResult(w, result.Arrs, result.ArrsName)
+		s.writeResultWithRequest(w, r, result.Arrs, result.ArrsName)
 	}
 }
 
@@ -147,11 +189,18 @@ func (s *Server) handleDeeplink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	links := make([]string, 0, 2)
+	links := make([]string, 0, 4)
 	if result.Amrs != "" {
 		links = append(links, buildEndpointURL(r, "/mitm.amrs", rawURL))
 	}
-	if result.Arrs != "" {
+	// 按 routing 分组生成 arrs 子链接
+	for _, g := range result.ArrsGroups {
+		if g.Content != "" {
+			links = append(links, buildEndpointURL(r, g.Endpoint, rawURL))
+		}
+	}
+	// 兼容：若无分组但有合并 arrs，仍生成 /rule.arrs
+	if len(result.ArrsGroups) == 0 && result.Arrs != "" {
 		links = append(links, buildEndpointURL(r, "/rule.arrs", rawURL))
 	}
 	if len(links) == 0 {
@@ -297,6 +346,22 @@ func (s *Server) writeResult(w http.ResponseWriter, content, filename string) {
 	w.Write([]byte(content))
 }
 
+// writeResultWithRequest 写入转换结果，并动态修正 # this: 注释为当前请求的实际路径。
+// 因为缓存的结果可能来自不同端点（如 /direct.arrs），但当前请求可能是 /reject.arrs。
+func (s *Server) writeResultWithRequest(w http.ResponseWriter, r *http.Request, content, filename string) {
+	// 动态替换 # this: 注释为当前请求的实际 URL
+	actualURL := buildServiceURL(r)
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "# this: ") {
+			lines[i] = "# this: " + actualURL
+			break
+		}
+	}
+	content = strings.Join(lines, "\n")
+	s.writeResult(w, content, filename)
+}
+
 // deriveNameFromURL 从 URL 推导规则集名称。
 func deriveNameFromURL(rawURL string) string {
 	parsed, err := url.Parse(rawURL)
@@ -434,6 +499,16 @@ func encodeLinks(links []string) string {
 
 // ensureIRImported 防止 ir 包被裁剪（占位）。
 var _ = ir.SourceLoon
+
+// findArrsGroup 在分组列表中查找指定 routing 值的分组。
+func findArrsGroup(groups []converter.ArrsGroup, routing int) *converter.ArrsGroup {
+	for i := range groups {
+		if groups[i].Routing == routing {
+			return &groups[i]
+		}
+	}
+	return nil
+}
 
 // cacheKey 生成缓存键，由 URL + 参数组合而成。
 func cacheKey(decodedURL, name string, fetchScripts, generalize bool) string {

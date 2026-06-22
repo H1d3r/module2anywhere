@@ -14,13 +14,22 @@ import (
 	"github.com/H1d3r/module2anywhere/ir"
 )
 
+// ArrsGroup 单个 .arrs 分组（按 routing action 拆分）。
+type ArrsGroup struct {
+	Content  string // .arrs 文件内容
+	Name     string // .arrs 文件名（含 .arrs 扩展名）
+	Routing  int    // routing 值：0=未指定, 1=DIRECT, 2=REJECT
+	Endpoint string // 对应的服务端点路径（如 /direct.arrs, /reject.arrs, /rule.arrs）
+}
+
 // Result 转换结果。
 type Result struct {
-	Arrs     string // .arrs 文件内容（无路由规则时为空）
-	Amrs     string // .amrs 文件内容（无 MITM 规则时为空）
-	ArrsName string // .arrs 文件名（不含扩展名）
-	AmrsName string // .amrs 文件名（不含扩展名）
-	Report   Report // 转换报告
+	Arrs       string      // .arrs 文件内容（无路由规则时为空），兼容旧接口，合并所有分组
+	Amrs       string      // .amrs 文件内容（无 MITM 规则时为空）
+	ArrsName   string      // .arrs 文件名（不含扩展名），兼容旧接口
+	AmrsName   string      // .amrs 文件名（不含扩展名）
+	ArrsGroups []ArrsGroup // 按 routing 拆分的 .arrs 分组列表
+	Report     Report      // 转换报告
 }
 
 // MarshalBinary 将 Result 序列化为 JSON 字节（用于缓存存储）。
@@ -141,9 +150,46 @@ func (c *Converter) Convert(ctx context.Context, m *ir.Module) (*Result, error) 
 	}
 	m.Hostnames = cleanedHosts
 
-	// 1. 路由规则 → .arrs
-	arrsLines, amrsFromRules := c.convertRoutingRules(m.Rules, &res.Report)
-	res.Arrs = c.generateArrs(baseName, arrsLines, m)
+	// 1. 路由规则 → .arrs（按 action 分组：DIRECT/REJECT/其他）
+	directLines, rejectLines, otherLines, amrsFromRules := c.convertRoutingRules(m.Rules, &res.Report)
+
+	// 生成分组 .arrs
+	var groups []ArrsGroup
+	if len(directLines) > 0 {
+		content := c.generateArrs(baseName+"-Direct", directLines, m, 1)
+		groups = append(groups, ArrsGroup{
+			Content:  content,
+			Name:     baseName + "-Direct.arrs",
+			Routing:  1,
+			Endpoint: "/direct.arrs",
+		})
+	}
+	if len(rejectLines) > 0 {
+		content := c.generateArrs(baseName+"-Reject", rejectLines, m, 2)
+		groups = append(groups, ArrsGroup{
+			Content:  content,
+			Name:     baseName + "-Reject.arrs",
+			Routing:  2,
+			Endpoint: "/reject.arrs",
+		})
+	}
+	if len(otherLines) > 0 {
+		content := c.generateArrs(baseName, otherLines, m, 0)
+		groups = append(groups, ArrsGroup{
+			Content:  content,
+			Name:     baseName + ".arrs",
+			Routing:  0,
+			Endpoint: "/rule.arrs",
+		})
+	}
+	res.ArrsGroups = groups
+
+	// 兼容旧接口：合并所有分组
+	var allArrsLines []string
+	allArrsLines = append(allArrsLines, directLines...)
+	allArrsLines = append(allArrsLines, rejectLines...)
+	allArrsLines = append(allArrsLines, otherLines...)
+	res.Arrs = c.generateArrs(baseName, allArrsLines, m, 0)
 
 	// 2. MITM 重写规则 → .amrs
 	amrsLines := amrsFromRules
@@ -169,19 +215,23 @@ func (c *Converter) Convert(ctx context.Context, m *ir.Module) (*Result, error) 
 	return res, nil
 }
 
-// convertRoutingRules 转换路由规则。
-// 返回 .arrs 行与（URL-REGEX REJECT 类转入 .amrs 的）行。
-func (c *Converter) convertRoutingRules(rules []ir.RoutingRule, report *Report) (arrsLines, amrsLines []string) {
+// convertRoutingRules 转换路由规则，按 action 拆分为三组。
+// 返回 directLines（DIRECT）、rejectLines（REJECT 类）、otherLines（其他）、amrsLines（URL-REGEX REJECT 转入 .amrs 的行）。
+func (c *Converter) convertRoutingRules(rules []ir.RoutingRule, report *Report) (directLines, rejectLines, otherLines, amrsLines []string) {
 	for _, r := range rules {
 		switch r.Type {
 		case "DOMAIN-SUFFIX", "DOMAIN":
-			arrsLines = append(arrsLines, fmt.Sprintf("2, %s", r.Value))
+			line := fmt.Sprintf("2, %s", r.Value)
+			c.appendByAction(r.Action, line, &directLines, &rejectLines, &otherLines)
 		case "DOMAIN-KEYWORD":
-			arrsLines = append(arrsLines, fmt.Sprintf("3, %s", r.Value))
+			line := fmt.Sprintf("3, %s", r.Value)
+			c.appendByAction(r.Action, line, &directLines, &rejectLines, &otherLines)
 		case "IP-CIDR":
-			arrsLines = append(arrsLines, fmt.Sprintf("0, %s", r.Value))
+			line := fmt.Sprintf("0, %s", r.Value)
+			c.appendByAction(r.Action, line, &directLines, &rejectLines, &otherLines)
 		case "IP-CIDR6":
-			arrsLines = append(arrsLines, fmt.Sprintf("1, %s", r.Value))
+			line := fmt.Sprintf("1, %s", r.Value)
+			c.appendByAction(r.Action, line, &directLines, &rejectLines, &otherLines)
 		case "URL-REGEX":
 			// REJECT 类 → .amrs rewrite reject
 			if ir.IsRejectAction(r.Action) {
@@ -202,6 +252,19 @@ func (c *Converter) convertRoutingRules(rules []ir.RoutingRule, report *Report) 
 		}
 	}
 	return
+}
+
+// appendByAction 根据 action 将 arrs 行追加到对应分组。
+// DIRECT → directLines, REJECT 类 → rejectLines, 其他 → otherLines。
+func (c *Converter) appendByAction(action string, line string, directLines, rejectLines, otherLines *[]string) {
+	switch {
+	case strings.EqualFold(action, "DIRECT"):
+		*directLines = append(*directLines, line)
+	case ir.IsRejectAction(action):
+		*rejectLines = append(*rejectLines, line)
+	default:
+		*otherLines = append(*otherLines, line)
+	}
 }
 
 // convertURLRegexReject 转换 URL-REGEX REJECT 类规则为 .amrs rewrite 行。
@@ -538,7 +601,8 @@ func splitAmrsFields(line string) []string {
 }
 
 // generateArrs 生成 .arrs 文件内容。
-func (c *Converter) generateArrs(name string, lines []string, m *ir.Module) string {
+// routing: 0=不添加 routing 字段, 1=DIRECT, 2=REJECT。
+func (c *Converter) generateArrs(name string, lines []string, m *ir.Module, routing int) string {
 	if len(lines) == 0 {
 		return ""
 	}
@@ -547,6 +611,9 @@ func (c *Converter) generateArrs(name string, lines []string, m *ir.Module) stri
 		buf.WriteString(c.metadataComments(m))
 	}
 	buf.WriteString(fmt.Sprintf("name = %s\n", name))
+	if routing > 0 {
+		buf.WriteString(fmt.Sprintf("routing = %d\n", routing))
+	}
 	buf.WriteString("\n")
 	for _, l := range lines {
 		buf.WriteString(l + "\n")

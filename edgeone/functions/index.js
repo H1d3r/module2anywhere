@@ -82,7 +82,7 @@ const HTML = `<!DOCTYPE html>
   <div id="error-area" class="error" style="display:none;"></div>
 
   <div class="links">
-    <p>API 接口：<a href="/mitm.amrs?url=EXAMPLE">GET /mitm.amrs?url=...</a> | <a href="/rule.arrs?url=EXAMPLE">GET /rule.arrs?url=...</a> | <a href="/deeplink?url=EXAMPLE">GET /deeplink?url=...</a></p>
+    <p>API 接口：<a href="/mitm.amrs?url=EXAMPLE">GET /mitm.amrs?url=...</a> | <a href="/rule.arrs?url=EXAMPLE">GET /rule.arrs?url=...</a> | <a href="/direct.arrs?url=EXAMPLE">GET /direct.arrs?url=...</a> | <a href="/reject.arrs?url=EXAMPLE">GET /reject.arrs?url=...</a> | <a href="/deeplink?url=EXAMPLE">GET /deeplink?url=...</a></p>
     <p style="margin-top:0.5rem;">参考文档：<a href="https://github.com/NodePassProject/Anywhere" target="_blank">Anywhere</a> | <a href="https://github.com/H1d3r/module2anywhere" target="_blank">module2anywhere</a></p>
   </div>
 </div>
@@ -153,11 +153,15 @@ function doDeeplink() {
   const generalize = document.getElementById('opt-generalize').checked;
   const origin = window.location.origin;
   const params = 'url=' + encodeURIComponent(url) + '&fetch=' + fetchScripts + '&generalize=' + generalize;
+
+  // 按 routing 分组生成 arrs 子链接
   const ruleURL = origin + '/rule.arrs?' + params;
+  const directURL = origin + '/direct.arrs?' + params;
+  const rejectURL = origin + '/reject.arrs?' + params;
   const mitmURL = origin + '/mitm.amrs?' + params;
 
-  // 直接构造 deeplink 并跳转，唤起 Anywhere app
-  const deeplink = 'anywhere://add-rule-set?link=' + encodeURIComponent(ruleURL) + '&link=' + encodeURIComponent(mitmURL);
+  // 构造 deeplink，包含所有分组
+  const deeplink = 'anywhere://add-rule-set?link=' + encodeURIComponent(ruleURL) + '&link=' + encodeURIComponent(directURL) + '&link=' + encodeURIComponent(rejectURL) + '&link=' + encodeURIComponent(mitmURL);
   window.location.href = deeplink;
 }
 </script>
