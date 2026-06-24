@@ -1,36 +1,23 @@
 #!/usr/bin/env node
 /**
- * 构建脚本：使用 esbuild 预编译 EdgeOne 端点文件。
- *
- * 为什么需要预编译：
- * EdgeOne CLI 的 esbuild 会将所有端点打包成一个 bundle，但不会做 module deduplication，
- * 导致 lib.js 的代码在每个端点中重复一份（约 55KB × 8 端点 ≈ 440KB）。
- * 预编译后每个端点只包含实际使用的 lib.js 函数（tree-shaking），总 bundle 大小大幅减小。
+ * 构建脚本：生成 EdgeOne 端点文件。
+ * 端点文件使用 import 引用 lib.js，由 EdgeOne 的 esbuild 在编译时处理依赖。
  *
  * 使用方法： node build.js
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FUNCTIONS_DIR = join(__dirname, 'functions');
-const SRC_DIR = join(__dirname, 'functions-src');
 
-// 确认 lib.js 存在（权威来源是 functions/lib.js）
+// 确认 lib.js 存在
 const libPath = join(FUNCTIONS_DIR, 'lib.js');
 if (!existsSync(libPath)) {
   console.error('Error: lib.js not found at', libPath);
   process.exit(1);
-}
-
-// 确保 functions 和 functions-src 目录存在
-if (!existsSync(FUNCTIONS_DIR)) {
-  mkdirSync(FUNCTIONS_DIR, { recursive: true });
-}
-if (!existsSync(SRC_DIR)) {
-  mkdirSync(SRC_DIR, { recursive: true });
 }
 
 // 端点文件模板：使用 import 引用 lib.js
@@ -38,7 +25,7 @@ function buildEndpoint(endpointCode) {
   return `/**
  * 此文件由 build.js 自动生成
  * - 使用 import 引用 lib.js 共享函数
- * - 修改 lib.js 后重新运行 node build.js 即可生效
+ * - 修改 lib.js 后重新运行 edgeone makers dev 即可生效
  */
 
 import { lib } from './lib.js';
@@ -1223,108 +1210,10 @@ export async function onRequest(context) {
   },
 ];
 
-// ===================== 预编译步骤 =====================
-// 使用 esbuild 将每个端点文件预编译，实现 tree-shaking 和 minify。
-// 这样 EdgeOne CLI 拿到的已经是编译后的文件，不需要再处理 import。
-
-async function precompileWithEsbuild() {
-  // 尝试加载 esbuild
-  let esbuild;
-  const esbuildPaths = [
-    // EdgeOne CLI 内置的 esbuild
-    join(__dirname, 'node_modules', 'edgeone', 'node_modules', 'esbuild', 'lib', 'main.js'),
-    join(__dirname, 'node_modules', 'esbuild', 'lib', 'main.js'),
-  ];
-
-  for (const p of esbuildPaths) {
-    try {
-      esbuild = await import(`file://${p}`);
-      console.log('使用 esbuild:', p);
-      break;
-    } catch { /* 继续尝试下一个路径 */ }
-  }
-
-  if (!esbuild) {
-    console.log('未找到 esbuild，跳过预编译（将使用原始 import 方式）');
-    return false;
-  }
-
-  // 1. 先将源文件写入 functions-src 目录
-  if (!existsSync(SRC_DIR)) {
-    mkdirSync(SRC_DIR, { recursive: true });
-  }
-
-  // 复制 lib.js 到 functions-src
-  const libContent = readFileSync(join(FUNCTIONS_DIR, 'lib.js'), 'utf-8');
-  writeFileSync(join(SRC_DIR, 'lib.js'), libContent);
-
-  // 生成端点源文件到 functions-src
-  for (const ep of endpoints) {
-    const srcPath = join(SRC_DIR, ep.file);
-    writeFileSync(srcPath, buildEndpoint(ep.code));
-  }
-
-  // 2. 使用 esbuild 编译每个端点
-  for (const ep of endpoints) {
-    const srcPath = join(SRC_DIR, ep.file);
-    const outPath = join(FUNCTIONS_DIR, ep.file);
-
-    try {
-      const result = await esbuild.build({
-        entryPoints: [srcPath],
-        bundle: true,
-        outfile: outPath,
-        format: 'esm',
-        platform: 'browser',
-        target: ['es2020'],
-        minify: true,
-        treeShaking: true,
-        external: [], // 不排除任何模块，全部内联
-      });
-
-      if (result.errors && result.errors.length > 0) {
-        console.error(`编译 ${ep.file} 出错:`, result.errors);
-        // 回退到原始方式
-        writeFileSync(outPath, buildEndpoint(ep.code));
-      } else {
-        const size = readFileSync(outPath).length;
-        console.log(`编译 ${ep.file}: ${size} 字节`);
-      }
-    } catch (e) {
-      console.error(`编译 ${ep.file} 失败:`, e.message);
-      // 回退到原始方式
-      writeFileSync(outPath, buildEndpoint(ep.code));
-    }
-  }
-
-  return true;
-}
-
-// 运行构建
-const precompiled = await precompileWithEsbuild();
-
-if (!precompiled) {
-  // 没有预编译，使用原始 import 方式生成端点文件
-  for (const ep of endpoints) {
-    const outPath = join(FUNCTIONS_DIR, ep.file);
-    writeFileSync(outPath, buildEndpoint(ep.code));
-    console.log('Built', ep.file);
-  }
-}
-
-// 复制不参与预编译的静态文件
-const staticFiles = ['health.js', 'index.js'];
-for (const f of staticFiles) {
-  const srcPath = join(SRC_DIR, f);
-  const outPath = join(FUNCTIONS_DIR, f);
-  // 如果 functions-src 中有该文件，复制过去；否则跳过
-  if (existsSync(srcPath)) {
-    writeFileSync(outPath, readFileSync(srcPath));
-    console.log('Copied', f);
-  } else if (!existsSync(outPath)) {
-    // health.js 和 index.js 可能已经在 functions 目录中
-    console.log('Skipped', f, '(not found in functions-src)');
-  }
+for (const ep of endpoints) {
+  const outPath = join(FUNCTIONS_DIR, ep.file);
+  writeFileSync(outPath, buildEndpoint(ep.code));
+  console.log('Built', ep.file);
 }
 
 console.log('All endpoint files regenerated successfully.');

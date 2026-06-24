@@ -1,53 +1,197 @@
-var ne=e=>{let t=[],s=null,r=[];for(let n of e.split(`
-`)){let a=n.replace(/\r$/,""),o=a.trim();if(o===""){s&&r.push(a);continue}if(o.startsWith("#!")){s||(s={name:"__meta__",body:""}),r.push(a);continue}if(o.startsWith("[")&&o.endsWith("]")){s&&(s.body=r.join(`
-`),t.push(s)),s={name:o.slice(1,-1).trim(),body:""},r.length=0;continue}r.push(a)}return s&&(s.body=r.join(`
-`),t.push(s)),t},ae=e=>{let t={};for(let s of e.split(`
-`)){let r=s.trim();if(!r.startsWith("#!"))continue;let n=r.slice(2),a=n.indexOf("=");if(a<0)continue;let o=n.slice(0,a).trim(),i=n.slice(a+1).trim();t[o]=i}return t},_=e=>{let t=[],s="",r=!1;for(let n=0;n<e.length;n++){let a=e[n];r?a==='"'?n+1<e.length&&e[n+1]==='"'?(s+='"',n++):r=!1:s+=a:a==='"'?r=!0:a===","?(t.push(s.trim()),s=""):s+=a}return t.push(s.trim()),t},oe=e=>{let t={},s=[];for(let r of e){if(!r)continue;let n=r.indexOf("=");n>0?t[r.slice(0,n).trim().toLowerCase()]=r.slice(n+1).trim():s.push(r)}return{args:t,positional:s}},E=e=>(e=e.trim(),e.length>=2&&e[0]==='"'&&e[e.length-1]==='"'?e.slice(1,-1).replace(/""/g,'"'):e),J=e=>{let t=e.split(","),s=[],r=new Set;for(let n of t)n=n.trim(),n&&(n=n.replace(/^%APPEND%/i,"").trim(),n.startsWith("*.")?n=n.slice(2):n.startsWith("*")&&!n.includes(".")&&(n=n.slice(1)),n=n.trim(),!(!n||r.has(n))&&(r.add(n),s.push(n)));return s},be=e=>{let t=new Set,s=[];for(let r of e)!r||t.has(r)||(t.add(r),s.push(r));return s},h=e=>{e=e.replace(/^[\t ]+/,"");for(let t=0;t<e.length;t++)if(e[t]===" "||e[t]==="	")return[e.slice(0,t),e.slice(t+1).replace(/^[\t ]+/,"")];return[e,""]},ie=e=>e.split(/\s+/).filter(Boolean),ce=e=>{let t=[],s="",r=!1;for(let n=0;n<e.length;n++){let a=e[n];r?(s+=a,a==='"'&&(r=!1)):a==='"'?(r=!0,s+=a):a===" "||a==="	"?s&&(t.push(s),s=""):s+=a}return s&&t.push(s),t},$e=(e,t)=>{let s=ce(e);for(let r of s){let n=r.indexOf("=");if(n<=0)continue;let a=r.slice(0,n).trim().toLowerCase(),o=E(r.slice(n+1));t[a]=o}},W=(e,t)=>e&&(e=e.replace(/\\\//g,"/"),t&&(e=ve(e)),e.endsWith("\\?")&&(e=e.slice(0,-2)+"(?:\\?|$)"),e);function ve(e){if(!e.startsWith("^http"))return e;let t=e.indexOf("://");if(t<0)return e;let s=e.slice(t+3),r=s.indexOf("/");if(r<0)return e;let n=s.slice(0,r);return xe(n)?e:e.slice(0,t+3)+"[^/]+"+s.slice(r)}function xe(e){for(let t=0;t<e.length;t++)if(e[t]==="("){if(t+2<e.length&&e[t+1]==="?")continue;return!0}return!1}var F=e=>{if(e=e.trim(),!e)return"$";if(e.startsWith("$.")||e==="$")return e;let t=e.split("."),s="$";for(let r of t){if(!r)continue;let n=r.indexOf("[");if(n>=0){let a=r.slice(0,n),o=r.slice(n);a&&(s+="."+a),s+=o;continue}if(/^\d+$/.test(r)){s+="["+r+"]";continue}s+="."+r}return s},f=e=>/[,"]/.test(e)||Se(e)?'"'+e.replace(/"/g,'""')+'"':e;function Se(e){return e?e[0]===" "||e[0]==="	"||e[e.length-1]===" "||e[e.length-1]==="	":!1}var Z=e=>{for(let t=0;t<e.length;t++)if(e[t]==="$"&&t+1<e.length&&e[t+1]>="1"&&e[t+1]<="9")return!0;return!1},P=["https://ghfast.top/","https://ph.ipv9.win/"],Le=["raw.githubusercontent.com","github.com","gist.githubusercontent.com","codeload.github.com"],U="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",Ce={surge:"Shadowrocket/308 CFNetwork/1568.300 Darwin/24.1.0",loon:"Loon/750 CFNetwork/1568.300 Darwin/24.1.0",quantumultx:"Quantumult%20X%20Patched/1.0.30 (iPhone;iOS%2017.0)",unknown:U},Q=e=>e&&Ce[e]||U;function ke(e){return Le.some(t=>e.includes(t))}function Ae(e){for(var t=0;t<P.length;t++)if(e.indexOf(P[t])===0)return!0;return!1}function Ee(e,t){return e+t.replace(/^https:\/\//,"")}async function j(e,t){var s=t||U,r=fetch(e,{headers:{"User-Agent":s,Accept:"*/*"}}),n=new Promise(function(o,i){setTimeout(function(){i(new Error("timeout 10s: "+e))},1e4)}),a=await Promise.race([r,n]);if(!a.ok)throw new Error("\u8BF7\u6C42 "+e+" \u8FD4\u56DE\u72B6\u6001\u7801 "+a.status);return await a.text()}async function K(e,t){var s=t||U;if(!ke(e)||Ae(e))return j(e,s);for(var r=0;r<P.length;r++){var n=Ee(P[r],e);try{var a=await j(n,s);if(a)return a}catch{}}return j(e,s)}function ee(e){let t=e.toLowerCase();return t.startsWith("http://")||t.startsWith("https://")}function Ue(e,t){if(ee(e)||!t)return e;if(ee(t)&&!e.startsWith("/")){let s=t.lastIndexOf("/");if(s>0)return t.slice(0,s+1)+e}return e}async function We(e,t,s,r,n){if(!t){let a=`function process(ctx){Anywhere.log.warning("script not fetched: ${e}");}`;return btoa(unescape(encodeURIComponent(a)))}try{let a=await K(e,n),o=ue(a,s),i=r?Je(o,s):o;return btoa(unescape(encodeURIComponent(i)))}catch(a){throw new Error(`\u4E0B\u8F7D\u811A\u672C\u5931\u8D25 "${e}": ${a}`)}}function Te(e,t){let s=ue(e,t);return btoa(unescape(encodeURIComponent(s)))}function q(e,t){let s=e.trim();return s.startsWith("{")&&s.endsWith("}")&&(s=s.slice(1,-1).trim()),Te(s,t)}function ue(e,t){let s=e.includes("$httpClient")||e.includes("$done({response:"),r=e;return r=r.replace(/\$request\.url/g,"ctx.url"),r=r.replace(/\$request\.method/g,"ctx.method"),r=r.replace(/\$request\.headers/g,"ctx.headers"),r=r.replace(/\$response\.status/g,"ctx.status"),r=r.replace(/\$response\.headers/g,"ctx.headers"),r=r.replace(/\$request\.body/g,"ctx.body"),r=r.replace(/\$response\.body/g,"ctx.body"),r=Oe(r),r=r.replace(/\$persistentStore\.read\(\s*([^)]+?)\s*\)/g,"Anywhere.store.getString($1, true)"),r=r.replace(/\$persistentStore\.write\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)/g,"Anywhere.store.set($2, $1, true)"),r=r.replace(/\$notification\.post\(\s*([^,]+?)\s*,\s*([^,]*?)\s*,\s*([^)]+?)\s*\)/g,'Anywhere.log.info($1 + " " + $2 + " " + $3)'),r=Ie(r),r=r.replace(/JSON\.parse\(ctx\.body\)/g,"JSON.parse(Anywhere.codec.utf8.decode(ctx.body))"),r=r.replace(/JSON\.parse\(\$response\.body\)/g,"JSON.parse(Anywhere.codec.utf8.decode(ctx.body))"),r=je(r,t,s),r}function Ie(e){let t=e;return t=t.replace(/\$httpClient\.get\(\s*([^,]+?)\s*,/g,"await Anywhere.http.get($1"),t=t.replace(/\$httpClient\.post\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,/g,"await Anywhere.http.post($1, $2"),t=t.replace(/\$httpClient\.put\(\s*([^,]+?)\s*,/g,"await Anywhere.http.put($1"),t=t.replace(/\$httpClient\.delete\(\s*([^,]+?)\s*,/g,"await Anywhere.http.delete($1"),t=t.replace(/\$httpClient\.request\(\s*([^,]+?)\s*,/g,"await Anywhere.http.request($1"),t}function Oe(e){let t=e;return t=t.replace(/\$done\(\s*\{\s*\}\s*\)/g,"Anywhere.done()"),t=t.replace(/\$done\(\s*\)/g,"Anywhere.done()"),t=t.replace(/\$done\(\s*\{\s*body\s*:\s*([^}]+?)\s*\}\s*\)/g,"ctx.body = $1; Anywhere.done()"),t=t.replace(/\$done\(\s*\{\s*response\s*:\s*(\{[^}]*\})\s*\}\s*\)/g,"Anywhere.respond($1)"),t=t.replace(/\$done\(\s*\{[^}]*\}\s*\)/g,"Anywhere.done()"),t}function je(e,t,s){let r=e.trim(),n=s?"async ":"",a=t===1?"response":"request";return/^function\s+process\s*\(\s*ctx\s*\)/m.test(r)?s&&!r.startsWith("async ")?"async "+r:r:/^async\s+function\s+process\s*\(\s*ctx\s*\)/m.test(r)?r:/^function\s+run\s*\(\s*\)/m.test(r)?`${n}function process(ctx) {
-  if (ctx.phase !== "${a}") return;
-  try { run(); } catch (e) { Anywhere.log.warning("script error: " + e); }
+/**
+ * 此文件由 build.js 自动生成
+ * - 使用 import 引用 lib.js 共享函数
+ * - 修改 lib.js 后重新运行 edgeone makers dev 即可生效
+ */
+
+import { lib } from './lib.js';
+
+function buildCorsHeaders() {
+  return {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': '*',
+  };
 }
-${r}`:`${n}function process(ctx) {
-  if (ctx.phase !== "${a}") return;
-  try {
-${pe(r,"    ")}
-  } catch (e) { Anywhere.log.warning("script error: " + e); }
-  Anywhere.done();
-}`}function pe(e,t){return e.split(`
-`).map(s=>s&&t+s).join(`
-`)}function te(e,t,s){let r=`function process(ctx) {
-  if (ctx.phase !== "request" || !ctx.url) return;
-  var m = ctx.url.match(${qe(e)});
-  if (m) {
-    var url = ${Me(t)};
-    Anywhere.respond({ status: 302, headers: [["Location", url]] });
+
+function corsPreflight() {
+  return new Response(null, { status: 204, headers: buildCorsHeaders() });
+}
+
+export async function onRequest(context) {
+  if (context.request.method === 'OPTIONS') return corsPreflight();
+
+  var url = new URL(context.request.url);
+  var query = {};
+  url.searchParams.forEach(function (v, k) { query[k] = v; });
+
+  var rawURL = query.url;
+  if (!rawURL) {
+    return new Response('Error: url parameter is required', {
+      status: 400,
+      headers: buildCorsHeaders(),
+    });
   }
-}`;return btoa(unescape(encodeURIComponent(r)))}function qe(e){return"/"+e.replace(/\//g,"\\/")+"/"}function Me(e){let t='"',s=0;for(;s<e.length;)e[s]==="$"&&s+1<e.length&&e[s+1]>="1"&&e[s+1]<="9"?(t+='" + m['+e[s+1]+'] + "',s+=2):((e[s]==='"'||e[s]==="\\")&&(t+="\\"),t+=e[s],s++);return t+='"',t}function Je(e,t){let s=t===1?"response":"request",r=Pe(e)||e;return`async function process(ctx) {
-  if (ctx.phase !== "${s}" || !ctx.body) return;
-  if (!ctx.state.buf) ctx.state.buf = [];
-  if (!ctx.state.text) ctx.state.text = "";
-  ctx.state.buf.push(ctx.body);
-  try { ctx.state.text += Anywhere.codec.utf8.decode(ctx.body); } catch (e) { Anywhere.log.warning("decode frame failed: " + e); }
-  if (!ctx.frame || !ctx.frame.end) return;
+
+  // 解码 URL
+  var decodedURL;
   try {
-    ctx.body = Anywhere.codec.utf8.encode(ctx.state.text);
-${pe(r,"    ")}
-  } catch (e) { Anywhere.log.warning("stream process failed: " + e); }
-  Anywhere.done();
-}`}function Pe(e){let t=e.trim();if(!t.includes("function process(ctx)"))return"";let s=t.indexOf("{"),r=t.lastIndexOf("}");return s<0||r<0||r<=s?"":t.slice(s+1,r).trim()}function _e(e,t){let s=t.toLowerCase();if(s.endsWith(".plugin"))return"loon";if(s.endsWith(".sgmodule"))return"surge";if(s.endsWith(".conf"))return"quantumultx";let r=e.toLowerCase();return r.includes("[url rewrite]")||r.includes("[header rewrite]")||r.includes("[map local]")?"surge":r.includes("[rewrite]")||r.includes("[argument]")||e.includes("[MitM]")?"loon":e.includes("[MITM]")?"surge":/^\S+\s+url\s+(reject|script-response-body|script-request-body|echo-response|jsonjq-response-body|response-body|302|307)/im.test(e)?"quantumultx":"loon"}function fe(e){let t=[];for(let s of e.split(`
-`)){let r=s.trim();if(!r||r.startsWith("#")||r.startsWith("//"))continue;let n=_(r);if(n.length<2)continue;let a={raw:r,type:n[0].toUpperCase().trim(),value:n[1].trim(),action:"",options:[]};n.length>=3&&(a.action=n[2].toUpperCase().trim()),n.length>3&&(a.options=n.slice(3)),t.push(a)}return t}function le(e){let t={},[s,r]=h(e);switch(s=s.toLowerCase().trim(),s==="url"&&([s,r]=h(r),s=s.toLowerCase().trim()),s){case"reject":case"reject-200":case"reject-dict":case"reject-array":case"reject-img":return{action:s,args:t,rawJS:""};case"302":case"307":return t.url=r.trim(),{action:s,args:t,rawJS:""};case"mock-response-body":return $e(r,t),{action:s,args:t,rawJS:""};case"response-body-json-del":case"response-body-json-add":case"response-body-json-replace":{let n=ie(r);return n.length>=1&&(t.path=n[0]),n.length>=2&&(t.value=n.slice(1).join(" ")),{action:s,args:t,rawJS:""}}case"request-header":case"request-body":case"response-body":return{action:s,args:t,rawJS:r.trim()};case"header-del":return t.header=r.trim(),{action:s,args:t,rawJS:""};case"response-body-replace-regex":{let[n,a]=h(r);return t.search=E(n),t.replacement=E(a),{action:s,args:t,rawJS:""}}default:return t._raw=r.trim(),{action:s,args:t,rawJS:""}}}function Ne(e){let t=[];for(let s of e.split(`
-`)){let r=s.trim();if(!r||r.startsWith("#")||r.startsWith("//"))continue;let n={raw:r,pattern:"",action:"",args:{},rawJS:""},[a,o]=h(r);if(n.pattern=a,!o){t.push(n);continue}let{action:i,args:c,rawJS:u}=le(o);n.action=i,n.args=c,n.rawJS=u,t.push(n)}return t}function De(e){let[t,s]=h(e);if(!s)return null;let[r,n]=h(s),a={raw:e,pattern:r,phase:0,scriptPath:"",requiresBody:!1,binaryBody:!1,argument:"",tag:"",maxSize:0,engine:""};switch(t.toLowerCase().trim()){case"http-request":a.phase=0;break;case"http-response":a.phase=1;break;case"cron":return null;default:return null}let o=_(n),{args:i}=oe(o);if(a.scriptPath=i["script-path"]||"",a.tag=i.tag||"",a.argument=i.argument||"",a.engine=i.engine||"",i["requires-body"]&&(a.requiresBody=i["requires-body"].toLowerCase()==="true"||i["requires-body"]==="1"),i["binary-body-mode"]&&(a.binaryBody=i["binary-body-mode"].toLowerCase()==="true"||i["binary-body-mode"]==="1"),i["max-size"]){let c=parseInt(i["max-size"],10);isNaN(c)||(a.maxSize=c)}return a}function ze(e){let t=[];for(let s of e.split(`
-`)){let r=s.trim();if(!r||r.startsWith("#")||r.startsWith("//"))continue;let n=De(r);n&&t.push(n)}return t}function Ge(e){let t=[];for(let s of e.split(`
-`)){let r=s.trim();if(!r||r.startsWith("#")||r.startsWith("//"))continue;let n=r.indexOf("=");n<=0||t.push({key:r.slice(0,n).trim(),value:r.slice(n+1).trim(),raw:r})}return t}function He(e){for(let t of e.split(`
-`)){let s=t.trim();if(!s||s.startsWith("#"))continue;let r=s.indexOf("=");if(r<=0)continue;if(s.slice(0,r).trim().toLowerCase()==="hostname")return J(s.slice(r+1))}return[]}function re(e){let t={source:"loon",name:"",desc:"",author:"",homepage:"",date:"",rawMeta:{},hostnames:[],contentType:"",rules:[],rewrites:[],scripts:[],headerRWs:[],mapLocals:[],arguments:[]};for(let s of ne(e))switch(s.name){case"__meta__":{let r=ae(s.body);t.rawMeta=r,r.name&&(t.name=r.name),r.desc&&(t.desc=r.desc),r.author&&(t.author=r.author),r.homepage&&(t.homepage=r.homepage),r.date&&(t.date=r.date);break}case"Rule":t.rules.push(...fe(s.body));break;case"Rewrite":t.rewrites.push(...Ne(s.body));break;case"Script":t.scripts.push(...ze(s.body));break;case"Argument":t.arguments.push(...Ge(s.body));break;case"MitM":t.hostnames.push(...He(s.body));break}return t}function Be(e){let t={},[s,r]=h(e);switch(s=s.toLowerCase().trim(),s){case"reject":case"reject-200":case"reject-dict":case"reject-array":case"reject-img":return{action:s,args:t,rawJS:""};case"302":case"307":return t.url=r.trim(),{action:s,args:t,rawJS:""};case"_request-header":case"_request-body":case"_response-body":return{action:s,args:t,rawJS:r.trim()};case"_header-del":return t.header=r.trim(),{action:"header-del",args:t,rawJS:""};default:return t._raw=r.trim(),{action:s,args:t,rawJS:""}}}function Fe(e){let t=[];for(let s of e.split(`
-`)){let r=s.trim();if(!r||r.startsWith("#")||r.startsWith("//"))continue;let n={raw:r,pattern:"",action:"",args:{},rawJS:""},[a,o]=h(r);if(n.pattern=a,!o){t.push(n);continue}let{action:i,args:c,rawJS:u}=Be(o);n.action=i,n.args=c,n.rawJS=u,t.push(n)}return t}function Xe(e){let t=[];for(let s of e.split(`
-`)){let r=s.trim();if(!r||r.startsWith("#")||r.startsWith("//"))continue;let n={raw:r,pattern:"",phase:0,op:"",name:"",value:""},[a,o]=h(r);if(n.pattern=a,!o)continue;let[i,c]=h(o);switch(i.toLowerCase().trim()){case"request-header":n.phase=0;break;case"response-header":n.phase=1;break;default:continue}let[u,p]=h(c);n.op=u.toLowerCase().trim();let l=ie(p);l.length>=1&&(n.name=l[0]),l.length>=2&&(n.value=l.slice(1).join(" ")),t.push(n)}return t}function Qe(e){let t=[];for(let s of e.split(`
-`)){let r=s.trim();if(!r||r.startsWith("#")||r.startsWith("//"))continue;let n={raw:r,pattern:"",dataURL:"",header:""},[a,o]=h(r);n.pattern=a;let i=ce(o);for(let c of i){let u=c.indexOf("=");if(u<=0)continue;let p=c.slice(0,u).trim().toLowerCase(),l=E(c.slice(u+1));p==="data"?n.dataURL=l:p==="header"&&(n.header=l)}t.push(n)}return t}function Ke(e){let t=e.indexOf("=");if(t<=0)return null;let s=e.slice(t+1).trim(),r=_(s),{args:n}=oe(r),a={raw:e,pattern:n.pattern||"",phase:0,scriptPath:n["script-path"]||"",requiresBody:!1,binaryBody:!1,argument:n.argument||"",tag:n.tag||"",maxSize:0,engine:n.engine||""};switch((n.type||"").toLowerCase().trim()){case"http-request":a.phase=0;break;case"http-response":a.phase=1;break;case"cron":return null;default:return null}if(n["requires-body"]&&(a.requiresBody=n["requires-body"]==="1"||n["requires-body"].toLowerCase()==="true"),n["binary-body-mode"]&&(a.binaryBody=n["binary-body-mode"]==="1"||n["binary-body-mode"].toLowerCase()==="true"),n["max-size"]){let o=parseInt(n["max-size"],10);isNaN(o)||(a.maxSize=o)}return a}function Ve(e){let t=[];for(let s of e.split(`
-`)){let r=s.trim();if(!r||r.startsWith("#")||r.startsWith("//"))continue;let n=Ke(r);n&&t.push(n)}return t}function Ye(e){for(let t of e.split(`
-`)){let s=t.trim();if(!s||s.startsWith("#"))continue;let r=s.indexOf("=");if(r<=0)continue;if(s.slice(0,r).trim().toLowerCase()==="hostname")return J(s.slice(r+1))}return[]}function Ze(e){let t={source:"surge",name:"",desc:"",author:"",homepage:"",date:"",rawMeta:{},hostnames:[],contentType:"",rules:[],rewrites:[],scripts:[],headerRWs:[],mapLocals:[],arguments:[]};for(let s of ne(e))switch(s.name){case"__meta__":{let r=ae(s.body);t.rawMeta=r,r.name&&(t.name=r.name),r.desc&&(t.desc=r.desc),r.author&&(t.author=r.author),r.homepage&&(t.homepage=r.homepage),r.date&&(t.date=r.date);break}case"Rule":t.rules.push(...fe(s.body));break;case"URL Rewrite":t.rewrites.push(...Fe(s.body));break;case"Header Rewrite":t.headerRWs.push(...Xe(s.body));break;case"Map Local":t.mapLocals.push(...Qe(s.body));break;case"Script":t.scripts.push(...Ve(s.body));break;case"MITM":t.hostnames.push(...Ye(s.body));break}return t}function et(e){let t={source:"quantumultx",name:"",desc:"",author:"",homepage:"",date:"",rawMeta:{},hostnames:[],contentType:"",rules:[],rewrites:[],scripts:[],headerRWs:[],mapLocals:[],arguments:[]};tt(t,e);let s=e.split(`
-`),r=[];for(let a=0;a<s.length;a++){let o=s[a].trim();if(o==="")continue;let i=X(o);if(i!==""){r.push(...J(i));continue}if(o.startsWith("#")||o.startsWith("//")){let c=(s[a+1]||"").trim(),u=X(c);u!==""&&r.push(...J(u))}}t.hostnames=be(r);for(let a of s){let o=a.trim();if(o===""||o.startsWith("#")||o.startsWith("//")||o.startsWith("#!")||X(o)!==""||o.startsWith("[")&&o.endsWith("]"))continue;let i=rt(o);if(i){i.kind==="rewrite"?t.rewrites.push(i.rewrite):i.kind==="script"&&t.scripts.push(i.script);continue}var n=nt(o);n&&t.rules.push(n)}return t}function tt(e,t){let s=t.split(`
-`),r=!1;for(let n of s){let a=n.trim();if(a==="// ==UserScript=="){r=!0;continue}if(a==="// ==/UserScript==")break;if(!r||!a.startsWith("// @"))continue;let o=a.slice(4).trim(),i=o.search(/\s/);if(i<=0)continue;let c=o.slice(0,i).trim(),u=o.slice(i).trim();if(!c||!u)continue;e.rawMeta[c]=u;let p=c.toLowerCase();p==="scriptname"&&!e.name?e.name=u:p==="author"&&!e.author?e.author=u:(p==="function"||p==="description")&&!e.desc?e.desc=u:p==="updatetime"&&!e.date?e.date=u:(p==="homepage"||p==="homepageurl")&&!e.homepage&&(e.homepage=u)}}function X(e){if(!e)return"";let s=e.toLowerCase().indexOf("hostname");if(s<0)return"";let r=e.slice(s+8);return r=r.replace(/^[ \t]+/,""),!r||r[0]!=="="?"":(r=r.slice(1).replace(/^[ \t]+/,""),r)}function rt(e){let t=st(e);if(t.length<3)return null;let s=t[0];if(t[1].toLowerCase()!=="url")return null;let r=t[2].toLowerCase();if(r.startsWith("script-")||r==="script-analyze-echo-response"){let i=1;(r==="script-request-body"||r==="script-request-header")&&(i=0);let c=t[3]||"";return c?{kind:"script",script:{raw:e,pattern:s,phase:i,scriptPath:c,requiresBody:!1,binaryBody:!1,argument:"",tag:"",maxSize:0,engine:""}}:null}if(r==="echo-response"){let i={raw:e,pattern:s,action:r,args:{},rawJS:""};if(t.length>=4&&(i.args["content-type"]=t[3]),t.length>=7){let c=t.slice(6).join(" ");c.startsWith("body ")&&(c=c.slice(5)),i.args.body=c}return{kind:"rewrite",rewrite:i}}if(r==="response-body"){let i={raw:e,pattern:s,action:r,args:{},rawJS:""};return t.length>=4&&(i.args.search=t[3]),t.length>=7&&(i.args.replacement=t[6]),{kind:"rewrite",rewrite:i}}if(r==="jsonjq-response-body"){let i={raw:e,pattern:s,action:r,args:{},rawJS:""};return t.length>=4&&(i.args.jq=E(t.slice(3).join(" "))),{kind:"rewrite",rewrite:i}}let n=t.slice(2).join(" "),a=le(n);return{kind:"rewrite",rewrite:{raw:e,pattern:s,action:a.action,args:a.args,rawJS:a.rawJS}}}function st(e){let t=[],s="",r=!1,n=!1;for(let a=0;a<e.length;a++){let o=e[a];r?(s+=o,o==="'"&&(r=!1)):n?(s+=o,o==='"'&&(n=!1)):o==="'"?(r=!0,s+=o):o==='"'?(n=!0,s+=o):o===" "||o==="	"?s&&(t.push(s),s=""):s+=o}return s&&t.push(s),t}function nt(e){if(e[0]==="^")return null;var t=_(e);if(t.length<3)return null;var s=t[0].toUpperCase().trim(),r=["DOMAIN","DOMAIN-SUFFIX","DOMAIN-KEYWORD","DOMAIN-SET","RULE-SET","IP-CIDR","IP-CIDR6","IP6-CIDR","GEOIP","USER-AGENT","DEST-PORT","SRC-PORT","SRC-IP","SRC-IP-CIDR","PROCESS-NAME","SUBNET","CELLULAR-RADIO"];if(r.indexOf(s)<0)return null;for(var n=[],a=3;a<t.length;a++)n.push(t[a].trim());return{raw:e,type:s,value:t[1].trim(),action:t[2].toUpperCase().trim(),options:n}}function at(e,t){switch(t){case"loon":return re(e);case"surge":return Ze(e);case"quantumultx":return et(e);default:return re(e)}}function de(e){return["REJECT","REJECT-DICT","REJECT-ARRAY","REJECT-IMG","REJECT-200"].includes(e)}function A(e,t,s,r,n){e&&e.toUpperCase()==="DIRECT"?s.push(t):de(e)?r.push(t):n.push(t)}function he(){return{generalizeHost:!0,encodingPreprocess:!0,fetchScripts:!0,includeMetadata:!0,useStreamScript:!1,autoContentType:!0,addResourceURL:""}}async function ot(e,t){let s={...he(),...t},r={skipped:[],degraded:[],warnings:[],scriptErr:[]},n=e.name||"module2anywhere",a=[];for(let w of e.hostnames){if(/[?*]/.test(w)){r.warnings.push(`hostname \u542B\u901A\u914D\u7B26\u65E0\u6CD5\u9759\u6001\u5C55\u5F00\uFF0C\u5DF2\u8DF3\u8FC7: ${w}`);continue}a.push(w)}e.hostnames=a;let o=it(e.rules,s,r);var i=o[0],c=o[1],u=o[2],p=o[3],l=[];i.length>0&&l.push({content:M(n+"-Direct",i,e,s,1),name:n+"-Direct.arrs",routing:1,endpoint:"/direct.arrs"}),c.length>0&&l.push({content:M(n+"-Reject",c,e,s,2),name:n+"-Reject.arrs",routing:2,endpoint:"/reject.arrs"}),u.length>0&&l.push({content:M(n,u,e,s,0),name:n+".arrs",routing:0,endpoint:"/rule.arrs"});let $=[...p,...ut(e,s,r),...ft(e.headerRWs,s,r),...await lt(e.mapLocals,s,r,e.source),...await dt(e,s,r,e.source)],S=$;if(s.encodingPreprocess&&(S=ht($)),s.autoContentType&&!e.contentType){let w=wt(S);w&&(e.contentType=w)}var N=[].concat(i,c,u);return{arrs:M(n,N,e,s,0),amrs:gt(n,e.hostnames,S,e,s),arrsName:n+".arrs",amrsName:n+".amrs",arrsGroups:l,report:r}}function it(e,t,s){for(var r=[],n=[],a=[],o=[],i=0;i<e.length;i++){var c=e[i];switch(c.type){case"DOMAIN-SUFFIX":case"DOMAIN":{var u="2, "+c.value;A(c.action,u,r,n,a);break}case"DOMAIN-KEYWORD":{var u="3, "+c.value;A(c.action,u,r,n,a);break}case"IP-CIDR":{var u="0, "+c.value;A(c.action,u,r,n,a);break}case"IP-CIDR6":{var u="1, "+c.value;A(c.action,u,r,n,a);break}case"URL-REGEX":if(de(c.action)){var u=ct(c,t,s);u&&o.push(u)}else s.skipped.push("URL-REGEX \u975E REJECT \u7C7B\u4E0D\u53EF\u8F6C\u6362: "+c.raw);break;case"GEOIP":case"PROCESS-NAME":case"DEST-PORT":case"SRC-PORT":case"SRC-IP":case"SRC-IP-CIDR":case"CELLULAR-RADIO":case"SUBNET":s.skipped.push(c.type+" \u4E0D\u53EF\u8F6C\u6362: "+c.raw);break;case"DOMAIN-SET":case"RULE-SET":s.warnings.push("DOMAIN-SET/RULE-SET \u9700\u5355\u72EC\u4E0B\u8F7D\u5C55\u5F00: "+c.raw);break;default:s.skipped.push("\u672A\u77E5\u89C4\u5219\u7C7B\u578B "+c.type+": "+c.raw)}}return[r,n,a,o]}function ct(e,t,s){let r=W(e.value,t.generalizeHost);switch(e.action){case"REJECT":case"REJECT-200":return`0, 0, ${r}, 2`;case"REJECT-DICT":return`0, 0, ${r}, 2, {}`;case"REJECT-ARRAY":return`0, 0, ${r}, 2, []`;case"REJECT-IMG":return`0, 0, ${r}, 3`;default:return s.skipped.push(`URL-REGEX \u672A\u77E5 REJECT \u52A8\u4F5C ${e.action}: ${e.raw}`),""}}function ut(e,t,s){let r=[];for(let n of e.rewrites){let a=pt(n,e,t,s);a&&r.push(a)}return r}function pt(e,t,s,r){let n=W(e.pattern,s.generalizeHost);switch(e.action){case"reject":case"reject-200":return`0, 0, ${n}, 2`;case"reject-dict":return`0, 0, ${n}, 2, {}`;case"reject-array":return`0, 0, ${n}, 2, []`;case"reject-img":return`0, 0, ${n}, 3`;case"302":{let a=e.args.url||"";return Z(a)?(r.degraded.push(`302 \u5E26\u6355\u83B7\u7EC4\u8F6C\u4E3A\u811A\u672C: ${e.raw}`),`0, 100, ${n}, ${te(n,a,302)}`):`0, 0, ${n}, 1, ${a}`}case"307":{let a=e.args.url||"";return Z(a)?(r.degraded.push(`307 \u5E26\u6355\u83B7\u7EC4\u8F6C\u4E3A\u811A\u672C(\u964D\u7EA7302): ${e.raw}`),`0, 100, ${n}, ${te(n,a,307)}`):(r.degraded.push(`307 \u964D\u7EA7\u4E3A 302: ${e.raw}`),`0, 0, ${n}, 1, ${a}`)}case"mock-response-body":return`0, 0, ${n}, 2, ${f(e.args.data||"")}`;case"response-body-json-del":return`1, 5, ${n}, delete, ${F(e.args.path||"")}`;case"response-body-json-add":return`1, 5, ${n}, add, ${F(e.args.path||"")}, ${f(e.args.value||"")}`;case"response-body-json-replace":return`1, 5, ${n}, replace, ${F(e.args.path||"")}, ${f(e.args.value||"")}`;case"request-header":case"request-body":return`0, 100, ${n}, ${q(e.rawJS,0)}`;case"response-body":return`1, 100, ${n}, ${q(e.rawJS,1)}`;case"_request-header":case"_request-body":return`0, 100, ${n}, ${q(e.rawJS,0)}`;case"_response-body":return`1, 100, ${n}, ${q(e.rawJS,1)}`;case"header-del":{let a=e.args.header||"";return a?`0, 2, ${n}, ${f(a)}`:""}case"response-body-replace-regex":{let a=e.args.search||"",o=e.args.replacement||"";return a?`1, 4, ${n}, ${f(a)}, ${f(o)}`:""}case"echo-response":{let a=e.args.body||"",o=e.args["content-type"]||"application/json; charset=utf-8";return a?(t&&!t.contentType&&(t.contentType=o),`1, 0, ${n}, 2, ${f(a)}`):(r.skipped.push(`echo-response \u7F3A\u5C11 body: ${e.raw}`),"")}case"jsonjq-response-body":{let a=e.args.jq||"";return a?`1, 5, ${n}, ${f(a)}`:(r.skipped.push(`jsonjq-response-body \u7F3A\u5C11 jq: ${e.raw}`),"")}default:return r.skipped.push(`\u672A\u77E5\u91CD\u5199\u52A8\u4F5C ${e.action}: ${e.raw}`),""}}function ft(e,t,s){let r=[];for(let n of e){let a=W(n.pattern,t.generalizeHost);switch(n.op){case"add":r.push(`${n.phase}, 1, ${a}, ${f(n.name)}, ${f(n.value)}`);break;case"replace":r.push(`${n.phase}, 3, ${a}, ${f(n.name)}, ${f(n.value)}`);break;case"delete":r.push(`${n.phase}, 2, ${a}, ${f(n.name)}`);break;default:s.skipped.push(`\u672A\u77E5 header \u64CD\u4F5C ${n.op}: ${n.raw}`)}}return r}async function lt(e,t,s,r){let n=[],a=Q(r);for(let o of e){let i=W(o.pattern,t.generalizeHost);if(!o.dataURL){s.skipped.push(`Map Local \u65E0 data: ${o.raw}`);continue}let c=o.dataURL;if(o.dataURL.startsWith("http"))try{c=await K(o.dataURL,a)}catch(u){s.scriptErr.push(`Map Local \u4E0B\u8F7D data \u5931\u8D25 ${o.dataURL}: ${u}`);continue}n.push(`0, 0, ${i}, 2, ${f(c)}`)}return n}async function dt(e,t,s,r){let n=[],a=Q(r);for(let o of e.scripts){let i=W(o.pattern,t.generalizeHost);if(!o.scriptPath){s.skipped.push(`\u811A\u672C\u65E0 script-path: ${o.raw}`);continue}try{let c=Ue(o.scriptPath,e.name),u=await We(c,t.fetchScripts,o.phase,t.useStreamScript,a),p=t.useStreamScript?"101":"100";n.push(`${o.phase}, ${p}, ${i}, ${u}`)}catch(c){s.scriptErr.push(`\u811A\u672C\u4E0B\u8F7D\u5931\u8D25 ${o.scriptPath}: ${c}`)}}return n}function ht(e){let t=new Set;for(let r of e){let n=mt(r);n.length<2||n[0]==="1"&&["4","5","100","101"].includes(n[1])&&n.length>=3&&t.add(n[2])}if(t.size===0)return e;let s=[];for(let r of t)s.push(`0, 2, ${r}, accept-encoding`),s.push(`0, 1, ${r}, accept-encoding, identity`);return[...s,...e]}function mt(e){let t=[],s=e;for(let r=0;r<3&&s;r++){let n=s.indexOf(",");if(n<0){t.push(s.trim()),s="";break}t.push(s.slice(0,n).trim()),s=s.slice(n+1)}return s&&t.push(s.trim()),t}function M(e,t,s,r,n){if(t.length===0)return"";let a=[];return r.includeMetadata&&a.push(me(s,r)),a.push("name = "+e),n&&n>0&&a.push("routing = "+n),a.push(""),a.push(...t),a.join(`
-`)+`
-`}function gt(e,t,s,r,n){if(s.length===0&&t.length===0)return"";let a=[];return n.includeMetadata&&a.push(me(r,n)),a.push(`name = ${e}`),t.length>0&&a.push(`hostname = ${t.join(", ")}`),r.contentType&&a.push(`content-type = ${r.contentType}`),a.push(""),a.push(...s),a.join(`
-`)+`
-`}function wt(e){for(let t of e)if(t.startsWith("0, 0, ")){let s=t.slice(6),r=s.indexOf(", 2, ");if(r>=0){let n=s.slice(r+5).trim();if(n.startsWith("{")||n.startsWith('"{"')||n.includes('"code"'))return"application/json; charset=utf-8"}}return""}function me(e,t){t=t||{};let s=["# \u7531 module2anywhere \u4ECE "+e.source+" \u6A21\u5757\u8F6C\u6362"];return t.sourceURL&&s.push("# source: "+t.sourceURL),t.addResourceURL&&s.push("# add-resource: "+t.addResourceURL),t.serviceURL&&s.push("# this: "+t.serviceURL),e.desc&&s.push("# desc: "+e.desc),e.author&&s.push("# author: "+e.author),e.homepage&&s.push("# homepage: "+e.homepage),e.date&&s.push("# date: "+e.date),s.push(""),s.join(`
-`)}function yt(e){try{let s=new URL(e).pathname.split("/"),r=s[s.length-1];for(let n of[".plugin",".sgmodule",".lpx",".conf",".list"])r.endsWith(n)&&(r=r.slice(0,-n.length));return r||"Unnamed"}catch{return"Unnamed"}}function Rt(e){try{let t=new URL(e);if(!(t.hostname||"").toLowerCase().endsWith("quantumult.app"))return!1;let r=t.pathname;return r.endsWith("/")&&(r=r.slice(0,-1)),r==="/x/open-app/add-resource"}catch{return!1}}function bt(e){let s=new URL(e).searchParams.get("remote-resource")||"";if(!s)throw new Error("\u7F3A\u5C11 remote-resource \u53C2\u6570");try{s=decodeURIComponent(s)}catch{}let r;try{r=JSON.parse(s)}catch(i){throw new Error("remote-resource JSON \u89E3\u6790\u5931\u8D25: "+i.message)}let n=["rewrite_remote","server_remote","filter_remote","task_remote"],a=[];for(let i of n){let c=r[i];Array.isArray(c)&&a.push(...c)}let o=[];for(let i of a){if(typeof i!="string")continue;let c=i.trim();if(!c)continue;let u=c.indexOf(",");u>0&&(c=c.slice(0,u).trim()),(c.startsWith("http://")||c.startsWith("https://"))&&o.push(c)}return o}var R=new Map,$t=5*60*1e3,se=256;function vt(e){var t=R.get(e);return t?Date.now()>t.expiresAt?(R.delete(e),{hit:!1}):{hit:!0,value:t.value}:{hit:!1}}function xt(e,t){if(R.size>=se){for(var[s,r]of R)Date.now()>r.expiresAt&&R.delete(s);if(R.size>=se){var n=R.keys().next().value;n!==void 0&&R.delete(n)}}R.set(e,{value:t,expiresAt:Date.now()+$t})}function St(e,t,s,r){return e+"|"+t+"|"+s+"|"+r}var g={detectSource:_e,parse:at,deriveNameFromURL:yt,defaultConvertOptions:he,convert:ot,appendByAction:A,fetchRemoteWithProxy:K,getUserAgent:Q,isAddResourceURL:Rt,extractAddResourceURLs:bt,cacheGet:vt,cachePut:xt,cacheKey:St};function b(){return{"Access-Control-Allow-Origin":"*","Access-Control-Allow-Methods":"GET, OPTIONS","Access-Control-Allow-Headers":"*"}}function Lt(){return new Response(null,{status:204,headers:b()})}async function At(e){if(e.request.method==="OPTIONS")return Lt();var t=new URL(e.request.url),s={};t.searchParams.forEach(function(m,Re){s[Re]=m});var r=s.url;if(!r)return new Response("Error: url parameter is required",{status:400,headers:b()});var n;try{n=decodeURIComponent(r)}catch{return new Response("Error: Invalid URL encoding",{status:400,headers:b()})}var a=s.name||"",o=s.fetch!=="false",i=s.generalize==="true",c=s.source||"",u=(s.format||"").toLowerCase().trim(),p=g.getUserAgent(c),l=n,$=[n],S="";if(g.isAddResourceURL&&g.isAddResourceURL(n)){S=n;try{$=g.extractAddResourceURLs(n),$.length===0&&($=[n])}catch(m){return new Response("Error: add-resource \u89E3\u6790\u5931\u8D25: "+(m.message||m),{status:400,headers:b()})}}for(var N=t.origin+t.pathname,w=!1,V=!1,L=[],D=0;D<$.length;D++){var T=$[D],z;try{z=await g.fetchRemoteWithProxy(T,p)}catch(m){return new Response("Error: Failed to fetch remote file: "+(m.message||m),{status:500,headers:b()})}var ge=g.detectSource(z,T.split("/").pop()||""),I=g.parse(z,ge);a?I.name=a:I.name||(I.name=g.deriveNameFromURL(T));var we={...g.defaultConvertOptions(),generalizeHost:i,fetchScripts:o,sourceURL:T,serviceURL:N,addResourceURL:S};try{var v=await g.convert(I,we);if(v.amrs&&(w=!0),v.arrs&&(V=!0),v.arrsGroups)for(var y=0;y<v.arrsGroups.length;y++)v.arrsGroups[y].content&&L.indexOf(v.arrsGroups[y].endpoint)===-1&&L.push(v.arrsGroups[y].endpoint)}catch(m){return new Response("Error: convert failed: "+(m.message||m),{status:500,headers:b()})}}var G=t.origin,C="url="+encodeURIComponent(n)+"&fetch="+o+"&generalize="+i;c&&(C+="&source="+encodeURIComponent(c)),a&&(C+="&name="+encodeURIComponent(a));var d=[];if(w&&d.push(G+"/mitm.amrs?"+C),L&&L.length>0)for(var y=0;y<L.length;y++)d.push(G+L[y]+"?"+C);else V&&d.push(G+"/rule.arrs?"+C);if(d.length===0)return new Response("Error: no rules to import",{status:404,headers:b()});for(var O="anywhere://add-rule-set?",Y=[],H=0;H<d.length;H++)Y.push("link="+encodeURIComponent(d[H]));if(O+=Y.join("&"),u==="text")return new Response(O,{status:200,headers:{...b(),"Content-Type":"text/plain; charset=utf-8"}});var ye=e.request.headers.get("Accept")||"";if(ye.indexOf("text/html")!==-1){for(var B='<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>\u5BFC\u5165 Anywhere</title><style>body{font-family:-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:2rem}.card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:2rem;max-width:480px;width:100%;text-align:center}h1{font-size:1.3rem;margin-bottom:1rem}a.btn{display:inline-block;padding:0.75rem 2rem;background:#38bdf8;color:#0f172a;border-radius:8px;text-decoration:none;font-weight:600;font-size:1rem;margin:0.5rem}a.btn:hover{background:#7dd3fc}.links{margin-top:1rem;font-size:0.8rem;color:#94a3b8;word-break:break-all}.links a{color:#38bdf8}</style></head><body><div class="card"><h1>\u5BFC\u5165\u89C4\u5219\u5230 Anywhere</h1><a class="btn" href="'+O+'">\u6253\u5F00 Anywhere \u5BFC\u5165</a><div class="links">',x=0;x<d.length;x++){var k;d[x].indexOf("/mitm")!==-1?k="MITM \u89C4\u5219":d[x].indexOf("/direct")!==-1?k="\u76F4\u8FDE\u89C4\u5219":d[x].indexOf("/reject")!==-1?k="\u62D2\u7EDD\u89C4\u5219":k="\u8DEF\u7531\u89C4\u5219",B+="<p>"+k+'\uFF1A<a href="'+d[x]+'" target="_blank">'+d[x]+"</a></p>"}return B+="</div></div></body></html>",new Response(B,{status:200,headers:{...b(),"Content-Type":"text/html; charset=utf-8"}})}return Response.redirect(O,302)}export{At as onRequest};
+    decodedURL = decodeURIComponent(rawURL);
+  } catch (e) {
+    return new Response('Error: Invalid URL encoding', {
+      status: 400,
+      headers: buildCorsHeaders(),
+    });
+  }
+
+  var name = query.name || '';
+  var fetchScripts = query.fetch !== 'false';
+  var generalize = query.generalize === 'true';
+  var sourceHint = query.source || '';
+  var format = (query.format || '').toLowerCase().trim();
+  var initialUA = lib.getUserAgent(sourceHint);
+
+  // 解析 quantumult.app 一键订阅协议
+  var sourceURL = decodedURL;
+  var inputURLs = [decodedURL];
+  var addResourceURL = '';
+  if (lib.isAddResourceURL && lib.isAddResourceURL(decodedURL)) {
+    addResourceURL = decodedURL;
+    try {
+      inputURLs = lib.extractAddResourceURLs(decodedURL);
+      if (inputURLs.length === 0) inputURLs = [decodedURL];
+    } catch (e) {
+      return new Response('Error: add-resource 解析失败: ' + (e.message || e), {
+        status: 400,
+        headers: buildCorsHeaders(),
+      });
+    }
+  }
+
+  var serviceURL = url.origin + url.pathname;
+  var hasAmrs = false;
+  var hasArrs = false;
+  var arrsGroupEndpoints = [];
+
+  for (var idx = 0; idx < inputURLs.length; idx++) {
+    var inputURL = inputURLs[idx];
+    var content;
+    try {
+      content = await lib.fetchRemoteWithProxy(inputURL, initialUA);
+    } catch (e) {
+      return new Response('Error: Failed to fetch remote file: ' + (e.message || e), {
+        status: 500,
+        headers: buildCorsHeaders(),
+      });
+    }
+
+    var source = lib.detectSource(content, inputURL.split('/').pop() || '');
+    var m = lib.parse(content, source);
+    if (name) m.name = name;
+    else if (!m.name) m.name = lib.deriveNameFromURL(inputURL);
+
+    var opts = {
+      ...lib.defaultConvertOptions(),
+      generalizeHost: generalize,
+      fetchScripts: fetchScripts,
+      sourceURL: inputURL,
+      serviceURL: serviceURL,
+      addResourceURL: addResourceURL,
+    };
+
+    try {
+      var result = await lib.convert(m, opts);
+      if (result.amrs) hasAmrs = true;
+      if (result.arrs) hasArrs = true;
+      if (result.arrsGroups) {
+        for (var gi = 0; gi < result.arrsGroups.length; gi++) {
+          if (result.arrsGroups[gi].content) {
+            if (arrsGroupEndpoints.indexOf(result.arrsGroups[gi].endpoint) === -1) {
+              arrsGroupEndpoints.push(result.arrsGroups[gi].endpoint);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      return new Response('Error: convert failed: ' + (e.message || e), {
+        status: 500,
+        headers: buildCorsHeaders(),
+      });
+    }
+  }
+
+  // 构造本服务的子链接 URL
+  var origin = url.origin;
+  var linkParams = 'url=' + encodeURIComponent(decodedURL) + '&fetch=' + fetchScripts + '&generalize=' + generalize;
+  if (sourceHint) linkParams += '&source=' + encodeURIComponent(sourceHint);
+  if (name) linkParams += '&name=' + encodeURIComponent(name);
+
+  var links = [];
+  if (hasAmrs) links.push(origin + '/mitm.amrs?' + linkParams);
+  // 按 routing 分组生成 arrs 子链接
+  if (arrsGroupEndpoints && arrsGroupEndpoints.length > 0) {
+    for (var gi = 0; gi < arrsGroupEndpoints.length; gi++) {
+      links.push(origin + arrsGroupEndpoints[gi] + '?' + linkParams);
+    }
+  } else if (hasArrs) {
+    links.push(origin + '/rule.arrs?' + linkParams);
+  }
+
+  if (links.length === 0) {
+    return new Response('Error: no rules to import', {
+      status: 404,
+      headers: buildCorsHeaders(),
+    });
+  }
+
+  // 构造 anywhere://add-rule-set deeplink
+  var deeplink = 'anywhere://add-rule-set?';
+  var linkParts = [];
+  for (var i = 0; i < links.length; i++) {
+    linkParts.push('link=' + encodeURIComponent(links[i]));
+  }
+  deeplink += linkParts.join('&');
+
+  // format=text 返回纯文本；否则根据 Accept 头决定
+  if (format === 'text') {
+    return new Response(deeplink, {
+      status: 200,
+      headers: { ...buildCorsHeaders(), 'Content-Type': 'text/plain; charset=utf-8' },
+    });
+  }
+
+  // 浏览器访问返回 HTML 页面
+  var accept = (context.request.headers.get('Accept') || '');
+  if (accept.indexOf('text/html') !== -1) {
+    var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">'
+      + '<title>导入 Anywhere</title>'
+      + '<style>body{font-family:-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:2rem}'
+      + '.card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:2rem;max-width:480px;width:100%;text-align:center}'
+      + 'h1{font-size:1.3rem;margin-bottom:1rem}'
+      + 'a.btn{display:inline-block;padding:0.75rem 2rem;background:#38bdf8;color:#0f172a;border-radius:8px;text-decoration:none;font-weight:600;font-size:1rem;margin:0.5rem}'
+      + 'a.btn:hover{background:#7dd3fc}'
+      + '.links{margin-top:1rem;font-size:0.8rem;color:#94a3b8;word-break:break-all}'
+      + '.links a{color:#38bdf8}</style></head>'
+      + '<body><div class="card">'
+      + '<h1>导入规则到 Anywhere</h1>'
+      + '<a class="btn" href="' + deeplink + '">打开 Anywhere 导入</a>'
+      + '<div class="links">';
+    for (var j = 0; j < links.length; j++) {
+      var label;
+      if (links[j].indexOf('/mitm') !== -1) label = 'MITM 规则';
+      else if (links[j].indexOf('/direct') !== -1) label = '直连规则';
+      else if (links[j].indexOf('/reject') !== -1) label = '拒绝规则';
+      else label = '路由规则';
+      html += '<p>' + label + '：<a href="' + links[j] + '" target="_blank">' + links[j] + '</a></p>';
+    }
+    html += '</div></div></body></html>';
+    return new Response(html, {
+      status: 200,
+      headers: { ...buildCorsHeaders(), 'Content-Type': 'text/html; charset=utf-8' },
+    });
+  }
+
+  // 非 HTML 请求返回 302 重定向到 deeplink
+  return Response.redirect(deeplink, 302);
+}
+

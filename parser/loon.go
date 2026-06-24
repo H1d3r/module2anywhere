@@ -144,8 +144,19 @@ func parseLoonRewriteAction(rest string) (string, map[string]string, string) {
 	case "reject", "reject-200", "reject-dict", "reject-array", "reject-img":
 		return action, args, ""
 
+	case "reject-data":
+		// reject-data <base64-data>
+		args["data"] = strings.TrimSpace(remain)
+		return action, args, ""
+
 	case "302", "307":
 		// 302 <url>  /  307 <url>
+		url := strings.TrimSpace(remain)
+		args["url"] = url
+		return action, args, ""
+
+	case "transparent", "rewrite":
+		// transparent <url> / rewrite <url> — 透明 URL 重写
 		url := strings.TrimSpace(remain)
 		args["url"] = url
 		return action, args, ""
@@ -165,6 +176,50 @@ func parseLoonRewriteAction(rest string) (string, map[string]string, string) {
 		}
 		if len(tokens) >= 2 {
 			args["value"] = strings.Join(tokens[1:], " ")
+		}
+		return action, args, ""
+
+	case "response-body-json-delete-recursive":
+		// response-body-json-delete-recursive <key>
+		tokens := splitWhitespace(remain)
+		if len(tokens) >= 1 {
+			args["key"] = tokens[0]
+		}
+		return action, args, ""
+
+	case "response-body-json-replace-recursive":
+		// response-body-json-replace-recursive <key> <value>
+		tokens := splitWhitespace(remain)
+		if len(tokens) >= 1 {
+			args["key"] = tokens[0]
+		}
+		if len(tokens) >= 2 {
+			args["value"] = strings.Join(tokens[1:], " ")
+		}
+		return action, args, ""
+
+	case "response-body-json-remove-where-key-exists":
+		// response-body-json-remove-where-key-exists <dot-path> <key>
+		tokens := splitWhitespace(remain)
+		if len(tokens) >= 1 {
+			args["path"] = tokens[0]
+		}
+		if len(tokens) >= 2 {
+			args["key"] = tokens[1]
+		}
+		return action, args, ""
+
+	case "response-body-json-remove-where-field-in":
+		// response-body-json-remove-where-field-in <dot-path> <field> <values>
+		tokens := splitWhitespace(remain)
+		if len(tokens) >= 1 {
+			args["path"] = tokens[0]
+		}
+		if len(tokens) >= 2 {
+			args["field"] = tokens[1]
+		}
+		if len(tokens) >= 3 {
+			args["values"] = strings.Join(tokens[2:], " ")
 		}
 		return action, args, ""
 

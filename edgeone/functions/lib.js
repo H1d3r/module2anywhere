@@ -390,15 +390,16 @@ function rewriteScriptAPI(src, phase) {
   out = out.replace(/\$request\.headers/g, 'ctx.headers');
   out = out.replace(/\$response\.status/g, 'ctx.status');
   out = out.replace(/\$response\.headers/g, 'ctx.headers');
-  out = out.replace(/\$request\.body/g, 'ctx.body');
-  out = out.replace(/\$response\.body/g, 'ctx.body');
+  out = out.replace(/\$request\.body/g, 'Anywhere.codec.utf8.decode(ctx.body)');
+  out = out.replace(/\$response\.body/g, 'Anywhere.codec.utf8.decode(ctx.body)');
   out = rewriteDoneCalls(out);
   out = out.replace(/\$persistentStore\.read\(\s*([^)]+?)\s*\)/g, 'Anywhere.store.getString($1, true)');
   out = out.replace(/\$persistentStore\.write\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)/g, 'Anywhere.store.set($2, $1, true)');
   out = out.replace(/\$notification\.post\(\s*([^,]+?)\s*,\s*([^,]*?)\s*,\s*([^)]+?)\s*\)/g, 'Anywhere.log.info($1 + " " + $2 + " " + $3)');
   out = rewriteHttpClientCalls(out);
   out = out.replace(/JSON\.parse\(ctx\.body\)/g, 'JSON.parse(Anywhere.codec.utf8.decode(ctx.body))');
-  out = out.replace(/JSON\.parse\(\$response\.body\)/g, 'JSON.parse(Anywhere.codec.utf8.decode(ctx.body))');
+  // 注意：$response.body 已替换为 Anywhere.codec.utf8.decode(ctx.body)，
+  // 所以 JSON.parse(Anywhere.codec.utf8.decode(ctx.body)) 已经正确，不需要再处理
   out = wrapAsProcess(out, phase, needsAsync);
   return out;
 }
@@ -417,7 +418,9 @@ function rewriteDoneCalls(src) {
   let out = src;
   out = out.replace(/\$done\(\s*\{\s*\}\s*\)/g, 'Anywhere.done()');
   out = out.replace(/\$done\(\s*\)/g, 'Anywhere.done()');
-  out = out.replace(/\$done\(\s*\{\s*body\s*:\s*([^}]+?)\s*\}\s*\)/g, 'ctx.body = $1; Anywhere.done()');
+  out = out.replace(/\$done\(\s*\{\s*body\s*:\s*([^}]+?)\s*\}\s*\)/g, 'ctx.body = Anywhere.codec.utf8.encode($1); Anywhere.done()');
+  // $done({ body }) ES6 shorthand
+  out = out.replace(/\$done\(\s*\{\s*body\s*\}\s*\)/g, 'ctx.body = Anywhere.codec.utf8.encode(body); Anywhere.done()');
   out = out.replace(/\$done\(\s*\{\s*response\s*:\s*(\{[^}]*\})\s*\}\s*\)/g, 'Anywhere.respond($1)');
   out = out.replace(/\$done\(\s*\{[^}]*\}\s*\)/g, 'Anywhere.done()');
   return out;
@@ -553,7 +556,13 @@ function parseLoonRewriteAction(rest) {
   switch (action) {
     case 'reject': case 'reject-200': case 'reject-dict': case 'reject-array': case 'reject-img':
       return { action, args, rawJS: '' };
+    case 'reject-data':
+      args.data = remain.trim();
+      return { action, args, rawJS: '' };
     case '302': case '307':
+      args.url = remain.trim();
+      return { action, args, rawJS: '' };
+    case 'transparent': case 'rewrite':
       args.url = remain.trim();
       return { action, args, rawJS: '' };
     case 'mock-response-body':
@@ -563,6 +572,30 @@ function parseLoonRewriteAction(rest) {
       const tokens = splitWhitespace(remain);
       if (tokens.length >= 1) args.path = tokens[0];
       if (tokens.length >= 2) args.value = tokens.slice(1).join(' ');
+      return { action, args, rawJS: '' };
+    }
+    case 'response-body-json-delete-recursive': {
+      const tokens = splitWhitespace(remain);
+      if (tokens.length >= 1) args.key = tokens[0];
+      return { action, args, rawJS: '' };
+    }
+    case 'response-body-json-replace-recursive': {
+      const tokens = splitWhitespace(remain);
+      if (tokens.length >= 1) args.key = tokens[0];
+      if (tokens.length >= 2) args.value = tokens.slice(1).join(' ');
+      return { action, args, rawJS: '' };
+    }
+    case 'response-body-json-remove-where-key-exists': {
+      const tokens = splitWhitespace(remain);
+      if (tokens.length >= 1) args.path = tokens[0];
+      if (tokens.length >= 2) args.key = tokens[1];
+      return { action, args, rawJS: '' };
+    }
+    case 'response-body-json-remove-where-field-in': {
+      const tokens = splitWhitespace(remain);
+      if (tokens.length >= 1) args.path = tokens[0];
+      if (tokens.length >= 2) args.field = tokens[1];
+      if (tokens.length >= 3) args.values = tokens.slice(2).join(' ');
       return { action, args, rawJS: '' };
     }
     case 'request-header': case 'request-body': case 'response-body':
@@ -695,9 +728,16 @@ function parseSurgeURLRewriteAction(rest) {
     case '_header-del':
       args.header = remain.trim();
       return { action: 'header-del', args, rawJS: '' };
-    default:
-      args._raw = remain.trim();
+    default: {
+      // Surge [URL Rewrite] 中无动作前缀的纯 URL 替换是 transparent rewrite
+      const trimmedRemain = remain.trim();
+      if (trimmedRemain.startsWith('http://') || trimmedRemain.startsWith('https://')) {
+        args.url = trimmedRemain;
+        return { action: 'transparent', args, rawJS: '' };
+      }
+      args._raw = trimmedRemain;
       return { action, args, rawJS: '' };
+    }
   }
 }
 
@@ -1014,7 +1054,7 @@ function parse(content, source) {
 // ===================== 核心转换器 =====================
 
 function isRejectAction(action) {
-  return ['REJECT', 'REJECT-DICT', 'REJECT-ARRAY', 'REJECT-IMG', 'REJECT-200'].includes(action);
+  return ['REJECT', 'REJECT-DICT', 'REJECT-ARRAY', 'REJECT-IMG', 'REJECT-200', 'REJECT-DATA'].includes(action);
 }
 
 /** appendByAction 按 action 类型将规则行分配到对应的 arrs 分组 */
@@ -1180,25 +1220,35 @@ function convertRewriteRule(r, m, opts, report) {
     case 'reject-img': return `0, 0, ${pattern}, 3`;
     case '302': {
       const url = r.args.url || '';
-      if (hasCaptureGroup(url)) {
-        report.degraded.push(`302 带捕获组转为脚本: ${r.raw}`);
-        return `0, 100, ${pattern}, ${buildRedirectScript(pattern, url, 302)}`;
-      }
+      // Anywhere rewrite sub-mode 1 原生支持 $1 捕获引用，直接输出
       return `0, 0, ${pattern}, 1, ${url}`;
     }
     case '307': {
       const url = r.args.url || '';
-      if (hasCaptureGroup(url)) {
-        report.degraded.push(`307 带捕获组转为脚本(降级302): ${r.raw}`);
-        return `0, 100, ${pattern}, ${buildRedirectScript(pattern, url, 307)}`;
-      }
       report.degraded.push(`307 降级为 302: ${r.raw}`);
       return `0, 0, ${pattern}, 1, ${url}`;
+    }
+    // 透明 URL 重写：Anywhere rewrite sub-mode 0 原生支持 $1 捕获引用
+    case 'transparent': case 'rewrite': {
+      const url = r.args.url || '';
+      if (!url) { report.skipped.push(`transparent rewrite 缺少 url: ${r.raw}`); return ''; }
+      return `0, 0, ${pattern}, 0, ${url}`;
+    }
+    // reject-data：返回 base64 二进制数据
+    case 'reject-data': {
+      const data = r.args.data || '';
+      if (data) return `0, 0, ${pattern}, 4, ${quoteField(data)}`;
+      return `0, 0, ${pattern}, 4`;
     }
     case 'mock-response-body': return `0, 0, ${pattern}, 2, ${quoteField(r.args.data || '')}`;
     case 'response-body-json-del': return `1, 5, ${pattern}, delete, ${dotPathToJSONPath(r.args.path || '')}`;
     case 'response-body-json-add': return `1, 5, ${pattern}, add, ${dotPathToJSONPath(r.args.path || '')}, ${quoteField(r.args.value || '')}`;
     case 'response-body-json-replace': return `1, 5, ${pattern}, replace, ${dotPathToJSONPath(r.args.path || '')}, ${quoteField(r.args.value || '')}`;
+    // body-json 递归操作（Anywhere 原生支持）
+    case 'response-body-json-delete-recursive': return `1, 5, ${pattern}, delete-recursive, ${quoteField(r.args.key || '')}`;
+    case 'response-body-json-replace-recursive': return `1, 5, ${pattern}, replace-recursive, ${quoteField(r.args.key || '')}, ${quoteField(r.args.value || '')}`;
+    case 'response-body-json-remove-where-key-exists': return `1, 5, ${pattern}, remove-where-key-exists, ${dotPathToJSONPath(r.args.path || '')}, ${quoteField(r.args.key || '')}`;
+    case 'response-body-json-remove-where-field-in': return `1, 5, ${pattern}, remove-where-field-in, ${dotPathToJSONPath(r.args.path || '')}, ${quoteField(r.args.field || '')}, ${quoteField(r.args.values || '')}`;
     case 'request-header': case 'request-body': return `0, 100, ${pattern}, ${encodeInlineRewriteJS(r.rawJS, 0)}`;
     case 'response-body': return `1, 100, ${pattern}, ${encodeInlineRewriteJS(r.rawJS, 1)}`;
     case '_request-header': case '_request-body': return `0, 100, ${pattern}, ${encodeInlineRewriteJS(r.rawJS, 0)}`;

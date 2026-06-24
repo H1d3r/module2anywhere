@@ -91,10 +91,11 @@ func RewriteScriptAPI(src string, phase int) string {
 	out = strings.ReplaceAll(out, "$response.headers", "ctx.headers")
 
 	// body 需 codec 转换：$response.body → Anywhere.codec.utf8.decode(ctx.body)
-	// 但若脚本只是读取后整体替换，简单替换为 ctx.body 即可（用户后续手动调整）
-	// 这里采用保守策略：替换为 ctx.body，并在包装时添加 codec 提示注释
-	out = strings.ReplaceAll(out, "$request.body", "ctx.body")
-	out = strings.ReplaceAll(out, "$response.body", "ctx.body")
+	// Anywhere 中 ctx.body 是 Uint8Array，不是字符串，不能直接调用 .replace() 等字符串方法。
+	// 因此所有对 $request.body / $response.body 的读取都需要 decode 为字符串。
+	// 注意：JSON.parse($response.body) 已在步骤 6 中单独处理，此处先做通用替换。
+	out = strings.ReplaceAll(out, "$request.body", "Anywhere.codec.utf8.decode(ctx.body)")
+	out = strings.ReplaceAll(out, "$response.body", "Anywhere.codec.utf8.decode(ctx.body)")
 
 	// 2. $done 改写
 	out = rewriteDoneCalls(out)
@@ -116,8 +117,10 @@ func RewriteScriptAPI(src string, phase int) string {
 	out = rewriteHttpClientCalls(out)
 
 	// 6. JSON.parse($response.body) / JSON.parse(ctx.body) → 需 codec decode
+	// 注意：$response.body 已在步骤 1 中替换为 Anywhere.codec.utf8.decode(ctx.body)，
+	// 所以 JSON.parse(Anywhere.codec.utf8.decode(ctx.body)) 已经是正确的（decode 一次得到字符串，JSON.parse 解析）。
+	// 但如果源码中直接写了 JSON.parse(ctx.body)（手动写的），需要添加 decode。
 	out = strings.ReplaceAll(out, "JSON.parse(ctx.body)", "JSON.parse(Anywhere.codec.utf8.decode(ctx.body))")
-	out = strings.ReplaceAll(out, "JSON.parse($response.body)", "JSON.parse(Anywhere.codec.utf8.decode(ctx.body))")
 
 	// 7. 包装为 function process(ctx) {...}（按需 async）
 	out = wrapAsProcess(out, phase, needsAsync)
@@ -156,11 +159,18 @@ func rewriteDoneCalls(src string) string {
 	// $done() → Anywhere.done()
 	out = regexp.MustCompile(`\$done\(\s*\)`).ReplaceAllString(out, "Anywhere.done()")
 
-	// $done({body: x}) → ctx.body = x; Anywhere.done()
+	// $done({body: x}) → ctx.body = Anywhere.codec.utf8.encode(x); Anywhere.done()
+	// 因为 ctx.body 是 Uint8Array，赋值时需要将字符串编码回 Uint8Array。
 	out = regexp.MustCompile(`\$done\(\s*\{\s*body\s*:\s*([^}]+?)\s*\}\s*\)`).
-		ReplaceAllString(out, "ctx.body = $1; Anywhere.done()")
+		ReplaceAllString(out, "ctx.body = Anywhere.codec.utf8.encode($1); Anywhere.done()")
+
+	// $done({ body }) ES6 shorthand → ctx.body = Anywhere.codec.utf8.encode(body); Anywhere.done()
+	// 注意：必须在 $done({body: x}) 之后处理，避免被错误匹配
+	out = regexp.MustCompile(`\$done\(\s*\{\s*body\s*\}\s*\)`).
+		ReplaceAllString(out, "ctx.body = Anywhere.codec.utf8.encode(body); Anywhere.done()")
 
 	// $done({response: {...}}) → Anywhere.respond({...})
+	// 注意：response.body 也需要 encode，但正则难以处理嵌套，保守处理
 	out = regexp.MustCompile(`\$done\(\s*\{\s*response\s*:\s*(\{[^}]*\})\s*\}\s*\)`).
 		ReplaceAllString(out, "Anywhere.respond($1)")
 
@@ -250,6 +260,43 @@ func BuildRedirectScript(pattern, captureURL string, status int) string {
   if (m) {
     var url = %s;
     Anywhere.respond({ status: 302, headers: [["Location", url]] });
+  }
+}
+`, jsRegexLiteral(pattern), jsCaptureReplace(captureURL))
+	return base64.StdEncoding.EncodeToString([]byte(js))
+}
+
+// BuildTransparentRewriteScript 构造透明 URL 重写脚本（带捕获组）。
+// Anywhere rewrite sub-mode 0 不支持 $1 捕获展开，带捕获组的透明重写需用脚本实现。
+// 脚本通过 Anywhere.http.request 向新 URL 发请求，再用 Anywhere.respond 返回响应。
+func BuildTransparentRewriteScript(pattern, captureURL string) string {
+	js := fmt.Sprintf(`async function process(ctx) {
+  if (ctx.phase !== "request" || !ctx.url) return;
+  var m = ctx.url.match(%s);
+  if (!m) return;
+  var newUrl = %s;
+  try {
+    var headers = [];
+    (ctx.headers || []).forEach(function(h) {
+      var name = String(h[0] || "");
+      var lower = name.toLowerCase();
+      if (!name || lower === "host" || lower === "content-length" || lower === "connection" || lower === "transfer-encoding") return;
+      headers.push([name, String(h[1] || "")]);
+    });
+    var res = await Anywhere.http.request({
+      url: newUrl,
+      method: ctx.method || "GET",
+      headers: headers,
+      timeout: 8000,
+      redirect: "follow"
+    });
+    Anywhere.respond({
+      status: res.status || 200,
+      headers: res.headers || [],
+      body: res.body || new Uint8Array()
+    });
+  } catch (e) {
+    Anywhere.log.warning("transparent rewrite failed: " + e);
   }
 }
 `, jsRegexLiteral(pattern), jsCaptureReplace(captureURL))

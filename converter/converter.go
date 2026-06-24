@@ -319,21 +319,29 @@ func (c *Converter) convertRewriteRule(ctx context.Context, r ir.RewriteRule, re
 	// 重定向类
 	case "302":
 		url := r.Args["url"]
-		if HasCaptureGroup(url) {
-			report.AddDegraded(fmt.Sprintf("302 带捕获组转为脚本: %s", r.Raw))
-			b64 := BuildRedirectScript(pattern, url, 302)
-			return fmt.Sprintf("0, 100, %s, %s", pattern, b64), nil
-		}
+		// Anywhere rewrite sub-mode 1 原生支持 $1 捕获引用，直接输出
 		return fmt.Sprintf("0, 0, %s, 1, %s", pattern, url), nil
 	case "307":
 		url := r.Args["url"]
-		if HasCaptureGroup(url) {
-			report.AddDegraded(fmt.Sprintf("307 带捕获组转为脚本(降级302): %s", r.Raw))
-			b64 := BuildRedirectScript(pattern, url, 307)
-			return fmt.Sprintf("0, 100, %s, %s", pattern, b64), nil
-		}
 		report.AddDegraded(fmt.Sprintf("307 降级为 302: %s", r.Raw))
 		return fmt.Sprintf("0, 0, %s, 1, %s", pattern, url), nil
+
+	// 透明 URL 重写（Surge [URL Rewrite] 无动作前缀的纯 URL 替换）
+	// Anywhere rewrite sub-mode 0 原生支持 $1 捕获引用，直接输出
+	case "transparent", "rewrite":
+		url := r.Args["url"]
+		if url == "" {
+			return "", fmt.Errorf("transparent rewrite 缺少 url")
+		}
+		return fmt.Sprintf("0, 0, %s, 0, %s", pattern, url), nil
+
+	// reject 200 data：返回 base64 二进制数据
+	case "reject-data":
+		data := r.Args["data"]
+		if data == "" {
+			return fmt.Sprintf("0, 0, %s, 4", pattern), nil
+		}
+		return fmt.Sprintf("0, 0, %s, 4, %s", pattern, QuoteField(data)), nil
 
 	// 模拟响应
 	case "mock-response-body":
@@ -352,6 +360,36 @@ func (c *Converter) convertRewriteRule(ctx context.Context, r ir.RewriteRule, re
 		path := DotPathToJSONPath(r.Args["path"])
 		value := r.Args["value"]
 		return fmt.Sprintf("1, 5, %s, replace, %s, %s", pattern, path, QuoteField(value)), nil
+
+	// body-json 递归操作（Anywhere 原生支持，Loon/Surge 无直接对应，但可通过脚本或手动规则触发）
+	case "response-body-json-replace-recursive":
+		key := r.Args["key"]
+		value := r.Args["value"]
+		if key == "" {
+			return "", fmt.Errorf("response-body-json-replace-recursive 缺少 key")
+		}
+		return fmt.Sprintf("1, 5, %s, replace-recursive, %s, %s", pattern, QuoteField(key), QuoteField(value)), nil
+	case "response-body-json-delete-recursive":
+		key := r.Args["key"]
+		if key == "" {
+			return "", fmt.Errorf("response-body-json-delete-recursive 缺少 key")
+		}
+		return fmt.Sprintf("1, 5, %s, delete-recursive, %s", pattern, QuoteField(key)), nil
+	case "response-body-json-remove-where-key-exists":
+		path := DotPathToJSONPath(r.Args["path"])
+		key := r.Args["key"]
+		if path == "" || key == "" {
+			return "", fmt.Errorf("response-body-json-remove-where-key-exists 缺少 path 或 key")
+		}
+		return fmt.Sprintf("1, 5, %s, remove-where-key-exists, %s, %s", pattern, path, QuoteField(key)), nil
+	case "response-body-json-remove-where-field-in":
+		path := DotPathToJSONPath(r.Args["path"])
+		field := r.Args["field"]
+		values := r.Args["values"]
+		if path == "" || field == "" || values == "" {
+			return "", fmt.Errorf("response-body-json-remove-where-field-in 缺少 path/field/values")
+		}
+		return fmt.Sprintf("1, 5, %s, remove-where-field-in, %s, %s, %s", pattern, path, QuoteField(field), QuoteField(values)), nil
 
 	// 内联 JS 体重写
 	case "request-header", "request-body":

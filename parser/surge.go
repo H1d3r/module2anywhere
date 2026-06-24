@@ -111,7 +111,14 @@ func parseSurgeURLRewriteAction(rest string) (string, map[string]string, string)
 		return "header-del", args, ""
 
 	default:
-		// Surge 还有 header rewrite 等动作，但通常在独立段
+		// Surge [URL Rewrite] 中无动作前缀的纯 URL 替换是 transparent rewrite
+		// 格式：<pattern> <new-url>，其中 new-url 以 http:// 或 https:// 开头
+		trimmedRemain := strings.TrimSpace(remain)
+		if strings.HasPrefix(trimmedRemain, "http://") || strings.HasPrefix(trimmedRemain, "https://") {
+			args["url"] = trimmedRemain
+			return "transparent", args, ""
+		}
+		// 未知动作：保留原始 remain 以便日志
 		args["_raw"] = strings.TrimSpace(remain)
 		return action, args, ""
 	}

@@ -100,7 +100,7 @@ hostname = example.com, api.example.org
 | `3` | reject 200 gif | 无 | 返回 200 OK，内嵌 1×1 GIF |
 | `4` | reject 200 data | `[<base64>]` | 返回 200 OK，application/octet-stream 正文为 base64 解码 |
 
-> rewrite 始终为 request 阶段，无论 phase 列写什么。第一条匹配的 rewrite 规则胜出。替换是字面量，无 `$1` 捕获展开。
+> rewrite 始终为 request 阶段，无论 phase 列写什么。第一条匹配的 rewrite 规则胜出。sub-mode 0 和 1 的 URL 替换**支持 `$1`-style 捕获引用**（`$0` 为整个匹配，`$1`…`$9` 为捕获组，`$$` 为字面量 `$`），无需转为脚本。
 
 **body-json (op 5) 动作**：
 
@@ -180,8 +180,10 @@ hostname = example.com, *.example.com
 | `reject-array` | `pattern reject-array` | 返回 200 + `[]` |
 | `reject-img` | `pattern reject-img` | 返回 200 + 1×1 GIF |
 | `reject-200` | `pattern reject-200` | 返回 200 空响应 |
+| `reject-data` | `pattern reject-data <base64>` | 返回 200 + base64 解码的二进制数据 |
 | `302` | `pattern 302 <url>` | 302 重定向（支持 `$1` 捕获） |
 | `307` | `pattern 307 <url>` | 307 重定向（支持 `$1` 捕获） |
+| `transparent` | `pattern transparent <url>` | 透明 URL 重写（拨号到新 host） |
 | `mock-response-body` | `pattern mock-response-body data-type=<type> data="<body>" status-code=<code>` | 模拟响应 |
 | `request-header` | `pattern request-header <JS>` | JS 改写请求头 |
 | `header-del` | `pattern header-del <header-name>` | 删除指定请求头（仅请求阶段） |
@@ -269,6 +271,7 @@ hostname = %APPEND% example.com, api.example.com
 | `reject-200` | `pattern reject-200` | 200 空响应 |
 | `302` | `pattern 302 <url>` | 302 重定向（支持 `$1`） |
 | `307` | `pattern 307 <url>` | 307 重定向（支持 `$1`） |
+| transparent rewrite | `pattern <new-url>` | 透明替换 URL（无动作前缀，直接写目标 URL） |
 | `_request-header` | `pattern _request-header <JS>` | JS 改写请求头 |
 | `_request-body` | `pattern _request-body <JS>` | JS 改写请求体 |
 | `_response-body` | `pattern _response-body <JS>` | JS 改写响应体 |
@@ -466,17 +469,20 @@ Loon `[Rewrite]` / Surge `[URL Rewrite]` 中的重写规则转为 `.amrs`。
 | `reject-dict` | rewrite sub-mode 2 | `0, 0, pattern, 2, {}` | 200 + `{}` |
 | `reject-array` | rewrite sub-mode 2 | `0, 0, pattern, 2, []` | 200 + `[]` |
 | `reject-img` | rewrite sub-mode 3 | `0, 0, pattern, 3` | 200 + 内置 1×1 GIF |
+| `reject-data` | rewrite sub-mode 4 | `0, 0, pattern, 4, <base64>` | 200 + application/octet-stream（base64 解码后正文） |
 
 ### 6.2 重定向类
 
 | Loon/Surge 动作 | Anywhere 操作 | 转换结果 | 说明 |
 |----------------|--------------|---------|------|
-| `302 <url>` | rewrite sub-mode 1 | `0, 0, pattern, 1, <url>` | 302 重定向 |
+| `302 <url>` | rewrite sub-mode 1 | `0, 0, pattern, 1, <url>` | 302 重定向（Anywhere 原生支持 `$1` 捕获引用） |
 | `307 <url>` | rewrite sub-mode 1 | `0, 0, pattern, 1, <url>` | **近似**：Anywhere 仅支持 302，307 降级为 302 |
-| `302 $1` (带捕获) | script | `0, 100, pattern, <base64>` | Anywhere rewrite 不支持 `$1`，需用脚本实现 |
-| `307 $1` (带捕获) | script | `0, 100, pattern, <base64>` | 同上 |
+| `302 $1` (带捕获) | rewrite sub-mode 1 | `0, 0, pattern, 1, <url>` | Anywhere 原生支持 `$1`/`$2` 捕获引用，无需脚本 |
+| `307 $1` (带捕获) | rewrite sub-mode 1 | `0, 0, pattern, 1, <url>` | 同上（307 降级为 302） |
+| `transparent <url>` | rewrite sub-mode 0 | `0, 0, pattern, 0, <url>` | 透明替换整个请求 URL（拨号到新 host） |
+| `transparent $1` (带捕获) | rewrite sub-mode 0 | `0, 0, pattern, 0, <url>` | Anywhere 原生支持 `$1`/`$2` 捕获引用，无需脚本 |
 
-> **重要限制**：Anywhere rewrite sub-mode 0/1 的 URL 替换是**字面量**，无 `$1` 捕获展开。带捕获组的重定向需转为脚本，用 `Anywhere.respond({status:302, headers:[["Location", newUrl]]})` 实现。
+> **重要说明**：Anywhere rewrite sub-mode 0 和 1 **原生支持** `$1`-style 捕获引用（`$0` 为整个匹配，`$1`…`$9` 为捕获组，`$$` 为字面量 `$`）。因此带 `$1` 的重定向和透明重写**无需转为脚本**，可直接输出。这与早期理解不同——Anywhere 的 rewrite URL 替换**不是**纯字面量，而是支持捕获组展开的。
 
 ### 6.3 模拟响应类
 
@@ -492,6 +498,10 @@ Loon `[Rewrite]` / Surge `[URL Rewrite]` 中的重写规则转为 `.amrs`。
 | `response-body-json-del data.path` | body-json delete | `1, 5, pattern, delete, $.data.path` | dot-path → JSONPath（加 `$.` 前缀） |
 | `response-body-json-add data.path value` | body-json add | `1, 5, pattern, add, $.data.path, value` | — |
 | `response-body-json-replace data.path value` | body-json replace | `1, 5, pattern, replace, $.data.path, value` | — |
+| `response-body-json-delete-recursive key` | body-json delete-recursive | `1, 5, pattern, delete-recursive, key` | 移除任意深度中名为 key 的所有属性 |
+| `response-body-json-replace-recursive key value` | body-json replace-recursive | `1, 5, pattern, replace-recursive, key, value` | 覆盖任意深度中名为 key 的所有属性 |
+| `response-body-json-remove-where-key-exists data.path key` | body-json remove-where-key-exists | `1, 5, pattern, remove-where-key-exists, $.data.path, key` | 在 path 数组中，丢弃含 key 的对象 |
+| `response-body-json-remove-where-field-in data.path field values` | body-json remove-where-field-in | `1, 5, pattern, remove-where-field-in, $.data.path, field, values` | 在 path 数组中，丢弃 field ∈ values 的对象 |
 
 > **dot-path → JSONPath 转换**：`data.common_equip` → `$.data.common_equip`；`data.items.0.id` → `$.data.items[0].id`
 
@@ -859,7 +869,7 @@ Anywhere 的 `.amrs` 已有 `hostname` 头部字段做主机拦截门控，URL p
 | 源特性 | 降级方案 |
 |--------|---------|
 | `307 <url>` | 降级为 302（Anywhere rewrite sub-mode 1） |
-| `302/307 $1`（带捕获的重定向） | 转为脚本 + `Anywhere.respond` |
+| `302/307 $1`（带捕获的重定向） | Anywhere 原生支持 `$1` 捕获引用，无需降级 |
 | `$notification.post(...)` | 降级为 `Anywhere.log.info(...)` |
 | `mock-response-body status-code=非200` | Anywhere rewrite sub-mode 2 固定 200；非 200 需脚本 + `Anywhere.respond` |
 | `reject-200` with custom status | 同上 |
@@ -990,24 +1000,13 @@ http-response ^https:\/\/(?:app\.bilibili\.com|grpc\.biliapi\.net)\/bilibili\.ap
 源 (Loon [Rewrite]):
 (^https:\/\/live\.bilibili\.com\/\d+)(\/?\?.*) 307 $1
 
-目标 (.amrs) — 需转为脚本：
-0, 100, ^https://live\.bilibili\.com/\d+, <base64 of script>
-
-脚本内容：
-function process(ctx) {
-  if (ctx.phase !== "request" || !ctx.url) return;
-  var url = ctx.url;
-  var m = url.match(/^(https:\/\/live\.bilibili\.com\/\d+)/);
-  if (m) {
-    Anywhere.respond({ status: 302, headers: [["Location", m[1]]] });
-  }
-}
+目标 (.amrs) — Anywhere 原生支持 $1 捕获引用：
+0, 0, ^https://live\.bilibili\.com/\d+, 1, $1
 
 推导：
-- 307 带捕获组 $1 → Anywhere rewrite 不支持捕获 → 必须用脚本
-- 307 降级为 302（Anywhere respond 支持 302）
-- 脚本用 ctx.url.match 提取捕获组
-- Anywhere.respond 合成重定向响应
+- 307 降级为 302（Anywhere 仅支持 302）
+- $1 捕获引用在 Anywhere rewrite sub-mode 1 中原生支持，无需脚本
+- pattern 中的捕获组会被 Anywhere 的 url-pattern 正则匹配，$1 展开为匹配结果
 ```
 
 ### 10.9 路由规则转换 → .arrs

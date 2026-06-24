@@ -297,6 +297,20 @@ func parseQuantumultXLine(line string) (*ir.RewriteRule, qxRuleKind) {
 		}
 		return r, qxRuleRewrite
 
+	case "307":
+		// 307 <url>，可能含 $1 捕获组
+		if len(parts) >= 4 {
+			r.Args["url"] = strings.Join(parts[3:], " ")
+		}
+		return r, qxRuleRewrite
+
+	case "rewrite", "transparent":
+		// 透明 URL 重写：rewrite <url> / transparent <url>
+		if len(parts) >= 4 {
+			r.Args["url"] = strings.Join(parts[3:], " ")
+		}
+		return r, qxRuleRewrite
+
 	case "response-body":
 		// 形如：pattern url response-body <search> url response-body <replacement>
 		// 简化处理：把 search 与 replacement 都放在 args
