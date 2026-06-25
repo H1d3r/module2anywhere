@@ -21,6 +21,7 @@ type Options struct {
 	FetchScripts       bool // 远程下载脚本并改写（默认 true；false 时仅生成占位符）
 	IncludeMetadata    bool // 在输出文件头部写入 desc/author 等注释（默认 true）
 	UseStreamScript    bool // 将脚本转为 stream-script (op 101)，用于流式响应处理（默认 false）
+	WrapScripts        bool // 包装执行模式：将上游脚本源码原样编码，运行时构造兼容全局变量后执行（默认 false）
 	AutoContentType    bool // 当存在 reject/mock JSON 内容时自动设置 content-type 头部字段（默认 true）
 	Concurrency        int  // 并发下载脚本数（默认 8）
 	ScriptTimeoutSec   int  // 单个脚本下载超时（秒，默认 10）
@@ -37,6 +38,7 @@ func DefaultOptions() Options {
 		FetchScripts:       true,
 		IncludeMetadata:    true,
 		UseStreamScript:    false,
+		WrapScripts:        false,
 		AutoContentType:    true,
 		Concurrency:        8,
 		ScriptTimeoutSec:   10,

@@ -584,11 +584,61 @@ Loon `request-header <JS>` / `response-body <JS>` / `request-body <JS>` 和 Surg
 | `$done({response: {...}})` | `Anywhere.respond({status, headers, body})` | 请求阶段直接返回响应 |
 | `$persistentStore.read(key)` | `Anywhere.store.getString(key, true)` | 持久化存储读取 |
 | `$persistentStore.write(val, key)` | `Anywhere.store.set(key, val, true)` | 持久化存储写入 |
+| `$persistentStore.write(null, key)` | `Anywhere.store.delete(key, true)` | 写入 null 时删除存储（Surge/Loon 语义） |
 | `$httpClient.get(url, cb)` | `await Anywhere.http.get(url)` | HTTP GET（需 async） |
 | `$httpClient.post(url, opts, cb)` | `await Anywhere.http.post(url, opts)` | HTTP POST（需 async） |
 | `$notification.post(title,sub,body)` | `Anywhere.log.info(...)` | Anywhere 无通知，降级为日志 |
 | `JSON.parse($response.body)` | `JSON.parse(Anywhere.codec.utf8.decode(ctx.body))` | body 需先 decode |
 | `body = JSON.stringify(obj)` | `ctx.body = Anywhere.codec.utf8.encode(JSON.stringify(obj))` | body 需 encode |
+
+#### 7.3.1 BoxJS Env 类兼容
+
+大量 Surge/Loon/QX 脚本使用 BoxJS 的 `Env` 类（`const $ = new Env('name')`），通过 `$.getdata`/`$.setdata`/`$.msg` 等 API 与 BoxJS 交互。Anywhere 没有内置 Env 类，转换器会自动检测并注入一个轻量 **Env polyfill**，将这些调用映射到 Anywhere 原生 API：
+
+| BoxJS Env API | Anywhere 映射 | 说明 |
+|---------------|-------------|------|
+| `$.getdata(key)` | `Anywhere.store.getString(key, true)` | 持久化存储读取 |
+| `$.setdata(val, key)` | `Anywhere.store.set(key, String(val), true)` | 持久化存储写入 |
+| `$.setdata(null, key)` | `Anywhere.store.delete(key, true)` | 写入 null 时删除存储（BoxJS 语义） |
+| `$.getjson(key, default)` | `JSON.parse($.getdata(key))` | JSON 持久化读取 |
+| `$.setjson(val, key)` | `$.setdata(JSON.stringify(val), key)` | JSON 持久化写入 |
+| `$.msg(title, subtitle, body)` | `Anywhere.log.info(...)` | 通知降级为日志 |
+| `$.log(msg)` | `Anywhere.log.info(msg)` | 日志输出 |
+| `$.logErr(msg)` | `Anywhere.log.warning(msg)` | 错误日志 |
+| `$.http.get/post/put/delete(opts)` | `Anywhere.http.get/post/put/delete(...)` | HTTP 请求 |
+| `$.isQuanX()` / `$.isSurge()` / `$.isLoon()` | `return false` | 环境检测（Anywhere 非 QX/Surge/Loon） |
+| `$.wait(ms)` | `new Promise(resolve => setTimeout(resolve, ms))` | 延时 |
+| `$.done()` | `Anywhere.done()` | 完成 |
+| `$env` | `{ isBoxJS: false, isAnywhere: true }` | QX 环境变量兼容 |
+
+#### 7.3.2 Web API Polyfill
+
+Anywhere 的 JavaScriptCore 运行时不提供浏览器环境 API，BoxJS 脚本常用的以下 Web API 会触发 `ReferenceError`。转换器在检测到使用时自动注入 polyfill：
+
+| Web API | Polyfill 实现 | 说明 |
+|---------|-------------|------|
+| `URLSearchParams` | 纯 JS 实现，支持 `get/set/has/append/delete/toString/forEach` 等方法 | 解析 URL 查询参数 |
+| `URL` | 基于 `String.match()` 的轻量实现，支持 `protocol/hostname/port/pathname/search/hash/searchParams` | URL 解析构造 |
+| `console.log/warn/error/info/debug` | 映射到 `Anywhere.log.info/warning/error/info/debug` | 日志输出 |
+| `atob(str)` / `btoa(str)` | 基于 `Anywhere.codec.base64` + `Anywhere.codec.utf8` | Base64 编解码 |
+
+> **检测逻辑**：转换器自动检测脚本中是否包含 `new Env(`、`$.getdata`/`$.setdata`、`URLSearchParams`、`new URL(`、`console.log` 等特征，仅在检测到时注入 polyfill，不影响不使用这些 API 的脚本。所有 polyfill 均使用 `if (typeof XXX === 'undefined')` 守卫，不会覆盖 Anywhere 运行时已有的原生实现。
+
+#### 7.3.3 globalThis 污染隔离
+
+上游脚本（如 wloc.js 等跨平台脚本）会往 `globalThis` 上写入 `$loon`、`$environment`、`$script`、`$argument` 等全局变量，污染 Anywhere 运行时环境，导致后续规则执行异常。转换器在检测到这些全局变量使用时，自动在 `process(ctx)` 函数体内注入 `_saveGlobals`/`_restoreGlobals` 隔离代码：
+
+```javascript
+// 自动注入的隔离代码（示例）
+async function process(ctx) {
+  var _globalsSnapshot = {}; _saveGlobals(_globalsSnapshot);
+  try {
+    // ... 上游脚本逻辑 ...
+  } finally { _restoreGlobals(_globalsSnapshot); }
+}
+```
+
+> **检测逻辑**：当脚本中包含 `$loon`、`$environment`、`$script`、`$argument`、`globalThis.$` 等特征时自动启用隔离。隔离工具函数由 BoxJS Env polyfill 一并注入。
 
 **Anywhere.http.request 完整参数**（用于高级代理重写）：
 
