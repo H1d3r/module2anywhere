@@ -28,6 +28,8 @@ const HTML = `<!DOCTYPE html>
   .btn-primary:hover { background: #7dd3fc; }
   .btn-secondary { background: var(--accent2); color: #fff; }
   .btn-secondary:hover { background: #a5b4fc; }
+  .btn-import { background: #10b981; color: #fff; }
+  .btn-import:hover { background: #34d399; }
   .options { display: flex; gap: 1rem; margin-top: 1rem; flex-wrap: wrap; }
   .options label { display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; color: var(--muted); cursor: pointer; }
   .options input[type="checkbox"] { accent-color: var(--accent); }
@@ -61,12 +63,13 @@ const HTML = `<!DOCTYPE html>
     <div class="options">
       <label><input type="checkbox" id="opt-fetch" checked> 下载脚本</label>
       <label><input type="checkbox" id="opt-generalize"> 主机泛化</label>
-      <label><input type="checkbox" id="opt-source" checked> 自动识别 Loon/Surge</label>
+      <label><input type="checkbox" id="opt-wrap"> 包装执行模式</label>
     </div>
+    <p style="font-size:0.75rem;color:var(--muted);margin-top:0.5rem;line-height:1.4;">包装执行模式：将上游脚本源码原样编码，运行时构造 $request/$response/$persistentStore 等兼容全局变量后执行。适用于 wloc.js 等自包含跨平台脚本，默认关闭。</p>
     <div class="btn-group">
       <button class="btn-primary" onclick="doConvert('mitm')">转换 MITM 规则 <span class="tag tag-mitm">.amrs</span></button>
       <button class="btn-secondary" onclick="doConvert('rule')">转换路由规则 <span class="tag tag-rule">.arrs</span></button>
-      <button class="btn-deeplink" onclick="doDeeplink()">导入 Anywhere <span class="tag tag-deeplink">deeplink</span></button>
+      <button class="btn-import" onclick="doImport()">转换并导入 Anywhere</button>
     </div>
   </div>
 
@@ -88,13 +91,24 @@ const HTML = `<!DOCTYPE html>
 </div>
 
 <script>
-async function doConvert(type) {
-  const urlInput = document.getElementById('url-input');
-  const url = urlInput.value.trim();
-  if (!url) { urlInput.focus(); return; }
-
+function getParams() {
+  const url = document.getElementById('url-input').value.trim();
   const fetchScripts = document.getElementById('opt-fetch').checked;
   const generalize = document.getElementById('opt-generalize').checked;
+  const wrap = document.getElementById('opt-wrap').checked;
+  return { url, fetchScripts, generalize, wrap };
+}
+
+function buildURL(endpoint, params) {
+  const searchParams = new URLSearchParams({ url: params.url, fetch: params.fetchScripts, generalize: params.generalize });
+  if (params.wrap) searchParams.set('wrap', 'true');
+  return endpoint + '?' + searchParams.toString();
+}
+
+async function doConvert(type) {
+  const params = getParams();
+  if (!params.url) { document.getElementById('url-input').focus(); return; }
+
   const resultArea = document.getElementById('result-area');
   const errorArea = document.getElementById('error-area');
   const resultTitle = document.getElementById('result-title');
@@ -110,9 +124,9 @@ async function doConvert(type) {
   btn.classList.add('loading');
 
   try {
-    const params = new URLSearchParams({ url: url, fetch: fetchScripts, generalize: generalize });
     const endpoint = type === 'mitm' ? '/mitm.amrs' : '/rule.arrs';
-    const resp = await fetch(endpoint + '?' + params.toString());
+    const fetchURL = buildURL(endpoint, params);
+    const resp = await fetch(fetchURL);
 
     if (!resp.ok) {
       const errText = await resp.text();
@@ -124,8 +138,48 @@ async function doConvert(type) {
     resultContent.textContent = text;
     resultArea.style.display = 'block';
 
-    const subURL = window.location.origin + endpoint + '?' + params.toString();
+    const subURL = window.location.origin + fetchURL;
     subscribeInfo.innerHTML = 'Anywhere 订阅地址：<a href="' + subURL + '" target="_blank">' + subURL + '</a>';
+  } catch (e) {
+    errorArea.textContent = '错误：' + e.message;
+    errorArea.style.display = 'block';
+  } finally {
+    btn.textContent = origText;
+    btn.classList.remove('loading');
+  }
+}
+
+async function doImport() {
+  const params = getParams();
+  if (!params.url) { document.getElementById('url-input').focus(); return; }
+
+  const errorArea = document.getElementById('error-area');
+  errorArea.style.display = 'none';
+
+  const btn = event.target.closest('button');
+  const origText = btn.textContent;
+  btn.textContent = '分析中...';
+  btn.classList.add('loading');
+
+  try {
+    const deeplinkURL = buildURL('/deeplink', params);
+    const resp = await fetch(deeplinkURL);
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(errText || '分析失败');
+    }
+
+    const contentType = resp.headers.get('Content-Type') || '';
+    if (contentType.includes('text/html')) {
+      const html = await resp.text();
+      document.open();
+      document.write(html);
+      document.close();
+    } else {
+      const deeplink = await resp.text();
+      window.location.href = deeplink;
+    }
   } catch (e) {
     errorArea.textContent = '错误：' + e.message;
     errorArea.style.display = 'block';
@@ -142,27 +196,6 @@ function copyResult() {
     btn.textContent = '已复制';
     setTimeout(() => { btn.textContent = '复制'; }, 1500);
   });
-}
-
-function doDeeplink() {
-  const urlInput = document.getElementById('url-input');
-  const url = urlInput.value.trim();
-  if (!url) { urlInput.focus(); return; }
-
-  const fetchScripts = document.getElementById('opt-fetch').checked;
-  const generalize = document.getElementById('opt-generalize').checked;
-  const origin = window.location.origin;
-  const params = 'url=' + encodeURIComponent(url) + '&fetch=' + fetchScripts + '&generalize=' + generalize;
-
-  // 按 routing 分组生成 arrs 子链接
-  const ruleURL = origin + '/rule.arrs?' + params;
-  const directURL = origin + '/direct.arrs?' + params;
-  const rejectURL = origin + '/reject.arrs?' + params;
-  const mitmURL = origin + '/mitm.amrs?' + params;
-
-  // 构造 deeplink，包含所有分组
-  const deeplink = 'anywhere://add-rule-set?link=' + encodeURIComponent(ruleURL) + '&link=' + encodeURIComponent(directURL) + '&link=' + encodeURIComponent(rejectURL) + '&link=' + encodeURIComponent(mitmURL);
-  window.location.href = deeplink;
 }
 </script>
 </body>
