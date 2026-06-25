@@ -393,8 +393,10 @@ function encodeInlineScript(rawJS, phase, wrap) {
  */
 function encodeWrappedScript(rawJS, phase) {
   const phaseCheck = phase === 1 ? 'response' : 'request';
+  // 检测是否需要 async（与 rewriteScriptAPI 保持一致）
   const needsAsync = rawJS.includes('$httpClient') || rawJS.includes('$.http') ||
-    rawJS.includes('$env.http') || rawJS.includes('await ') || rawJS.includes('async ');
+    rawJS.includes('$env.http') || rawJS.includes('await ') || rawJS.includes('async ') ||
+    rawJS.includes('$done({response:');
 
   // 将上游脚本源码 base64 编码
   const upstreamB64 = btoa(unescape(encodeURIComponent(rawJS)));
@@ -402,7 +404,11 @@ function encodeWrappedScript(rawJS, phase) {
   // 生成包装器脚本
   const wrapper = `${needsAsync ? 'async ' : ''}function process(ctx) {
   if (ctx.phase !== "${phaseCheck}") return;
-  var _globalsSnapshot = {}; _saveGlobals(_globalsSnapshot);
+  var _globalsSnapshot = {};
+  var _GLOBAL_POLLUTABLE_NAMES = ["$request", "$response", "$argument", "$persistentStore", "$done", "$loon", "$environment", "$script", "$httpClient", "$notification"];
+  function _saveGlobals(snapshot) { for (var i = 0; i < _GLOBAL_POLLUTABLE_NAMES.length; i++) { var name = _GLOBAL_POLLUTABLE_NAMES[i]; snapshot[name] = globalThis[name]; } }
+  function _restoreGlobals(snapshot) { var keys = Object.keys(snapshot); for (var i = 0; i < keys.length; i++) { var name = keys[i]; if (typeof snapshot[name] === "undefined") delete globalThis[name]; else globalThis[name] = snapshot[name]; } }
+  _saveGlobals(_globalsSnapshot);
   try {
     return await new Promise(function(resolve) {
       var settled = false;
@@ -413,20 +419,30 @@ function encodeWrappedScript(rawJS, phase) {
       }
 
       // 构造 Loon/Surge 兼容全局变量
+      // 注意：ctx.headers 是 [[name, value], ...] 数组对，Loon/Surge 的 $request.headers 是 {name: value} 对象，需要转换
+      function _headersToObject(headers) {
+        var obj = {};
+        if (headers && headers.forEach) {
+          headers.forEach(function(h) { obj[String(h[0] || "")] = String(h[1] || ""); });
+        }
+        return obj;
+      }
       globalThis.$loon = {};
       globalThis.$environment = undefined;
       globalThis.$script = { startTime: new Date() };
-      globalThis.$argument = '';
+      // $argument 应为对象（上游脚本可能读取属性或做 Object.keys），空字符串会导致 TypeError
+      globalThis.$argument = {};
       globalThis.$request = {
         url: ctx.url || '',
         method: ctx.method || 'GET',
-        headers: {}
+        headers: _headersToObject(ctx.headers),
+        body: Anywhere.codec.utf8.decode(ctx.body || new Uint8Array())
       };
       globalThis.$response = {
         status: ctx.status || 200,
         statusCode: ctx.status || 200,
-        headers: {},
-        body: ctx.body,
+        headers: _headersToObject(ctx.headers),
+        body: Anywhere.codec.utf8.decode(ctx.body || new Uint8Array()),
         bodyBytes: ctx.body,
         rawBody: ctx.body
       };
@@ -458,21 +474,96 @@ function encodeWrappedScript(rawJS, phase) {
         post: function(title, sub, body) { Anywhere.log.info(title + " " + (sub||"") + " " + (body||"")); }
       };
 
+      // 注入 Web API Polyfill 到 globalThis（确保 new Function() 内可访问）
+      if (typeof Array.isArray === 'undefined') {
+        Array.isArray = function(arg) { return Object.prototype.toString.call(arg) === '[object Array]'; };
+      }
+      if (typeof globalThis.URLSearchParams === 'undefined') {
+        globalThis.URLSearchParams = function(init) {
+          this._params = [];
+          if (typeof init === 'string') {
+            var s = init.charAt(0) === '?' ? init.slice(1) : init;
+            var pairs = s.split('&');
+            for (var i = 0; i < pairs.length; i++) {
+              var idx = pairs[i].indexOf('=');
+              if (idx < 0) { this._params.push([decodeURIComponent(pairs[i]), '']); }
+              else { this._params.push([decodeURIComponent(pairs[i].slice(0, idx)), decodeURIComponent(pairs[i].slice(idx + 1))]); }
+            }
+          } else if (init && typeof init === 'object' && !Array.isArray(init)) {
+            for (var key in init) { if (init.hasOwnProperty(key)) this._params.push([key, String(init[key])]); }
+          } else if (Array.isArray(init)) {
+            for (var i = 0; i < init.length; i++) { this._params.push([String(init[i][0]), String(init[i][1])]); }
+          }
+        };
+        globalThis.URLSearchParams.prototype.append = function(n, v) { this._params.push([n, v]); };
+        globalThis.URLSearchParams.prototype.delete = function(n) { this._params = this._params.filter(function(p) { return p[0] !== n; }); };
+        globalThis.URLSearchParams.prototype.get = function(n) { for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === n) return this._params[i][1]; } return null; };
+        globalThis.URLSearchParams.prototype.has = function(n) { for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === n) return true; } return false; };
+        globalThis.URLSearchParams.prototype.set = function(n, v) { var f = false; for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === n) { this._params[i][1] = v; f = true; break; } } if (!f) this._params.push([n, v]); };
+        globalThis.URLSearchParams.prototype.toString = function() { return this._params.map(function(p) { return encodeURIComponent(p[0]) + '=' + encodeURIComponent(p[1]); }).join('&'); };
+        globalThis.URLSearchParams.prototype.forEach = function(cb, t) { for (var i = 0; i < this._params.length; i++) { cb.call(t, this._params[i][1], this._params[i][0], this); } };
+      }
+      var URLSearchParams = globalThis.URLSearchParams;
+      // 注入 globalThis.URL polyfill（与 injectBoxJSPolyfill 保持一致）
+      if (typeof globalThis.URL === 'undefined') {
+        globalThis.URL = function(url, base) {
+          var fullUrl = url;
+          if (base) {
+            if (url.indexOf('://') < 0) {
+              var baseEnd = base.lastIndexOf('/');
+              fullUrl = (baseEnd >= 0 ? base.slice(0, baseEnd + 1) : base + '/') + url;
+            } else { fullUrl = url; }
+          }
+          var m = fullUrl.match(/^(https?):\\/\\/([^:/?#]+)(?::(\\d+))?([^?#]*)?(\\?[^#]*)?(#.*)?$/);
+          if (!m) throw new Error('Invalid URL: ' + fullUrl);
+          this.protocol = m[1] + ':';
+          this.hostname = m[2];
+          this.port = m[3] || '';
+          this.host = this.hostname + (this.port ? ':' + this.port : '');
+          this.pathname = m[4] || '/';
+          this.search = m[5] || '';
+          this.hash = m[6] || '';
+          this.href = fullUrl;
+          this.origin = this.protocol + '//' + this.host;
+          this.searchParams = new globalThis.URLSearchParams(this.search);
+          Object.defineProperty(this, 'username', { get: function() { return ''; } });
+          Object.defineProperty(this, 'password', { get: function() { return ''; } });
+        };
+        globalThis.URL.prototype.toString = function() { return this.href; };
+        globalThis.URL.prototype.toJSON = function() { return this.href; };
+      }
+      var URL = globalThis.URL;
+      if (typeof globalThis.console === 'undefined') {
+        globalThis.console = { log: function() { Anywhere.log.info([].slice.call(arguments).map(String).join(' ')); }, warn: function() { Anywhere.log.warning([].slice.call(arguments).map(String).join(' ')); }, error: function() { Anywhere.log.error([].slice.call(arguments).map(String).join(' ')); }, info: function() { Anywhere.log.info([].slice.call(arguments).map(String).join(' ')); } };
+      }
+      var console = globalThis.console;
+      if (typeof globalThis.atob === 'undefined') {
+        globalThis.atob = function(s) { return Anywhere.codec.utf8.decode(Anywhere.codec.base64.decode(s)); };
+        globalThis.btoa = function(s) { return Anywhere.codec.base64.encode(Anywhere.codec.utf8.encode(s)); };
+      }
+      var atob = globalThis.atob;
+      var btoa = globalThis.btoa;
+
       // HTTP 辅助函数
+      // 注意：Anywhere.http 返回的 res.headers 是 [[name, value], ...] 数组对格式，
+      // Loon/Surge 的 $httpClient 回调中 resp.headers 是 {name: value} 对象格式，需要转换
       function _wrapHttp(method, url, opts, cb) {
         var p;
         if (method === 'request') { p = Anywhere.http.request(opts); }
         else if (method === 'get') { p = Anywhere.http.get(typeof url === 'string' ? url : url, opts); }
         else { p = Anywhere.http[method](typeof url === 'string' ? url : url, opts); }
         p.then(function(res) {
-          cb(null, { status: res.status || 200, headers: res.headers || {}, body: Anywhere.codec.utf8.decode(res.body || new Uint8Array()) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
+          cb(null, { status: res.status || 200, headers: _headersToObject(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
         }).catch(function(e) { cb(e, null, null); });
       }
 
       // 解码并执行上游脚本
+      // 注意：new Function() 创建的函数只能访问全局作用域，无法访问外层 var 变量。
+      // 因此在源码前注入 var 声明，将 globalThis 上的 polyfill 映射为局部标识符。
       try {
         var _upstreamSource = decodeURIComponent(escape(atob("${upstreamB64}")));
-        new Function(_upstreamSource)();
+        var _polyfillVars = "var URLSearchParams = globalThis.URLSearchParams; var URL = globalThis.URL; var console = globalThis.console; var atob = globalThis.atob; var btoa = globalThis.btoa; var $env = globalThis.$env || { isBoxJS: false, isAnywhere: true };";
+        new Function(_polyfillVars + "\\n" + _upstreamSource)();
       } catch (e) {
         Anywhere.log.error("[wrap] upstream script error: " + e);
         finish({});
@@ -506,14 +597,26 @@ function encodeInlineRewriteJS(rawJS, phase) {
 }
 
 function rewriteScriptAPI(src, phase) {
-  const needsAsync = src.includes('$httpClient') || src.includes('$done({response:') ||
-    src.includes('$.http') || src.includes('$env.http') || src.includes('await $.wait');
+  // 检测是否需要 async（含 $httpClient / await / async / $done({response: 等）
+  // 注意：需与 encodeWrappedScript 的检测条件保持一致
+  const needsAsync = src.includes('$httpClient') || src.includes('$.http') ||
+    src.includes('$env.http') || src.includes('await ') || src.includes('async ') ||
+    src.includes('$done({response:');
   let out = src;
   out = out.replace(/\$request\.url/g, 'ctx.url');
   out = out.replace(/\$request\.method/g, 'ctx.method');
-  out = out.replace(/\$request\.headers/g, 'ctx.headers');
+  // 注意：ctx.headers 是 [[name, value], ...] 数组对格式（per MITM.md），
+  // Loon/Surge 的 $request.headers/$response.headers 是 {name: value} 对象格式。
+  // 替换为预转换变量 _headersObj（由 wrapAsProcess 在 process 函数体开头注入）
+  out = out.replace(/\$request\.headers/g, '_headersObj');
+  out = out.replace(/\$response\.headers/g, '_headersObj');
+  // 注意：必须先替换更长的标识符（statusCode/bodyBytes），否则会被 $response.status/$response.body 部分匹配
+  // $response.statusCode 是 $response.status 的别名 → ctx.status
+  out = out.replace(/\$response\.statusCode/g, 'ctx.status');
   out = out.replace(/\$response\.status/g, 'ctx.status');
-  out = out.replace(/\$response\.headers/g, 'ctx.headers');
+  // $response.bodyBytes / $request.bodyBytes 是 Loon 的二进制 body API，直接映射为 ctx.body（Uint8Array）
+  out = out.replace(/\$request\.bodyBytes/g, 'ctx.body');
+  out = out.replace(/\$response\.bodyBytes/g, 'ctx.body');
   out = out.replace(/\$request\.body/g, 'Anywhere.codec.utf8.decode(ctx.body)');
   out = out.replace(/\$response\.body/g, 'Anywhere.codec.utf8.decode(ctx.body)');
   out = rewriteDoneCalls(out);
@@ -556,12 +659,19 @@ function injectBoxJSPolyfill(src) {
   if (!usesEnv) return src;
 
   // BoxJS Env 兼容层 + 常用 Web API polyfill
+  // 注意：所有 polyfill 使用 globalThis 赋值，确保跨作用域可用。
+  // 局部变量映射（var XXX = globalThis.XXX）由 wrapAsProcess 在 process 函数内部注入。
   const polyfill = `// === BoxJS Env 兼容层 + Web API Polyfill (由 module2anywhere 自动注入) ===
 var _BoxJS_Env_injected = true;
 
+// --- Web API Polyfill: Array.isArray ---
+if (typeof Array.isArray === 'undefined') {
+  Array.isArray = function(arg) { return Object.prototype.toString.call(arg) === '[object Array]'; };
+}
+
 // --- Web API Polyfill: URLSearchParams ---
-if (typeof URLSearchParams === 'undefined') {
-  var URLSearchParams = function(init) {
+if (typeof globalThis.URLSearchParams === 'undefined') {
+  globalThis.URLSearchParams = function(init) {
     this._params = [];
     if (typeof init === 'string') {
       var s = init.charAt(0) === '?' ? init.slice(1) : init;
@@ -571,7 +681,7 @@ if (typeof URLSearchParams === 'undefined') {
         if (idx < 0) { this._params.push([decodeURIComponent(pairs[i]), '']); }
         else { this._params.push([decodeURIComponent(pairs[i].slice(0, idx)), decodeURIComponent(pairs[i].slice(idx + 1))]); }
       }
-    } else if (init && typeof init === 'object' && !Array.isArray(init)) {
+    } else if (init && typeof init === 'object' && Array.isArray(init) === false) {
       for (var key in init) {
         if (init.hasOwnProperty(key)) this._params.push([key, String(init[key])]);
       }
@@ -579,22 +689,22 @@ if (typeof URLSearchParams === 'undefined') {
       for (var i = 0; i < init.length; i++) { this._params.push([String(init[i][0]), String(init[i][1])]); }
     }
   };
-  URLSearchParams.prototype.append = function(name, value) { this._params.push([name, value]); };
-  URLSearchParams.prototype.delete = function(name) { this._params = this._params.filter(function(p) { return p[0] !== name; }); };
-  URLSearchParams.prototype.get = function(name) { for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === name) return this._params[i][1]; } return null; };
-  URLSearchParams.prototype.getAll = function(name) { var r = []; for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === name) r.push(this._params[i][1]); } return r; };
-  URLSearchParams.prototype.has = function(name) { for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === name) return true; } return false; };
-  URLSearchParams.prototype.set = function(name, value) { var found = false; for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === name) { this._params[i][1] = value; found = true; break; } } if (!found) this._params.push([name, value]); };
-  URLSearchParams.prototype.toString = function() { return this._params.map(function(p) { return encodeURIComponent(p[0]) + '=' + encodeURIComponent(p[1]); }).join('&'); };
-  URLSearchParams.prototype.keys = function() { return this._params.map(function(p) { return p[0]; }); };
-  URLSearchParams.prototype.values = function() { return this._params.map(function(p) { return p[1]; }); };
-  URLSearchParams.prototype.entries = function() { return this._params.map(function(p) { return [p[0], p[1]]; }); };
-  URLSearchParams.prototype.forEach = function(cb, thisArg) { for (var i = 0; i < this._params.length; i++) { cb.call(thisArg, this._params[i][1], this._params[i][0], this); } };
+  globalThis.URLSearchParams.prototype.append = function(name, value) { this._params.push([name, value]); };
+  globalThis.URLSearchParams.prototype.delete = function(name) { this._params = this._params.filter(function(p) { return p[0] !== name; }); };
+  globalThis.URLSearchParams.prototype.get = function(name) { for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === name) return this._params[i][1]; } return null; };
+  globalThis.URLSearchParams.prototype.getAll = function(name) { var r = []; for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === name) r.push(this._params[i][1]); } return r; };
+  globalThis.URLSearchParams.prototype.has = function(name) { for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === name) return true; } return false; };
+  globalThis.URLSearchParams.prototype.set = function(name, value) { var found = false; for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === name) { this._params[i][1] = value; found = true; break; } } if (!found) this._params.push([name, value]); };
+  globalThis.URLSearchParams.prototype.toString = function() { return this._params.map(function(p) { return encodeURIComponent(p[0]) + '=' + encodeURIComponent(p[1]); }).join('&'); };
+  globalThis.URLSearchParams.prototype.keys = function() { return this._params.map(function(p) { return p[0]; }); };
+  globalThis.URLSearchParams.prototype.values = function() { return this._params.map(function(p) { return p[1]; }); };
+  globalThis.URLSearchParams.prototype.entries = function() { return this._params.map(function(p) { return [p[0], p[1]]; }); };
+  globalThis.URLSearchParams.prototype.forEach = function(cb, thisArg) { for (var i = 0; i < this._params.length; i++) { cb.call(thisArg, this._params[i][1], this._params[i][0], this); } };
 }
 
 // --- Web API Polyfill: URL ---
-if (typeof URL === 'undefined') {
-  var URL = function(url, base) {
+if (typeof globalThis.URL === 'undefined') {
+  globalThis.URL = function(url, base) {
     var fullUrl = url;
     if (base) {
       if (url.indexOf('://') < 0) {
@@ -602,7 +712,7 @@ if (typeof URL === 'undefined') {
         fullUrl = (baseEnd >= 0 ? base.slice(0, baseEnd + 1) : base + '/') + url;
       } else { fullUrl = url; }
     }
-    var m = fullUrl.match(/^(https?):\/\/([^:/?#]+)(?::(\d+))?([^?#]*)?(\?[^#]*)?(#.*)?$/);
+    var m = fullUrl.match(/^(https?):\\/\\/([^:/?#]+)(?::(\\d+))?([^?#]*)?(\\?[^#]*)?(#.*)?$/);
     if (!m) throw new Error('Invalid URL: ' + fullUrl);
     this.protocol = m[1] + ':';
     this.hostname = m[2];
@@ -613,17 +723,17 @@ if (typeof URL === 'undefined') {
     this.hash = m[6] || '';
     this.href = fullUrl;
     this.origin = this.protocol + '//' + this.host;
-    this.searchParams = new URLSearchParams(this.search);
+    this.searchParams = new globalThis.URLSearchParams(this.search);
     Object.defineProperty(this, 'username', { get: function() { return ''; } });
     Object.defineProperty(this, 'password', { get: function() { return ''; } });
   };
-  URL.prototype.toString = function() { return this.href; };
-  URL.prototype.toJSON = function() { return this.href; };
+  globalThis.URL.prototype.toString = function() { return this.href; };
+  globalThis.URL.prototype.toJSON = function() { return this.href; };
 }
 
 // --- Web API Polyfill: console ---
-if (typeof console === 'undefined') {
-  var console = {
+if (typeof globalThis.console === 'undefined') {
+  globalThis.console = {
     log: function() { Anywhere.log.info([].slice.call(arguments).map(String).join(' ')); },
     warn: function() { Anywhere.log.warning([].slice.call(arguments).map(String).join(' ')); },
     error: function() { Anywhere.log.error([].slice.call(arguments).map(String).join(' ')); },
@@ -633,14 +743,30 @@ if (typeof console === 'undefined') {
 }
 
 // --- Web API Polyfill: atob / btoa ---
-if (typeof atob === 'undefined') {
-  var atob = function(str) { return Anywhere.codec.utf8.decode(Anywhere.codec.base64.decode(str)); };
-  var btoa = function(str) { return Anywhere.codec.base64.encode(Anywhere.codec.utf8.encode(str)); };
+if (typeof globalThis.atob === 'undefined') {
+  globalThis.atob = function(str) { return Anywhere.codec.utf8.decode(Anywhere.codec.base64.decode(str)); };
+  globalThis.btoa = function(str) { return Anywhere.codec.base64.encode(Anywhere.codec.utf8.encode(str)); };
 }
 
 // --- BoxJS Env 类 ---
 function Env(name) {
   this.name = name || 'BoxJS';
+}
+// _wrapBoxJSResponse 将 Anywhere.http 的响应转换为 BoxJS 脚本期望的格式
+// Anywhere: {status, headers: [[name, value], ...], body: Uint8Array}
+// BoxJS:    {status, headers: {name: value}, body: string, bodyBytes: Uint8Array}
+function _wrapBoxJSResponse(res) {
+  var headers = {};
+  if (res.headers && res.headers.forEach) {
+    res.headers.forEach(function(h) { headers[String(h[0] || "")] = String(h[1] || ""); });
+  }
+  return {
+    status: res.status || 200,
+    headers: headers,
+    body: Anywhere.codec.utf8.decode(res.body || new Uint8Array()),
+    bodyBytes: res.body,
+    url: res.url
+  };
 }
 Env.prototype.getdata = function(key) {
   return Anywhere.store.getString(key, true) || null;
@@ -669,11 +795,27 @@ Env.prototype.logErr = function(msg) {
   Anywhere.log.warning(String(msg));
 };
 Env.prototype.http = {
-  get: function(opts) { return Anywhere.http.get(typeof opts === 'string' ? opts : opts.url, opts); },
-  post: function(opts) { return Anywhere.http.post(typeof opts === 'string' ? opts : opts.url, opts); },
-  put: function(opts) { return Anywhere.http.put(typeof opts === 'string' ? opts : opts.url, opts); },
-  delete: function(opts) { return Anywhere.http.delete(typeof opts === 'string' ? opts : opts.url, opts); },
-  request: function(opts) { return Anywhere.http.request(opts); }
+  // 包装响应：Anywhere.http 返回 headers: [[name, value], ...] + body: Uint8Array
+  // BoxJS 脚本期望 headers: {name: value} + body: string
+  get: function(opts) {
+    var url = typeof opts === 'string' ? opts : opts.url;
+    return Anywhere.http.get(url, opts).then(function(res) { return _wrapBoxJSResponse(res); });
+  },
+  post: function(opts) {
+    var url = typeof opts === 'string' ? opts : opts.url;
+    return Anywhere.http.post(url, opts).then(function(res) { return _wrapBoxJSResponse(res); });
+  },
+  put: function(opts) {
+    var url = typeof opts === 'string' ? opts : opts.url;
+    return Anywhere.http.put(url, opts).then(function(res) { return _wrapBoxJSResponse(res); });
+  },
+  delete: function(opts) {
+    var url = typeof opts === 'string' ? opts : opts.url;
+    return Anywhere.http.delete(url, opts).then(function(res) { return _wrapBoxJSResponse(res); });
+  },
+  request: function(opts) {
+    return Anywhere.http.request(opts).then(function(res) { return _wrapBoxJSResponse(res); });
+  }
 };
 Env.prototype.isQuanX = function() { return false; };
 Env.prototype.isSurge = function() { return false; };
@@ -686,26 +828,17 @@ Env.prototype.wait = function(ms) {
 };
 Env.prototype.done = function() { Anywhere.done(); };
 // $env 兼容（Quantumult X 的 $env 对象）
-var $env = { isBoxJS: false, isAnywhere: true };
+var $env = globalThis.$env || { isBoxJS: false, isAnywhere: true };
 
-// --- globalThis 污染隔离工具 ---
-// 上游脚本（如 wloc.js）会往 globalThis 上写 $loon/$environment/$script/$argument 等全局变量，
-// 污染 Anywhere 运行时环境。使用 saveGlobals/restoreGlobals 在执行前后隔离。
-var _GLOBAL_POLLUTABLE_NAMES = ["$request", "$response", "$argument", "$persistentStore", "$done", "$loon", "$environment", "$script", "$httpClient", "$notification"];
-function _saveGlobals(snapshot) {
-  for (var i = 0; i < _GLOBAL_POLLUTABLE_NAMES.length; i++) {
-    var name = _GLOBAL_POLLUTABLE_NAMES[i];
-    snapshot[name] = globalThis[name];
-  }
-}
-function _restoreGlobals(snapshot) {
-  var keys = Object.keys(snapshot);
-  for (var i = 0; i < keys.length; i++) {
-    var name = keys[i];
-    if (typeof snapshot[name] === "undefined") delete globalThis[name];
-    else globalThis[name] = snapshot[name];
-  }
-}
+// 局部变量映射：将 globalThis 上的 polyfill 映射为局部标识符
+// 注意：必须在所有 globalThis.XXX 赋值之后执行，否则读到的是 undefined
+// （JSCore 中 var 声明会提升，但赋值在原位置执行）
+var URLSearchParams = globalThis.URLSearchParams;
+var URL = globalThis.URL;
+var console = globalThis.console;
+var atob = globalThis.atob;
+var btoa = globalThis.btoa;
+
 // === BoxJS Env 兼容层 + Web API Polyfill 结束 ===
 `;
   return polyfill + '\n' + src;
@@ -713,23 +846,129 @@ function _restoreGlobals(snapshot) {
 
 function rewriteHttpClientCalls(src) {
   let out = src;
-  out = out.replace(/\$httpClient\.get\(\s*([^,]+?)\s*,/g, 'await Anywhere.http.get($1');
-  out = out.replace(/\$httpClient\.post\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,/g, 'await Anywhere.http.post($1, $2');
-  out = out.replace(/\$httpClient\.put\(\s*([^,]+?)\s*,/g, 'await Anywhere.http.put($1');
-  out = out.replace(/\$httpClient\.delete\(\s*([^,]+?)\s*,/g, 'await Anywhere.http.delete($1');
-  out = out.replace(/\$httpClient\.request\(\s*([^,]+?)\s*,/g, 'await Anywhere.http.request($1');
+  // 将 $httpClient 回调式调用转为 await + .then() 模式
+  // $httpClient.get(url, function(err, resp, body) { ... })
+  // → await Anywhere.http.get(url).then(function(res) { var err=null; var resp={status:res.status,headers:res.headers}; var body=Anywhere.codec.utf8.decode(res.body||new Uint8Array()); ... })
+
+  // 构造回调参数变量声明的辅助函数
+  // 注意：Anywhere.http 返回的 res.headers 是 [[name, value], ...] 数组对格式，
+  // Loon/Surge 的 $httpClient 回调中 resp.headers 是 {name: value} 对象格式，需要转换
+  function buildCallbackVars(params) {
+    var paramList = params.split(',').map(function(p) { return p.trim(); }).filter(function(p) { return p; });
+    var varDecls = '';
+    if (paramList.length > 0) varDecls += 'var ' + paramList[0] + ' = null;';
+    if (paramList.length > 1) varDecls += 'var ' + paramList[1] + ' = {status: res.status, headers: (function(h){var o={};if(h&&h.forEach){h.forEach(function(p){o[String(p[0]||"")]=String(p[1]||"")]});}return o;})(res.headers)};';
+    if (paramList.length > 2) varDecls += 'var ' + paramList[2] + ' = Anywhere.codec.utf8.decode(res.body || new Uint8Array());';
+    return varDecls;
+  }
+
+  // $httpClient.get/put/delete(url, function(err, resp, body) { ... })
+  out = out.replace(
+    /\$httpClient\.(get|put|delete)\(\s*([^,]+?)\s*,\s*function\s*\(([^)]*)\)\s*\{/g,
+    function(match, method, url, params) {
+      return 'await Anywhere.http.' + method + '(' + url + ').then(function(res) {' + buildCallbackVars(params);
+    }
+  );
+  // 箭头函数形式: $httpClient.get/put/delete(url, (err, resp, body) => {
+  out = out.replace(
+    /\$httpClient\.(get|put|delete)\(\s*([^,]+?)\s*,\s*\(([^)]*)\)\s*=>\s*\{/g,
+    function(match, method, url, params) {
+      return 'await Anywhere.http.' + method + '(' + url + ').then(function(res) {' + buildCallbackVars(params);
+    }
+  );
+  // 单参数箭头函数: $httpClient.get/put/delete(url, err => {
+  out = out.replace(
+    /\$httpClient\.(get|put|delete)\(\s*([^,]+?)\s*,\s*(\w+)\s*=>\s*\{/g,
+    function(match, method, url, paramName) {
+      return 'await Anywhere.http.' + method + '(' + url + ').then(function(res) {var ' + paramName + ' = null;';
+    }
+  );
+
+  // $httpClient.post(url, opts, function(err, resp, body) { ... })
+  out = out.replace(
+    /\$httpClient\.post\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,\s*function\s*\(([^)]*)\)\s*\{/g,
+    function(match, url, opts, params) {
+      return 'await Anywhere.http.post(' + url + ', ' + opts + ').then(function(res) {' + buildCallbackVars(params);
+    }
+  );
+  // 箭头函数形式
+  out = out.replace(
+    /\$httpClient\.post\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,\s*\(([^)]*)\)\s*=>\s*\{/g,
+    function(match, url, opts, params) {
+      return 'await Anywhere.http.post(' + url + ', ' + opts + ').then(function(res) {' + buildCallbackVars(params);
+    }
+  );
+  // 单参数箭头函数
+  out = out.replace(
+    /\$httpClient\.post\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,\s*(\w+)\s*=>\s*\{/g,
+    function(match, url, opts, paramName) {
+      return 'await Anywhere.http.post(' + url + ', ' + opts + ').then(function(res) {var ' + paramName + ' = null;';
+    }
+  );
+
+  // $httpClient.request(opts, function(err, resp, body) { ... })
+  out = out.replace(
+    /\$httpClient\.request\(\s*([^,]+?)\s*,\s*function\s*\(([^)]*)\)\s*\{/g,
+    function(match, opts, params) {
+      return 'await Anywhere.http.request(' + opts + ').then(function(res) {' + buildCallbackVars(params);
+    }
+  );
+  // 箭头函数形式
+  out = out.replace(
+    /\$httpClient\.request\(\s*([^,]+?)\s*,\s*\(([^)]*)\)\s*=>\s*\{/g,
+    function(match, opts, params) {
+      return 'await Anywhere.http.request(' + opts + ').then(function(res) {' + buildCallbackVars(params);
+    }
+  );
+
   return out;
 }
 
 function rewriteDoneCalls(src) {
   let out = src;
+  // $done({}) → Anywhere.done()
   out = out.replace(/\$done\(\s*\{\s*\}\s*\)/g, 'Anywhere.done()');
+  // $done() → Anywhere.done()
   out = out.replace(/\$done\(\s*\)/g, 'Anywhere.done()');
+  // $done({body: xxx}) → ctx.body = Anywhere.codec.utf8.encode(xxx); Anywhere.done()
   out = out.replace(/\$done\(\s*\{\s*body\s*:\s*([^}]+?)\s*\}\s*\)/g, 'ctx.body = Anywhere.codec.utf8.encode($1); Anywhere.done()');
   // $done({ body }) ES6 shorthand
   out = out.replace(/\$done\(\s*\{\s*body\s*\}\s*\)/g, 'ctx.body = Anywhere.codec.utf8.encode(body); Anywhere.done()');
-  out = out.replace(/\$done\(\s*\{\s*response\s*:\s*(\{[^}]*\})\s*\}\s*\)/g, 'Anywhere.respond($1)');
-  out = out.replace(/\$done\(\s*\{[^}]*\}\s*\)/g, 'Anywhere.done()');
+
+  // $done({response: {...}}) — 需要处理嵌套大括号
+  // 使用标记替换法来正确匹配嵌套大括号
+  out = out.replace(/\$done\(\s*\{\s*response\s*:\s*/g, '__DONE_RESPONSE_START__');
+  out = out.replace(/__DONE_RESPONSE_START__(\{[\s\S]*?\}\s*\})\s*\)/g, function(match, responseObj) {
+    // 验证大括号是否平衡
+    var depth = 0;
+    var endIdx = -1;
+    for (var i = 0; i < responseObj.length; i++) {
+      if (responseObj[i] === '{') depth++;
+      else if (responseObj[i] === '}') depth--;
+      if (depth === 0) { endIdx = i; break; }
+    }
+    if (endIdx >= 0) {
+      var inner = responseObj.slice(0, endIdx + 1);
+      return 'Anywhere.respond(' + inner + ')';
+    }
+    return match;
+  });
+
+  // $done({...}) 其他情况 → Anywhere.done()
+  out = out.replace(/\$done\(\s*\{/g, '__DONE_OBJECT_START__{');
+  out = out.replace(/__DONE_OBJECT_START__\{[\s\S]*?\}\s*\)/g, function(match) {
+    var inner = match.slice('__DONE_OBJECT_START__'.length, -1).trim();
+    var depth = 0;
+    var balanced = true;
+    for (var i = 0; i < inner.length; i++) {
+      if (inner[i] === '{') depth++;
+      else if (inner[i] === '}') depth--;
+      if (depth < 0) { balanced = false; break; }
+    }
+    if (balanced && depth === 0) return 'Anywhere.done()';
+    return match;
+  });
+
   return out;
 }
 
@@ -738,19 +977,59 @@ function wrapAsProcess(src, phase, needsAsync) {
   const asyncKw = needsAsync ? 'async ' : '';
   const phaseCheck = phase === 1 ? 'response' : 'request';
 
+  // 检测是否注入了 BoxJS polyfill（由 injectBoxJSPolyfill 添加的标记）
+  const hasPolyfill = trimmed.includes('_BoxJS_Env_injected');
+
+  // 局部变量映射已移至 polyfill 字符串末尾（在 globalThis.XXX 赋值之后）
+  // 注意：之前在这里注入 var URLSearchParams = globalThis.URLSearchParams; 会导致
+  //       赋值在 polyfill 安装之前执行，读到 undefined。
+  //       现在在 polyfill 字符串中所有 globalThis.XXX 赋值之后才声明 var，顺序正确。
+  const localVarMappings = '';
+
+  // headers 预转换：将 ctx.headers（[[name, value], ...] 数组对）转换为 {name: value} 对象
+  // Loon/Surge 的 $request.headers/$response.headers 是对象格式，rewriteScriptAPI 中替换为 _headersObj
+  // 注意：必须在 process 函数体最开头执行，确保上游脚本使用前已初始化
+  const needsHeadersObj = trimmed.includes('_headersObj');
+  const headersInject = needsHeadersObj
+    ? '  var _headersObj = (function(h){var o={};if(h&&h.forEach){h.forEach(function(p){o[String(p[0]||"")]=String(p[1]||"")]});}return o;})(ctx.headers);\n'
+    : '';
+
   // 检测是否需要 globalThis 隔离（上游脚本可能往 globalThis 写 $loon/$environment 等）
   const needsIsolation = trimmed.includes('$loon') || trimmed.includes('$environment') ||
     trimmed.includes('$script') || trimmed.includes('$argument') || trimmed.includes('globalThis.$');
-  const hasIsolationTools = trimmed.includes('_saveGlobals');
 
-  const isoPrefix = (needsIsolation && hasIsolationTools)
-    ? '  var _globalsSnapshot = {}; _saveGlobals(_globalsSnapshot);\n  try {\n' : '';
-  const isoSuffix = (needsIsolation && hasIsolationTools)
+  // 隔离代码：将 _saveGlobals/_restoreGlobals 定义内联，确保在 try 块之前就可用
+  // （JSCore 不会将 try 块内的 function 声明提升到外层函数作用域）
+  const isoPrefix = needsIsolation
+    ? `  var _globalsSnapshot = {};
+  var _GLOBAL_POLLUTABLE_NAMES = ["$request", "$response", "$argument", "$persistentStore", "$done", "$loon", "$environment", "$script", "$httpClient", "$notification"];
+  function _saveGlobals(snapshot) { for (var i = 0; i < _GLOBAL_POLLUTABLE_NAMES.length; i++) { var name = _GLOBAL_POLLUTABLE_NAMES[i]; snapshot[name] = globalThis[name]; } }
+  function _restoreGlobals(snapshot) { var keys = Object.keys(snapshot); for (var i = 0; i < keys.length; i++) { var name = keys[i]; if (typeof snapshot[name] === "undefined") delete globalThis[name]; else globalThis[name] = snapshot[name]; } }
+  _saveGlobals(_globalsSnapshot);
+  try {
+` : '';
+  const isoSuffix = needsIsolation
     ? '\n  } finally { _restoreGlobals(_globalsSnapshot); }\n' : '';
 
+  // 已有 process 函数定义时，将 polyfill 和局部变量映射注入到函数体内部
   if (/^function\s+process\s*\(\s*ctx\s*\)/m.test(trimmed)) {
     let out = trimmed;
     if (needsAsync && !out.startsWith('async ')) out = 'async ' + out;
+    // 注入 headers 预转换变量（必须在最开头，polyfill 之前）
+    if (headersInject) {
+      out = out.replace(/(function\s+process\s*\(\s*ctx\s*\)\s*\{)/, '$1\n' + headersInject);
+    }
+    // 将 polyfill 代码（process 函数外部）移到 process 函数体内部
+    if (hasPolyfill) {
+      // 提取 polyfill 部分（从 _BoxJS_Env_injected 到 === 结束标记）
+      const polyfillMatch = out.match(/\/\/ === BoxJS Env 兼容层[\s\S]*?\/\/ === BoxJS Env 兼容层 \+ Web API Polyfill 结束 ===\n/);
+      const polyfillCode = polyfillMatch ? polyfillMatch[0] : '';
+      // 从原位置移除 polyfill
+      if (polyfillCode) out = out.replace(polyfillCode, '');
+      // 注入到 process 函数体开头
+      const injectCode = localVarMappings + (polyfillCode ? polyfillCode.replace(/\n/g, '\n  ') : '');
+      out = out.replace(/(function\s+process\s*\(\s*ctx\s*\)\s*\{)/, '$1\n' + injectCode);
+    }
     if (isoPrefix) {
       out = out.replace(/(function\s+process\s*\(\s*ctx\s*\)\s*\{)/, '$1\n' + isoPrefix);
       const lastBrace = out.lastIndexOf('}');
@@ -760,6 +1039,17 @@ function wrapAsProcess(src, phase, needsAsync) {
   }
   if (/^async\s+function\s+process\s*\(\s*ctx\s*\)/m.test(trimmed)) {
     let out = trimmed;
+    // 注入 headers 预转换变量（必须在最开头，polyfill 之前）
+    if (headersInject) {
+      out = out.replace(/(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)/, '$1\n' + headersInject);
+    }
+    if (hasPolyfill) {
+      const polyfillMatch = out.match(/\/\/ === BoxJS Env 兼容层[\s\S]*?\/\/ === BoxJS Env 兼容层 \+ Web API Polyfill 结束 ===\n/);
+      const polyfillCode = polyfillMatch ? polyfillMatch[0] : '';
+      if (polyfillCode) out = out.replace(polyfillCode, '');
+      const injectCode = localVarMappings + (polyfillCode ? polyfillCode.replace(/\n/g, '\n  ') : '');
+      out = out.replace(/(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)/, '$1\n' + injectCode);
+    }
     if (isoPrefix) {
       out = out.replace(/(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)/, '$1\n' + isoPrefix);
       const lastBrace = out.lastIndexOf('}');
@@ -770,13 +1060,13 @@ function wrapAsProcess(src, phase, needsAsync) {
   if (/^function\s+run\s*\(\s*\)/m.test(trimmed)) {
     return `${asyncKw}function process(ctx) {
   if (ctx.phase !== "${phaseCheck}") return;
-${isoPrefix}  try { run(); } catch (e) { Anywhere.log.warning("script error: " + e); }${isoSuffix}
+${headersInject}${localVarMappings}${isoPrefix}  try { run(); } catch (e) { Anywhere.log.warning("script error: " + e); }${isoSuffix}
 }
 ${trimmed}`;
   }
   return `${asyncKw}function process(ctx) {
   if (ctx.phase !== "${phaseCheck}") return;
-${isoPrefix}  try {
+${headersInject}${localVarMappings}${isoPrefix}  try {
 ${indent(trimmed, '    ')}
   } catch (e) { Anywhere.log.warning("script error: " + e); }${isoSuffix}
   Anywhere.done();

@@ -1,0 +1,42 @@
+# module2anywhere — Cursor Rules
+
+## 项目概述
+Loon/Surge 模块到 Anywhere 规则集的转换器。Go 后端 + EdgeOne Pages Functions 前端。
+
+## 双端同步（最重要）
+本项目有 Go 侧 (`converter/script.go`) 和 EdgeOne 侧 (`edgeone/functions/lib.js`) 两套独立的转换引擎。**任何修改必须同时应用到两侧**。
+
+同步检查清单：
+- `RewriteScriptAPI()` ↔ `rewriteScriptAPI()`
+- `rewriteDoneCalls()` ↔ `rewriteDoneCalls()`
+- `rewriteHttpClientCalls()` ↔ `rewriteHttpClientCalls()`
+- `injectBoxJSPolyfill()` ↔ `injectBoxJSPolyfill()`
+- `BuildWrappedScript()` ↔ `encodeWrappedScript()`
+- `wrapAsProcess()` ↔ `wrapAsProcess()`
+- `needsAsync` 检测条件
+
+## headers 格式差异（最常见 bug 来源）
+- Anywhere: `[[name, value], ...]` 数组对
+- Loon/Surge: `{name: value}` 对象
+- 所有从 Anywhere API 到 Loon/Surge 兼容的 headers 赋值都必须转换格式
+
+## body 格式差异
+- Anywhere `ctx.body`: `Uint8Array`
+- Loon/Surge `$request.body`/`$response.body`: `string`（需 `Anywhere.codec.utf8.decode()`）
+- Loon `$response.bodyBytes`/`$request.bodyBytes`: `Uint8Array`（直接映射 `ctx.body`）
+- 替换顺序：先替换长标识符（`bodyBytes`），再替换短的（`body`）
+
+## JSCore 注意事项
+1. `var` 声明提升但赋值不提升 — polyfill 安装后才能 `var XXX = globalThis.XXX`
+2. `new Function()` 只能访问全局作用域 — 需要 `var XXX = globalThis.XXX` 映射
+3. `function` 声明不会跨 `try` 块提升 — 工具函数必须在 `try` 之前定义
+
+## 构建流程
+1. 修改 `edgeone/functions/lib.js` 后必须运行 `cd edgeone && node build.js`
+2. 修改 Go 代码后运行 `go build ./... && go vet ./...`
+3. `lib.js` 是自包含文件，不允许 import 任何模块
+
+## 权威参考
+- `README.md` 第 7 节：脚本 API 映射表
+- `docs/MITM.md`：Anywhere MITM 系统开发者指南
+- `AGENTS.md`：完整项目指南

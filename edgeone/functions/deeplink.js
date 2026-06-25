@@ -47,6 +47,7 @@ export async function onRequest(context) {
   var name = query.name || '';
   var fetchScripts = query.fetch !== 'false';
   var generalize = query.generalize === 'true';
+  var wrapScripts = query.wrap === 'true';
   var sourceHint = query.source || '';
   var format = (query.format || '').toLowerCase().trim();
   var initialUA = lib.getUserAgent(sourceHint);
@@ -94,6 +95,7 @@ export async function onRequest(context) {
       ...lib.defaultConvertOptions(),
       generalizeHost: generalize,
       fetchScripts: fetchScripts,
+      wrapScripts: wrapScripts,
       sourceURL: inputURL,
       serviceURL: serviceURL,
       addResourceURL: addResourceURL,
@@ -123,6 +125,7 @@ export async function onRequest(context) {
   // 构造本服务的子链接 URL
   var origin = url.origin;
   var linkParams = 'url=' + encodeURIComponent(decodedURL) + '&fetch=' + fetchScripts + '&generalize=' + generalize;
+  if (wrapScripts) linkParams += '&wrap=true';
   if (sourceHint) linkParams += '&source=' + encodeURIComponent(sourceHint);
   if (name) linkParams += '&name=' + encodeURIComponent(name);
 

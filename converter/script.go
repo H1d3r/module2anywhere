@@ -84,9 +84,11 @@ func EncodeInlineScript(rawJS string, phase int) string {
 // 当检测到 $httpClient 调用时，自动将 process 函数声明为 async。
 // 注意：复杂脚本可能需要人工审核。本函数做尽力改写。
 func RewriteScriptAPI(src string, phase int) string {
-	// 0. 检测是否需要 async（含 $httpClient 或 await 关键字）
-	needsAsync := strings.Contains(src, "$httpClient") || strings.Contains(src, "$done({response:") ||
-		strings.Contains(src, "$.http") || strings.Contains(src, "$env.http") || strings.Contains(src, "await $.wait")
+	// 0. 检测是否需要 async（含 $httpClient / await / async / $done({response: 等）
+	// 注意：需与 BuildWrappedScript 的检测条件保持一致
+	needsAsync := strings.Contains(src, "$httpClient") || strings.Contains(src, "$.http") ||
+		strings.Contains(src, "$env.http") || strings.Contains(src, "await ") ||
+		strings.Contains(src, "async ") || strings.Contains(src, "$done({response:")
 
 	// 1. 简单符号替换
 	out := src
@@ -94,9 +96,18 @@ func RewriteScriptAPI(src string, phase int) string {
 	// $request / $response → ctx（保留 .url/.method/.status/.headers）
 	out = strings.ReplaceAll(out, "$request.url", "ctx.url")
 	out = strings.ReplaceAll(out, "$request.method", "ctx.method")
-	out = strings.ReplaceAll(out, "$request.headers", "ctx.headers")
+	// 注意：ctx.headers 是 [[name, value], ...] 数组对格式（per MITM.md），
+	// Loon/Surge 的 $request.headers/$response.headers 是 {name: value} 对象格式。
+	// 替换为预转换变量 _headersObj（由 wrapAsProcess 在 process 函数体开头注入）
+	out = strings.ReplaceAll(out, "$request.headers", "_headersObj")
+	out = strings.ReplaceAll(out, "$response.headers", "_headersObj")
+	// 注意：必须先替换更长的标识符（statusCode/bodyBytes），否则会被 $response.status/$response.body 部分匹配
+	// $response.statusCode 是 $response.status 的别名 → ctx.status
+	out = strings.ReplaceAll(out, "$response.statusCode", "ctx.status")
 	out = strings.ReplaceAll(out, "$response.status", "ctx.status")
-	out = strings.ReplaceAll(out, "$response.headers", "ctx.headers")
+	// $response.bodyBytes / $request.bodyBytes 是 Loon 的二进制 body API，直接映射为 ctx.body（Uint8Array）
+	out = strings.ReplaceAll(out, "$request.bodyBytes", "ctx.body")
+	out = strings.ReplaceAll(out, "$response.bodyBytes", "ctx.body")
 
 	// body 需 codec 转换：$response.body → Anywhere.codec.utf8.decode(ctx.body)
 	// Anywhere 中 ctx.body 是 Uint8Array，不是字符串，不能直接调用 .replace() 等字符串方法。
@@ -152,26 +163,127 @@ func RewriteScriptAPI(src string, phase int) string {
 	return out
 }
 
-// rewriteHttpClientCalls 改写 $httpClient.get/post 回调式调用为 await Anywhere.http.*。
-// 由于 Loon/Surge 使用回调式而 Anywhere 使用 Promise 式，完整转换需解析回调体。
-// 此处做尽力改写：将 $httpClient.get(url, cb) 替换为 await Anywhere.http.get(url)，
-// 并保留原回调体作为后续处理（用户需手动调整）。
+// rewriteHttpClientCalls 改写 $httpClient.get/post 等回调式调用为 await Anywhere.http.*.then()。
+// Loon/Surge: $httpClient.get(url, function(err, resp, body) { ... })
+// Anywhere:   await Anywhere.http.get(url).then(function(res) { var err=null; var resp={...}; var body=...; ... })
+// 由于 Go 的 regexp 不支持 JS 的回调式替换（只能用 ReplaceAllStringFunc 接收整体 match），
+// 这里用 ReplaceAllStringFunc + FindStringSubmatch 重新解析捕获组。
 func rewriteHttpClientCalls(src string) string {
 	out := src
-	// $httpClient.get(url, cb) → await Anywhere.http.get(url)
-	out = regexp.MustCompile(`\$httpClient\.get\(\s*([^,]+?)\s*,`).
-		ReplaceAllString(out, "await Anywhere.http.get($1")
-	// $httpClient.post(url, opts, cb) → await Anywhere.http.post(url, opts)
-	out = regexp.MustCompile(`\$httpClient\.post\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,`).
-		ReplaceAllString(out, "await Anywhere.http.post($1, $2")
-	// $httpClient.put/delete 类似
-	out = regexp.MustCompile(`\$httpClient\.put\(\s*([^,]+?)\s*,`).
-		ReplaceAllString(out, "await Anywhere.http.put($1")
-	out = regexp.MustCompile(`\$httpClient\.delete\(\s*([^,]+?)\s*,`).
-		ReplaceAllString(out, "await Anywhere.http.delete($1")
-	// 通用 $httpClient.request(opts, cb) → await Anywhere.http.request(opts)
-	out = regexp.MustCompile(`\$httpClient\.request\(\s*([^,]+?)\s*,`).
-		ReplaceAllString(out, "await Anywhere.http.request($1")
+
+	// buildCallbackVars 构造回调参数变量声明
+	// params 形如 "err, resp, body" 或 "err,resp,body" 或 ""
+	// 注意：Anywhere.http 返回的 res.headers 是 [[name, value], ...] 数组对格式，
+	// Loon/Surge 的 $httpClient 回调中 resp.headers 是 {name: value} 对象格式，需要转换
+	buildCallbackVars := func(params string) string {
+		paramList := strings.Split(params, ",")
+		varDecls := ""
+		for i, p := range paramList {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			switch i {
+			case 0:
+				varDecls += "var " + p + " = null;"
+			case 1:
+				varDecls += "var " + p + " = {status: res.status, headers: (function(h){var o={};if(h&&h.forEach){h.forEach(function(p){o[String(p[0]||\"\")]=String(p[1]||\"\")]});}return o;})(res.headers)};"
+			case 2:
+				varDecls += "var " + p + " = Anywhere.codec.utf8.decode(res.body || new Uint8Array());"
+			}
+		}
+		return varDecls
+	}
+
+	// $httpClient.get/put/delete(url, function(err, resp, body) { ... })
+	// → await Anywhere.http.get(url).then(function(res) { var err=null; var resp={...}; var body=...;
+	re1 := regexp.MustCompile(`\$httpClient\.(get|put|delete)\(\s*([^,]+?)\s*,\s*function\s*\(([^)]*)\)\s*\{`)
+	out = re1.ReplaceAllStringFunc(out, func(match string) string {
+		sub := re1.FindStringSubmatch(match)
+		if len(sub) < 4 {
+			return match
+		}
+		method, url, params := sub[1], sub[2], sub[3]
+		return "await Anywhere.http." + method + "(" + url + ").then(function(res) {" + buildCallbackVars(params)
+	})
+
+	// 箭头函数形式: $httpClient.get/put/delete(url, (err, resp, body) => {
+	re2 := regexp.MustCompile(`\$httpClient\.(get|put|delete)\(\s*([^,]+?)\s*,\s*\(([^)]*)\)\s*=>\s*\{`)
+	out = re2.ReplaceAllStringFunc(out, func(match string) string {
+		sub := re2.FindStringSubmatch(match)
+		if len(sub) < 4 {
+			return match
+		}
+		method, url, params := sub[1], sub[2], sub[3]
+		return "await Anywhere.http." + method + "(" + url + ").then(function(res) {" + buildCallbackVars(params)
+	})
+
+	// 单参数箭头函数: $httpClient.get/put/delete(url, err => {
+	re3 := regexp.MustCompile(`\$httpClient\.(get|put|delete)\(\s*([^,]+?)\s*,\s*(\w+)\s*=>\s*\{`)
+	out = re3.ReplaceAllStringFunc(out, func(match string) string {
+		sub := re3.FindStringSubmatch(match)
+		if len(sub) < 4 {
+			return match
+		}
+		method, url, paramName := sub[1], sub[2], sub[3]
+		return "await Anywhere.http." + method + "(" + url + ").then(function(res) {var " + paramName + " = null;"
+	})
+
+	// $httpClient.post(url, opts, function(err, resp, body) { ... })
+	re4 := regexp.MustCompile(`\$httpClient\.post\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,\s*function\s*\(([^)]*)\)\s*\{`)
+	out = re4.ReplaceAllStringFunc(out, func(match string) string {
+		sub := re4.FindStringSubmatch(match)
+		if len(sub) < 5 {
+			return match
+		}
+		url, opts, params := sub[1], sub[2], sub[3]
+		return "await Anywhere.http.post(" + url + ", " + opts + ").then(function(res) {" + buildCallbackVars(params)
+	})
+
+	// $httpClient.post 箭头函数形式
+	re5 := regexp.MustCompile(`\$httpClient\.post\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,\s*\(([^)]*)\)\s*=>\s*\{`)
+	out = re5.ReplaceAllStringFunc(out, func(match string) string {
+		sub := re5.FindStringSubmatch(match)
+		if len(sub) < 5 {
+			return match
+		}
+		url, opts, params := sub[1], sub[2], sub[3]
+		return "await Anywhere.http.post(" + url + ", " + opts + ").then(function(res) {" + buildCallbackVars(params)
+	})
+
+	// $httpClient.post 单参数箭头函数
+	re6 := regexp.MustCompile(`\$httpClient\.post\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,\s*(\w+)\s*=>\s*\{`)
+	out = re6.ReplaceAllStringFunc(out, func(match string) string {
+		sub := re6.FindStringSubmatch(match)
+		if len(sub) < 5 {
+			return match
+		}
+		url, opts, paramName := sub[1], sub[2], sub[3]
+		return "await Anywhere.http.post(" + url + ", " + opts + ").then(function(res) {var " + paramName + " = null;"
+	})
+
+	// $httpClient.request(opts, function(err, resp, body) { ... })
+	re7 := regexp.MustCompile(`\$httpClient\.request\(\s*([^,]+?)\s*,\s*function\s*\(([^)]*)\)\s*\{`)
+	out = re7.ReplaceAllStringFunc(out, func(match string) string {
+		sub := re7.FindStringSubmatch(match)
+		if len(sub) < 4 {
+			return match
+		}
+		opts, params := sub[1], sub[2]
+		return "await Anywhere.http.request(" + opts + ").then(function(res) {" + buildCallbackVars(params)
+	})
+
+	// $httpClient.request 箭头函数形式
+	re8 := regexp.MustCompile(`\$httpClient\.request\(\s*([^,]+?)\s*,\s*\(([^)]*)\)\s*=>\s*\{`)
+	out = re8.ReplaceAllStringFunc(out, func(match string) string {
+		sub := re8.FindStringSubmatch(match)
+		if len(sub) < 4 {
+			return match
+		}
+		opts, params := sub[1], sub[2]
+		return "await Anywhere.http.request(" + opts + ").then(function(res) {" + buildCallbackVars(params)
+	})
+
 	return out
 }
 
@@ -193,9 +305,15 @@ func injectBoxJSPolyfill(src string) string {
 	polyfill := `// === BoxJS Env 兼容层 + Web API Polyfill (由 module2anywhere 自动注入) ===
 var _BoxJS_Env_injected = true;
 
+// --- Web API Polyfill: Array.isArray ---
+if (typeof Array.isArray === 'undefined') {
+  Array.isArray = function(arg) { return Object.prototype.toString.call(arg) === '[object Array]'; };
+}
+
 // --- Web API Polyfill: URLSearchParams ---
-if (typeof URLSearchParams === 'undefined') {
-  var URLSearchParams = function(init) {
+// 使用 globalThis 赋值而非 var 声明，确保 new Function() 内可访问
+if (typeof globalThis.URLSearchParams === 'undefined') {
+  globalThis.URLSearchParams = function(init) {
     this._params = [];
     if (typeof init === 'string') {
       var s = init.charAt(0) === '?' ? init.slice(1) : init;
@@ -213,22 +331,22 @@ if (typeof URLSearchParams === 'undefined') {
       for (var i = 0; i < init.length; i++) { this._params.push([String(init[i][0]), String(init[i][1])]); }
     }
   };
-  URLSearchParams.prototype.append = function(name, value) { this._params.push([name, value]); };
-  URLSearchParams.prototype.delete = function(name) { this._params = this._params.filter(function(p) { return p[0] !== name; }); };
-  URLSearchParams.prototype.get = function(name) { for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === name) return this._params[i][1]; } return null; };
-  URLSearchParams.prototype.getAll = function(name) { var r = []; for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === name) r.push(this._params[i][1]); } return r; };
-  URLSearchParams.prototype.has = function(name) { for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === name) return true; } return false; };
-  URLSearchParams.prototype.set = function(name, value) { var found = false; for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === name) { this._params[i][1] = value; found = true; break; } } if (!found) this._params.push([name, value]); };
-  URLSearchParams.prototype.toString = function() { return this._params.map(function(p) { return encodeURIComponent(p[0]) + '=' + encodeURIComponent(p[1]); }).join('&'); };
-  URLSearchParams.prototype.keys = function() { return this._params.map(function(p) { return p[0]; }); };
-  URLSearchParams.prototype.values = function() { return this._params.map(function(p) { return p[1]; }); };
-  URLSearchParams.prototype.entries = function() { return this._params.map(function(p) { return [p[0], p[1]]; }); };
-  URLSearchParams.prototype.forEach = function(cb, thisArg) { for (var i = 0; i < this._params.length; i++) { cb.call(thisArg, this._params[i][1], this._params[i][0], this); } };
+  globalThis.URLSearchParams.prototype.append = function(name, value) { this._params.push([name, value]); };
+  globalThis.URLSearchParams.prototype.delete = function(name) { this._params = this._params.filter(function(p) { return p[0] !== name; }); };
+  globalThis.URLSearchParams.prototype.get = function(name) { for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === name) return this._params[i][1]; } return null; };
+  globalThis.URLSearchParams.prototype.getAll = function(name) { var r = []; for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === name) r.push(this._params[i][1]); } return r; };
+  globalThis.URLSearchParams.prototype.has = function(name) { for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === name) return true; } return false; };
+  globalThis.URLSearchParams.prototype.set = function(name, value) { var found = false; for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === name) { this._params[i][1] = value; found = true; break; } } if (!found) this._params.push([name, value]); };
+  globalThis.URLSearchParams.prototype.toString = function() { return this._params.map(function(p) { return encodeURIComponent(p[0]) + '=' + encodeURIComponent(p[1]); }).join('&'); };
+  globalThis.URLSearchParams.prototype.keys = function() { return this._params.map(function(p) { return p[0]; }); };
+  globalThis.URLSearchParams.prototype.values = function() { return this._params.map(function(p) { return p[1]; }); };
+  globalThis.URLSearchParams.prototype.entries = function() { return this._params.map(function(p) { return [p[0], p[1]]; }); };
+  globalThis.URLSearchParams.prototype.forEach = function(cb, thisArg) { for (var i = 0; i < this._params.length; i++) { cb.call(thisArg, this._params[i][1], this._params[i][0], this); } };
 }
 
 // --- Web API Polyfill: URL ---
-if (typeof URL === 'undefined') {
-  var URL = function(url, base) {
+if (typeof globalThis.URL === 'undefined') {
+  globalThis.URL = function(url, base) {
     var fullUrl = url;
     if (base) {
       if (url.indexOf('://') < 0) {
@@ -247,17 +365,17 @@ if (typeof URL === 'undefined') {
     this.hash = m[6] || '';
     this.href = fullUrl;
     this.origin = this.protocol + '//' + this.host;
-    this.searchParams = new URLSearchParams(this.search);
+    this.searchParams = new globalThis.URLSearchParams(this.search);
     Object.defineProperty(this, 'username', { get: function() { return ''; } });
     Object.defineProperty(this, 'password', { get: function() { return ''; } });
   };
-  URL.prototype.toString = function() { return this.href; };
-  URL.prototype.toJSON = function() { return this.href; };
+  globalThis.URL.prototype.toString = function() { return this.href; };
+  globalThis.URL.prototype.toJSON = function() { return this.href; };
 }
 
 // --- Web API Polyfill: console ---
-if (typeof console === 'undefined') {
-  var console = {
+if (typeof globalThis.console === 'undefined') {
+  globalThis.console = {
     log: function() { Anywhere.log.info([].slice.call(arguments).map(String).join(' ')); },
     warn: function() { Anywhere.log.warning([].slice.call(arguments).map(String).join(' ')); },
     error: function() { Anywhere.log.error([].slice.call(arguments).map(String).join(' ')); },
@@ -267,14 +385,30 @@ if (typeof console === 'undefined') {
 }
 
 // --- Web API Polyfill: atob / btoa ---
-if (typeof atob === 'undefined') {
-  var atob = function(str) { return Anywhere.codec.utf8.decode(Anywhere.codec.base64.decode(str)); };
-  var btoa = function(str) { return Anywhere.codec.base64.encode(Anywhere.codec.utf8.encode(str)); };
+if (typeof globalThis.atob === 'undefined') {
+  globalThis.atob = function(str) { return Anywhere.codec.utf8.decode(Anywhere.codec.base64.decode(str)); };
+  globalThis.btoa = function(str) { return Anywhere.codec.base64.encode(Anywhere.codec.utf8.encode(str)); };
 }
 
 // --- BoxJS Env 类 ---
 function Env(name) {
   this.name = name || 'BoxJS';
+}
+// _wrapBoxJSResponse 将 Anywhere.http 的响应转换为 BoxJS 脚本期望的格式
+// Anywhere: {status, headers: [[name, value], ...], body: Uint8Array}
+// BoxJS:    {status, headers: {name: value}, body: string, bodyBytes: Uint8Array}
+function _wrapBoxJSResponse(res) {
+  var headers = {};
+  if (res.headers && res.headers.forEach) {
+    res.headers.forEach(function(h) { headers[String(h[0] || "")] = String(h[1] || ""); });
+  }
+  return {
+    status: res.status || 200,
+    headers: headers,
+    body: Anywhere.codec.utf8.decode(res.body || new Uint8Array()),
+    bodyBytes: res.body,
+    url: res.url
+  };
 }
 Env.prototype.getdata = function(key) {
   return Anywhere.store.getString(key, true) || null;
@@ -303,11 +437,27 @@ Env.prototype.logErr = function(msg) {
   Anywhere.log.warning(String(msg));
 };
 Env.prototype.http = {
-  get: function(opts) { return Anywhere.http.get(typeof opts === 'string' ? opts : opts.url, opts); },
-  post: function(opts) { return Anywhere.http.post(typeof opts === 'string' ? opts : opts.url, opts); },
-  put: function(opts) { return Anywhere.http.put(typeof opts === 'string' ? opts : opts.url, opts); },
-  delete: function(opts) { return Anywhere.http.delete(typeof opts === 'string' ? opts : opts.url, opts); },
-  request: function(opts) { return Anywhere.http.request(opts); }
+  // 包装响应：Anywhere.http 返回 headers: [[name, value], ...] + body: Uint8Array
+  // BoxJS 脚本期望 headers: {name: value} + body: string
+  get: function(opts) {
+    var url = typeof opts === 'string' ? opts : opts.url;
+    return Anywhere.http.get(url, opts).then(function(res) { return _wrapBoxJSResponse(res); });
+  },
+  post: function(opts) {
+    var url = typeof opts === 'string' ? opts : opts.url;
+    return Anywhere.http.post(url, opts).then(function(res) { return _wrapBoxJSResponse(res); });
+  },
+  put: function(opts) {
+    var url = typeof opts === 'string' ? opts : opts.url;
+    return Anywhere.http.put(url, opts).then(function(res) { return _wrapBoxJSResponse(res); });
+  },
+  delete: function(opts) {
+    var url = typeof opts === 'string' ? opts : opts.url;
+    return Anywhere.http.delete(url, opts).then(function(res) { return _wrapBoxJSResponse(res); });
+  },
+  request: function(opts) {
+    return Anywhere.http.request(opts).then(function(res) { return _wrapBoxJSResponse(res); });
+  }
 };
 Env.prototype.isQuanX = function() { return false; };
 Env.prototype.isSurge = function() { return false; };
@@ -320,26 +470,17 @@ Env.prototype.wait = function(ms) {
 };
 Env.prototype.done = function() { Anywhere.done(); };
 // $env 兼容（Quantumult X 的 $env 对象）
-var $env = { isBoxJS: false, isAnywhere: true };
+var $env = globalThis.$env || { isBoxJS: false, isAnywhere: true };
 
-// --- globalThis 污染隔离工具 ---
-// 上游脚本（如 wloc.js）会往 globalThis 上写 $loon/$environment/$script/$argument 等全局变量，
-// 污染 Anywhere 运行时环境。使用 _saveGlobals/_restoreGlobals 在执行前后隔离。
-var _GLOBAL_POLLUTABLE_NAMES = ["$request", "$response", "$argument", "$persistentStore", "$done", "$loon", "$environment", "$script", "$httpClient", "$notification"];
-function _saveGlobals(snapshot) {
-  for (var i = 0; i < _GLOBAL_POLLUTABLE_NAMES.length; i++) {
-    var name = _GLOBAL_POLLUTABLE_NAMES[i];
-    snapshot[name] = globalThis[name];
-  }
-}
-function _restoreGlobals(snapshot) {
-  var keys = Object.keys(snapshot);
-  for (var i = 0; i < keys.length; i++) {
-    var name = keys[i];
-    if (typeof snapshot[name] === "undefined") delete globalThis[name];
-    else globalThis[name] = snapshot[name];
-  }
-}
+// 局部变量映射：将 globalThis 上的 polyfill 映射为局部标识符
+// 注意：必须在所有 globalThis.XXX 赋值之后执行，否则读到的是 undefined
+// （JSCore 中 var 声明会提升，但赋值在原位置执行）
+var URLSearchParams = globalThis.URLSearchParams;
+var URL = globalThis.URL;
+var console = globalThis.console;
+var atob = globalThis.atob;
+var btoa = globalThis.btoa;
+
 // === BoxJS Env 兼容层 + Web API Polyfill 结束 ===
 `
 	return polyfill + "\n" + src
@@ -354,22 +495,72 @@ func rewriteDoneCalls(src string) string {
 	out = regexp.MustCompile(`\$done\(\s*\)`).ReplaceAllString(out, "Anywhere.done()")
 
 	// $done({body: x}) → ctx.body = Anywhere.codec.utf8.encode(x); Anywhere.done()
-	// 因为 ctx.body 是 Uint8Array，赋值时需要将字符串编码回 Uint8Array。
 	out = regexp.MustCompile(`\$done\(\s*\{\s*body\s*:\s*([^}]+?)\s*\}\s*\)`).
 		ReplaceAllString(out, "ctx.body = Anywhere.codec.utf8.encode($1); Anywhere.done()")
 
-	// $done({ body }) ES6 shorthand → ctx.body = Anywhere.codec.utf8.encode(body); Anywhere.done()
-	// 注意：必须在 $done({body: x}) 之后处理，避免被错误匹配
+	// $done({ body }) ES6 shorthand
 	out = regexp.MustCompile(`\$done\(\s*\{\s*body\s*\}\s*\)`).
 		ReplaceAllString(out, "ctx.body = Anywhere.codec.utf8.encode(body); Anywhere.done()")
 
 	// $done({response: {...}}) → Anywhere.respond({...})
-	// 注意：response.body 也需要 encode，但正则难以处理嵌套，保守处理
-	out = regexp.MustCompile(`\$done\(\s*\{\s*response\s*:\s*(\{[^}]*\})\s*\}\s*\)`).
-		ReplaceAllString(out, "Anywhere.respond($1)")
+	// 使用标记替换法处理嵌套大括号
+	out = regexp.MustCompile(`\$done\(\s*\{\s*response\s*:\s*`).ReplaceAllString(out, "__DONE_RESPONSE_START__")
+	// 匹配标记后的内容，使用函数式替换验证大括号平衡
+	doneRespRe := regexp.MustCompile(`__DONE_RESPONSE_START__(\{[\s\S]*?\}\s*\})\s*\)`)
+	out = doneRespRe.ReplaceAllStringFunc(out, func(match string) string {
+		// 提取 responseObj 部分
+		sub := doneRespRe.FindStringSubmatch(match)
+		if len(sub) < 2 {
+			return match
+		}
+		responseObj := sub[1]
+		// 验证大括号是否平衡
+		depth := 0
+		endIdx := -1
+		for i, ch := range responseObj {
+			if ch == '{' {
+				depth++
+			} else if ch == '}' {
+				depth--
+			}
+			if depth == 0 {
+				endIdx = i
+				break
+			}
+		}
+		if endIdx >= 0 {
+			inner := responseObj[:endIdx+1]
+			return "Anywhere.respond(" + inner + ")"
+		}
+		return match
+	})
 
-	// $done({...}) 其他形式：保守处理，转为 Anywhere.done()
-	out = regexp.MustCompile(`\$done\(\s*\{[^}]*\}\s*\)`).ReplaceAllString(out, "Anywhere.done()")
+	// $done({...}) 其他形式 → Anywhere.done()
+	// 使用标记替换法处理嵌套大括号
+	out = regexp.MustCompile(`\$done\(\s*\{`).ReplaceAllString(out, "__DONE_OBJECT_START__{")
+	doneObjRe := regexp.MustCompile(`__DONE_OBJECT_START__\{[\s\S]*?\}\s*\)`)
+	out = doneObjRe.ReplaceAllStringFunc(out, func(match string) string {
+		inner := strings.TrimSuffix(strings.TrimSuffix(match, ")"), "}")
+		inner = strings.TrimPrefix(inner, "__DONE_OBJECT_START__{")
+		// 验证大括号平衡
+		depth := 0
+		balanced := true
+		for _, ch := range inner {
+			if ch == '{' {
+				depth++
+			} else if ch == '}' {
+				depth--
+			}
+			if depth < 0 {
+				balanced = false
+				break
+			}
+		}
+		if balanced && depth == 0 {
+			return "Anywhere.done()"
+		}
+		return match
+	})
 
 	return out
 }
@@ -386,6 +577,24 @@ func wrapAsProcess(src string, phase int, needsAsync bool) string {
 		asyncKw = "async "
 	}
 
+	// 检测是否注入了 BoxJS polyfill（由 injectBoxJSPolyfill 添加的标记）
+	hasPolyfill := strings.Contains(trimmed, "_BoxJS_Env_injected")
+
+	// 局部变量映射已移至 polyfill 字符串末尾（在 globalThis.XXX 赋值之后）
+	// 注意：之前在这里注入 var URLSearchParams = globalThis.URLSearchParams; 会导致
+	//       赋值在 polyfill 安装之前执行，读到 undefined。
+	// 现在在 polyfill 字符串中所有 globalThis.XXX 赋值之后才声明 var，顺序正确。
+	localVarMappings := ""
+
+	// headers 预转换：将 ctx.headers（[[name, value], ...] 数组对）转换为 {name: value} 对象
+	// Loon/Surge 的 $request.headers/$response.headers 是对象格式，RewriteScriptAPI 中替换为 _headersObj
+	// 注意：必须在 process 函数体最开头执行，确保上游脚本使用前已初始化
+	needsHeadersObj := strings.Contains(trimmed, "_headersObj")
+	headersInject := ""
+	if needsHeadersObj {
+		headersInject = "  var _headersObj = (function(h){var o={};if(h&&h.forEach){h.forEach(function(p){o[String(p[0]||\"\")]=String(p[1]||\"\")]});}return o;})(ctx.headers);\n"
+	}
+
 	// 检测是否需要 globalThis 隔离（上游脚本可能往 globalThis 写 $loon/$environment 等）
 	needsIsolation := strings.Contains(trimmed, "$loon") ||
 		strings.Contains(trimmed, "$environment") ||
@@ -393,43 +602,85 @@ func wrapAsProcess(src string, phase int, needsAsync bool) string {
 		strings.Contains(trimmed, "$argument") ||
 		strings.Contains(trimmed, "globalThis.$")
 
+	// 隔离代码：将 _saveGlobals/_restoreGlobals 定义内联，确保在 try 块之前就可用
+	// （JSCore 不会将 try 块内的 function 声明提升到外层函数作用域）
 	isolationPrefix := ""
 	isolationSuffix := ""
-	if needsIsolation && strings.Contains(trimmed, "_saveGlobals") {
-		// polyfill 中已提供 _saveGlobals/_restoreGlobals
-		isolationPrefix = "  var _globalsSnapshot = {}; _saveGlobals(_globalsSnapshot);\n  try {\n"
+	if needsIsolation {
+		isolationPrefix = "  var _globalsSnapshot = {};\n" +
+			"  var _GLOBAL_POLLUTABLE_NAMES = [\"$request\", \"$response\", \"$argument\", \"$persistentStore\", \"$done\", \"$loon\", \"$environment\", \"$script\", \"$httpClient\", \"$notification\"];\n" +
+			"  function _saveGlobals(snapshot) { for (var i = 0; i < _GLOBAL_POLLUTABLE_NAMES.length; i++) { var name = _GLOBAL_POLLUTABLE_NAMES[i]; snapshot[name] = globalThis[name]; } }\n" +
+			"  function _restoreGlobals(snapshot) { var keys = Object.keys(snapshot); for (var i = 0; i < keys.length; i++) { var name = keys[i]; if (typeof snapshot[name] === \"undefined\") delete globalThis[name]; else globalThis[name] = snapshot[name]; } }\n" +
+			"  _saveGlobals(_globalsSnapshot);\n" +
+			"  try {\n"
 		isolationSuffix = "\n  } finally { _restoreGlobals(_globalsSnapshot); }\n"
+	}
+
+	// polyfill 注入到 process 函数体内部的辅助函数
+	injectPolyfillIntoProcess := func(out string) string {
+		if !hasPolyfill {
+			return out
+		}
+		// 提取 polyfill 部分（从 _BoxJS_Env_injected 到 === 结束标记）
+		polyfillRe := regexp.MustCompile(`(?s)// === BoxJS Env 兼容层.*?// === BoxJS Env 兼容层 \+ Web API Polyfill 结束 ===\n`)
+		polyfillCode := polyfillRe.FindString(out)
+		if polyfillCode == "" {
+			// 没有找到 polyfill 代码，只注入局部变量映射
+			out = regexp.MustCompile(`(function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
+				ReplaceAllString(out, "${1}\n"+localVarMappings)
+			return out
+		}
+		// 从原位置移除 polyfill
+		out = strings.Replace(out, polyfillCode, "", 1)
+		// 缩进 polyfill 代码
+		indentedPolyfill := strings.ReplaceAll(polyfillCode, "\n", "\n  ")
+		// 注入到 process 函数体开头
+		injectCode := localVarMappings + indentedPolyfill
+		out = regexp.MustCompile(`(function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
+			ReplaceAllString(out, "${1}\n"+injectCode)
+		return out
 	}
 
 	// 已有 process 函数定义（同步或异步）
 	if regexp.MustCompile(`(?m)^function\s+process\s*\(\s*ctx\s*\)`).MatchString(trimmed) {
-		// 若需要 async 但原函数非 async，则升级为 async
-		if needsAsync && !strings.HasPrefix(trimmed, "async ") {
-			trimmed = "async " + trimmed
+		out := trimmed
+		if needsAsync && !strings.HasPrefix(out, "async ") {
+			out = "async " + out
 		}
-		// 如果需要隔离，在 process 函数体内添加
+		// 注入 headers 预转换变量（必须在最开头，polyfill 之前）
+		if headersInject != "" {
+			out = regexp.MustCompile(`(function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
+				ReplaceAllString(out, "${1}\n"+headersInject)
+		}
+		// 将 polyfill 移入 process 函数体内部
+		out = injectPolyfillIntoProcess(out)
 		if needsIsolation && isolationPrefix != "" {
-			// 在函数体开头插入隔离代码
-			trimmed = regexp.MustCompile(`(function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
-				ReplaceAllString(trimmed, "${1}\n" + isolationPrefix)
-			// 在最后的 } 前插入 finally
-			lastBrace := strings.LastIndex(trimmed, "}")
+			out = regexp.MustCompile(`(function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
+				ReplaceAllString(out, "${1}\n"+isolationPrefix)
+			lastBrace := strings.LastIndex(out, "}")
 			if lastBrace > 0 {
-				trimmed = trimmed[:lastBrace] + isolationSuffix + trimmed[lastBrace:]
+				out = out[:lastBrace] + isolationSuffix + out[lastBrace:]
 			}
 		}
-		return trimmed
+		return out
 	}
 	if regexp.MustCompile(`(?m)^async\s+function\s+process\s*\(\s*ctx\s*\)`).MatchString(trimmed) {
+		out := trimmed
+		// 注入 headers 预转换变量（必须在最开头，polyfill 之前）
+		if headersInject != "" {
+			out = regexp.MustCompile(`(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
+				ReplaceAllString(out, "${1}\n"+headersInject)
+		}
+		out = injectPolyfillIntoProcess(out)
 		if needsIsolation && isolationPrefix != "" {
-			trimmed = regexp.MustCompile(`(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
-				ReplaceAllString(trimmed, "${1}\n" + isolationPrefix)
-			lastBrace := strings.LastIndex(trimmed, "}")
+			out = regexp.MustCompile(`(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
+				ReplaceAllString(out, "${1}\n"+isolationPrefix)
+			lastBrace := strings.LastIndex(out, "}")
 			if lastBrace > 0 {
-				trimmed = trimmed[:lastBrace] + isolationSuffix + trimmed[lastBrace:]
+				out = out[:lastBrace] + isolationSuffix + out[lastBrace:]
 			}
 		}
-		return trimmed
+		return out
 	}
 
 	// 若源码定义了 function run()，则包装为 process 并调用 run
@@ -440,7 +691,7 @@ func wrapAsProcess(src string, phase int, needsAsync bool) string {
 		}
 		return fmt.Sprintf(`%sfunction process(ctx) {
   if (ctx.phase !== "%s") return;
-%s  try {
+%s%s%s  try {
     run();
   } catch (e) {
     Anywhere.log.warning("script error: " + e);
@@ -448,7 +699,7 @@ func wrapAsProcess(src string, phase int, needsAsync bool) string {
 }
 
 %s
-`, asyncKw, phaseCheck, isolationPrefix, isolationSuffix, trimmed)
+`, asyncKw, phaseCheck, headersInject, localVarMappings, isolationPrefix, isolationSuffix, trimmed)
 	}
 
 	// 否则整体包装
@@ -458,14 +709,14 @@ func wrapAsProcess(src string, phase int, needsAsync bool) string {
 	}
 	return fmt.Sprintf(`%sfunction process(ctx) {
   if (ctx.phase !== "%s") return;
-%s  try {
+%s%s%s  try {
 %s
   } catch (e) {
     Anywhere.log.warning("script error: " + e);
   }%s
   Anywhere.done();
 }
-`, asyncKw, phaseCheck, isolationPrefix, indent(trimmed, "    "), isolationSuffix)
+`, asyncKw, phaseCheck, headersInject, localVarMappings, isolationPrefix, indent(trimmed, "    "), isolationSuffix)
 }
 
 // indent 给每行加缩进。
@@ -579,7 +830,8 @@ func BuildWrappedScript(rawJS string, phase int) string {
 		phaseCheck = "response"
 	}
 	needsAsync := strings.Contains(rawJS, "$httpClient") || strings.Contains(rawJS, "$.http") ||
-		strings.Contains(rawJS, "await ") || strings.Contains(rawJS, "async ")
+		strings.Contains(rawJS, "$env.http") || strings.Contains(rawJS, "await ") ||
+		strings.Contains(rawJS, "async ") || strings.Contains(rawJS, "$done({response:")
 
 	upstreamB64 := base64.StdEncoding.EncodeToString([]byte(rawJS))
 
@@ -590,7 +842,11 @@ func BuildWrappedScript(rawJS string, phase int) string {
 
 	wrapper := fmt.Sprintf(`%sfunction process(ctx) {
   if (ctx.phase !== "%s") return;
-  var _globalsSnapshot = {}; _saveGlobals(_globalsSnapshot);
+  var _globalsSnapshot = {};
+  var _GLOBAL_POLLUTABLE_NAMES = ["$request", "$response", "$argument", "$persistentStore", "$done", "$loon", "$environment", "$script", "$httpClient", "$notification"];
+  function _saveGlobals(snapshot) { for (var i = 0; i < _GLOBAL_POLLUTABLE_NAMES.length; i++) { var name = _GLOBAL_POLLUTABLE_NAMES[i]; snapshot[name] = globalThis[name]; } }
+  function _restoreGlobals(snapshot) { var keys = Object.keys(snapshot); for (var i = 0; i < keys.length; i++) { var name = keys[i]; if (typeof snapshot[name] === "undefined") delete globalThis[name]; else globalThis[name] = snapshot[name]; } }
+  _saveGlobals(_globalsSnapshot);
   try {
     return await new Promise(function(resolve) {
       var settled = false;
@@ -601,20 +857,30 @@ func BuildWrappedScript(rawJS string, phase int) string {
       }
 
       // 构造 Loon/Surge 兼容全局变量
+      // 注意：ctx.headers 是 [[name, value], ...] 数组对，Loon/Surge 的 $request.headers 是 {name: value} 对象，需要转换
+      function _headersToObject(headers) {
+        var obj = {};
+        if (headers && headers.forEach) {
+          headers.forEach(function(h) { obj[String(h[0] || "")] = String(h[1] || ""); });
+        }
+        return obj;
+      }
       globalThis.$loon = {};
       globalThis.$environment = undefined;
       globalThis.$script = { startTime: new Date() };
-      globalThis.$argument = '';
+      // $argument 应为对象（上游脚本可能读取属性或做 Object.keys），空字符串会导致 TypeError
+      globalThis.$argument = {};
       globalThis.$request = {
         url: ctx.url || '',
         method: ctx.method || 'GET',
-        headers: {}
+        headers: _headersToObject(ctx.headers),
+        body: Anywhere.codec.utf8.decode(ctx.body || new Uint8Array())
       };
       globalThis.$response = {
         status: ctx.status || 200,
         statusCode: ctx.status || 200,
-        headers: {},
-        body: ctx.body,
+        headers: _headersToObject(ctx.headers),
+        body: Anywhere.codec.utf8.decode(ctx.body || new Uint8Array()),
         bodyBytes: ctx.body,
         rawBody: ctx.body
       };
@@ -646,21 +912,96 @@ func BuildWrappedScript(rawJS string, phase int) string {
         post: function(title, sub, body) { Anywhere.log.info(title + " " + (sub||"") + " " + (body||"")); }
       };
 
+      // 注入 Web API Polyfill 到 globalThis（确保 new Function() 内可访问）
+      if (typeof Array.isArray === 'undefined') {
+        Array.isArray = function(arg) { return Object.prototype.toString.call(arg) === '[object Array]'; };
+      }
+      if (typeof globalThis.URLSearchParams === 'undefined') {
+        globalThis.URLSearchParams = function(init) {
+          this._params = [];
+          if (typeof init === 'string') {
+            var s = init.charAt(0) === '?' ? init.slice(1) : init;
+            var pairs = s.split('&');
+            for (var i = 0; i < pairs.length; i++) {
+              var idx = pairs[i].indexOf('=');
+              if (idx < 0) { this._params.push([decodeURIComponent(pairs[i]), '']); }
+              else { this._params.push([decodeURIComponent(pairs[i].slice(0, idx)), decodeURIComponent(pairs[i].slice(idx + 1))]); }
+            }
+          } else if (init && typeof init === 'object' && !Array.isArray(init)) {
+            for (var key in init) { if (init.hasOwnProperty(key)) this._params.push([key, String(init[key])]); }
+          } else if (Array.isArray(init)) {
+            for (var i = 0; i < init.length; i++) { this._params.push([String(init[i][0]), String(init[i][1])]); }
+          }
+        };
+        globalThis.URLSearchParams.prototype.append = function(n, v) { this._params.push([n, v]); };
+        globalThis.URLSearchParams.prototype.delete = function(n) { this._params = this._params.filter(function(p) { return p[0] !== n; }); };
+        globalThis.URLSearchParams.prototype.get = function(n) { for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === n) return this._params[i][1]; } return null; };
+        globalThis.URLSearchParams.prototype.has = function(n) { for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === n) return true; } return false; };
+        globalThis.URLSearchParams.prototype.set = function(n, v) { var f = false; for (var i = 0; i < this._params.length; i++) { if (this._params[i][0] === n) { this._params[i][1] = v; f = true; break; } } if (!f) this._params.push([n, v]); };
+        globalThis.URLSearchParams.prototype.toString = function() { return this._params.map(function(p) { return encodeURIComponent(p[0]) + '=' + encodeURIComponent(p[1]); }).join('&'); };
+        globalThis.URLSearchParams.prototype.forEach = function(cb, t) { for (var i = 0; i < this._params.length; i++) { cb.call(t, this._params[i][1], this._params[i][0], this); } };
+      }
+      var URLSearchParams = globalThis.URLSearchParams;
+      // 注入 globalThis.URL polyfill（与 injectBoxJSPolyfill 保持一致）
+      if (typeof globalThis.URL === 'undefined') {
+        globalThis.URL = function(url, base) {
+          var fullUrl = url;
+          if (base) {
+            if (url.indexOf('://') < 0) {
+              var baseEnd = base.lastIndexOf('/');
+              fullUrl = (baseEnd >= 0 ? base.slice(0, baseEnd + 1) : base + '/') + url;
+            } else { fullUrl = url; }
+          }
+          var m = fullUrl.match(/^(https?):\\/\\/([^:/?#]+)(?::(\\d+))?([^?#]*)?(\\?[^#]*)?(#.*)?$/);
+          if (!m) throw new Error('Invalid URL: ' + fullUrl);
+          this.protocol = m[1] + ':';
+          this.hostname = m[2];
+          this.port = m[3] || '';
+          this.host = this.hostname + (this.port ? ':' + this.port : '');
+          this.pathname = m[4] || '/';
+          this.search = m[5] || '';
+          this.hash = m[6] || '';
+          this.href = fullUrl;
+          this.origin = this.protocol + '//' + this.host;
+          this.searchParams = new globalThis.URLSearchParams(this.search);
+          Object.defineProperty(this, 'username', { get: function() { return ''; } });
+          Object.defineProperty(this, 'password', { get: function() { return ''; } });
+        };
+        globalThis.URL.prototype.toString = function() { return this.href; };
+        globalThis.URL.prototype.toJSON = function() { return this.href; };
+      }
+      var URL = globalThis.URL;
+      if (typeof globalThis.console === 'undefined') {
+        globalThis.console = { log: function() { Anywhere.log.info([].slice.call(arguments).map(String).join(' ')); }, warn: function() { Anywhere.log.warning([].slice.call(arguments).map(String).join(' ')); }, error: function() { Anywhere.log.error([].slice.call(arguments).map(String).join(' ')); }, info: function() { Anywhere.log.info([].slice.call(arguments).map(String).join(' ')); } };
+      }
+      var console = globalThis.console;
+      if (typeof globalThis.atob === 'undefined') {
+        globalThis.atob = function(s) { return Anywhere.codec.utf8.decode(Anywhere.codec.base64.decode(s)); };
+        globalThis.btoa = function(s) { return Anywhere.codec.base64.encode(Anywhere.codec.utf8.encode(s)); };
+      }
+      var atob = globalThis.atob;
+      var btoa = globalThis.btoa;
+
       // HTTP 辅助函数
+      // 注意：Anywhere.http 返回的 res.headers 是 [[name, value], ...] 数组对格式，
+      // Loon/Surge 的 $httpClient 回调中 resp.headers 是 {name: value} 对象格式，需要转换
       function _wrapHttp(method, url, opts, cb) {
         var p;
         if (method === 'request') { p = Anywhere.http.request(opts); }
         else if (method === 'get') { p = Anywhere.http.get(typeof url === 'string' ? url : url, opts); }
         else { p = Anywhere.http[method](typeof url === 'string' ? url : url, opts); }
         p.then(function(res) {
-          cb(null, { status: res.status || 200, headers: res.headers || {}, body: Anywhere.codec.utf8.decode(res.body || new Uint8Array()) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
+          cb(null, { status: res.status || 200, headers: _headersToObject(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
         }).catch(function(e) { cb(e, null, null); });
       }
 
       // 解码并执行上游脚本
+      // 注意：new Function() 创建的函数只能访问全局作用域，无法访问外层 var 变量。
+      // 因此在源码前注入 var 声明，将 globalThis 上的 polyfill 映射为局部标识符。
       try {
         var _upstreamSource = Anywhere.codec.utf8.decode(Anywhere.codec.base64.decode("%s"));
-        new Function(_upstreamSource)();
+        var _polyfillVars = "var URLSearchParams = globalThis.URLSearchParams; var URL = globalThis.URL; var console = globalThis.console; var atob = globalThis.atob; var btoa = globalThis.btoa; var $env = globalThis.$env || { isBoxJS: false, isAnywhere: true };";
+        new Function(_polyfillVars + "\\n" + _upstreamSource)();
       } catch (e) {
         Anywhere.log.error("[wrap] upstream script error: " + e);
         finish({});

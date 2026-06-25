@@ -162,7 +162,8 @@ async function doImport() {
   btn.classList.add('loading');
 
   try {
-    const deeplinkURL = buildURL('/deeplink', params);
+    // 使用 format=text 让 deeplink 端点直接返回纯文本 URL，避免 302 重定向到 anywhere:// 协议
+    const deeplinkURL = buildURL('/deeplink', params) + '&format=text';
     const resp = await fetch(deeplinkURL);
 
     if (!resp.ok) {
@@ -170,15 +171,11 @@ async function doImport() {
       throw new Error(errText || '分析失败');
     }
 
-    const contentType = resp.headers.get('Content-Type') || '';
-    if (contentType.includes('text/html')) {
-      const html = await resp.text();
-      document.open();
-      document.write(html);
-      document.close();
-    } else {
-      const deeplink = await resp.text();
+    const deeplink = await resp.text();
+    if (deeplink.startsWith('anywhere://')) {
       window.location.href = deeplink;
+    } else {
+      throw new Error('未获取到有效的导入链接');
     }
   } catch (e) {
     errorArea.textContent = '错误：' + e.message;
