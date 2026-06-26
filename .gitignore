@@ -1,1 +1,7 @@
 edgeone/node_modules
+tmp/
+out/
+bin/
+*.module
+*.sgmodule
+
