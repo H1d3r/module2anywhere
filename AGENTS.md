@@ -144,6 +144,26 @@ Anywhere 的脚本运行在 JSCore 上，与浏览器/Node.js 有重要差异：
 | `$notification.post(title,sub,body)` | `Anywhere.log.info(...)` | 通知降级为日志 |
 | `JSON.parse($response.body)` | `JSON.parse(Anywhere.codec.utf8.decode(ctx.body))` | body 需先 decode |
 
+## BoxJS / Web API 兼容边界
+
+当前兼容层已支持以下常用 API：
+- `$.getdata` / `$.setdata` / `$.getjson` / `$.setjson`
+- `$.msg` / `$.log` / `$.logErr`
+- `$.http.get/post/put/delete/request`
+- `$.fetch` / `$.request` / `$.notify` / `$.runScript`
+- `$.toURL` / `$.setvalue` / `$.getvalue`
+- `TextEncoder` / `TextDecoder`
+- `fetch`
+- `Headers` / `Request` / `Response`
+- `setTimeout` / `setInterval` / `clearTimeout` / `clearInterval`
+- `console.assert` / `console.trace` / `console.table`
+
+说明：
+- `$.msg` 在 Anywhere 中降级为日志输出，不弹系统通知。
+- `$.http` 和 `fetch` 返回的 `headers` 语义与 BoxJS 页面上的对象/数组格式存在差异，脚本内部访问时会做兼容转换。
+- `URL` / `URLSearchParams` 是轻量实现，不保证完整 Web 标准行为。
+- `setInterval` / `clearInterval` 是兼容实现，不保证与浏览器完全一致。
+
 ## 构建与测试
 
 ```bash

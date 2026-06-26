@@ -96,8 +96,8 @@ func parseLoonRewrites(body string) []ir.RewriteRule {
 		}
 		r := ir.RewriteRule{Raw: line, Args: map[string]string{}}
 
-		// 先分离 pattern 与剩余：第一个空白分隔
-		pattern, rest := splitFirstWhitespace(line)
+		// 先分离 pattern 与剩余：优先空白分隔，同时兼容紧贴写法 pattern-302$1$3 / pattern-reject
+		pattern, rest := splitRewritePatternAndRest(line)
 		r.Pattern = pattern
 		r.Action = rest
 		if rest == "" {
@@ -136,6 +136,21 @@ func parseLoonRewriteAction(rest string) (string, map[string]string, string) {
 
 	// Loon 部分插件使用 "url <action>" 前缀（url reject-dict / url 302 ...），去除 url 前缀
 	if action == "url" {
+		action, remain = splitFirstWhitespace(remain)
+		action = strings.ToLower(strings.TrimSpace(action))
+	}
+
+	// 兼容紧贴写法：302$1$3 / 307https://... → 动作与目标 URL 之间补出空格语义
+	if strings.HasPrefix(action, "302") && len(action) > 3 {
+		remain = prependTightRewriteTarget(action[3:], remain)
+		action = "302"
+	} else if strings.HasPrefix(action, "307") && len(action) > 3 {
+		remain = prependTightRewriteTarget(action[3:], remain)
+		action = "307"
+	}
+
+	// 跳过 - / _ 占位符（部分模块写成 "pattern - reject" 或 "pattern _ reject"）
+	if action == "-" || action == "_" {
 		action, remain = splitFirstWhitespace(remain)
 		action = strings.ToLower(strings.TrimSpace(action))
 	}

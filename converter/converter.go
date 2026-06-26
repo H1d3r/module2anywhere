@@ -119,6 +119,8 @@ type Converter struct {
 	// ServiceURL Web 服务的本机地址（用于在 .amrs/.arrs 头部添加「本链接」注释）。
 	// 仅在 Web 服务模式下设置。
 	ServiceURL string
+
+	scriptCache sync.Map
 }
 
 // New 创建转换器。
@@ -149,6 +151,9 @@ func (c *Converter) Convert(ctx context.Context, m *ir.Module) (*Result, error) 
 		cleanedHosts = append(cleanedHosts, h)
 	}
 	m.Hostnames = cleanedHosts
+	if len(m.Hostnames) > 80 {
+		res.Report.AddWarning(fmt.Sprintf("MITM hostname 数量过多（%d），可能导致高频匹配与资源开销上升", len(m.Hostnames)))
+	}
 
 	// 1. 路由规则 → .arrs（按 action 分组：DIRECT/REJECT/其他）
 	directLines, rejectLines, otherLines, amrsFromRules := c.convertRoutingRules(m.Rules, &res.Report)
@@ -197,10 +202,16 @@ func (c *Converter) Convert(ctx context.Context, m *ir.Module) (*Result, error) 
 	amrsLines = append(amrsLines, c.convertHeaderRules(m.HeaderRWs, &res.Report)...)
 	amrsLines = append(amrsLines, c.convertMapLocals(ctx, m.MapLocals, &res.Report)...)
 	amrsLines = append(amrsLines, c.convertScriptRules(ctx, m, &res.Report)...)
+	if len(m.Scripts) > 20 {
+		res.Report.AddWarning(fmt.Sprintf("脚本规则数量较多（%d），建议检查是否存在重复 script-path 或可合并规则", len(m.Scripts)))
+	}
 
 	// 3. accept-encoding 预处理对（可选）
 	if c.Opts.EncodingPreprocess {
 		amrsLines = c.addEncodingPreprocess(amrsLines)
+	}
+	if len(amrsLines) > 250 {
+		res.Report.AddWarning(fmt.Sprintf("MITM 规则总量较高（%d 行，含预处理规则），可能带来匹配与内存压力", len(amrsLines)))
 	}
 
 	// 4. 自动推断 content-type 头部字段（当存在 JSON reject/mock 内容时）
@@ -289,7 +300,7 @@ func (c *Converter) convertURLRegexReject(r ir.RoutingRule, report *Report) stri
 func (c *Converter) convertRewriteRules(ctx context.Context, m *ir.Module, report *Report) []string {
 	var lines []string
 	for _, r := range m.Rewrites {
-		line, err := c.convertRewriteRule(ctx, r, report)
+		line, err := c.convertRewriteRule(ctx, m, r, report)
 		if err != nil {
 			report.AddSkipped(fmt.Sprintf("重写规则转换失败 %q: %v", r.Raw, err))
 			continue
@@ -302,7 +313,7 @@ func (c *Converter) convertRewriteRules(ctx context.Context, m *ir.Module, repor
 }
 
 // convertRewriteRule 转换单条重写规则。
-func (c *Converter) convertRewriteRule(ctx context.Context, r ir.RewriteRule, report *Report) (string, error) {
+func (c *Converter) convertRewriteRule(ctx context.Context, m *ir.Module, r ir.RewriteRule, report *Report) (string, error) {
 	pattern := ConvertURLPatternWithHostnames(r.Pattern, c.Opts.GeneralizeHost, c.Hostnames)
 
 	switch r.Action {
@@ -441,8 +452,15 @@ func (c *Converter) convertRewriteRule(ctx context.Context, r ir.RewriteRule, re
 		if body == "" {
 			return "", fmt.Errorf("echo-response 缺少 body")
 		}
-		// phase=1, op=2 (reject 带 body)。Anywhere 用此 op 配合 content-type 头部模拟响应
-		return fmt.Sprintf("1, 0, %s, 2, %s", pattern, QuoteField(body)), nil
+		ct := r.Args["content-type"]
+		if ct == "" {
+			ct = "application/json; charset=utf-8"
+		}
+		if m != nil && m.ContentType == "" {
+			m.ContentType = ct
+		}
+		// op 0 rewrite 在 Anywhere 中是 request-only；echo-response 本质是请求阶段直接合成响应
+		return fmt.Sprintf("0, 0, %s, 2, %s", pattern, QuoteField(body)), nil
 
 	// QX jsonjq-response-body：phase=1, op=5 (json-manipulate), pattern, jq
 	case "jsonjq-response-body":
@@ -484,6 +502,7 @@ func (c *Converter) convertHeaderRules(rules []ir.HeaderRule, report *Report) []
 
 // convertMapLocals 转换 Surge [Map Local] 规则。
 // 简化处理：若 data 是 URL，下载内容嵌入；否则直接用 data 值。
+// Header 字段支持单个响应头，格式为 "Name: Value"；若格式非法则忽略并告警。
 func (c *Converter) convertMapLocals(ctx context.Context, rules []ir.MapLocalRule, report *Report) []string {
 	var lines []string
 	for _, r := range rules {
@@ -493,6 +512,22 @@ func (c *Converter) convertMapLocals(ctx context.Context, rules []ir.MapLocalRul
 			continue
 		}
 		var body string
+		var headerName string
+		var headerValue string
+		if header := strings.TrimSpace(r.Header); header != "" {
+			parts := strings.SplitN(header, ":", 2)
+			if len(parts) != 2 {
+				report.AddWarning(fmt.Sprintf("Map Local header 格式非法，已忽略: %s", r.Raw))
+			} else {
+				headerName = strings.TrimSpace(parts[0])
+				headerValue = strings.TrimSpace(parts[1])
+				if headerName == "" {
+					report.AddWarning(fmt.Sprintf("Map Local header 名称为空，已忽略: %s", r.Raw))
+					headerName = ""
+					headerValue = ""
+				}
+			}
+		}
 		if fetcher.IsRemote(r.DataURL) && c.Fetcher != nil {
 			content, err := c.Fetcher.Fetch(ctx, r.DataURL)
 			if err != nil {
@@ -503,7 +538,11 @@ func (c *Converter) convertMapLocals(ctx context.Context, rules []ir.MapLocalRul
 		} else {
 			body = r.DataURL
 		}
-		lines = append(lines, fmt.Sprintf("0, 0, %s, 2, %s", pattern, QuoteField(body)))
+		if headerName != "" {
+			lines = append(lines, fmt.Sprintf("0, 0, %s, 2, %s, %s, %s", pattern, QuoteField(body), QuoteField(headerName), QuoteField(headerValue)))
+		} else {
+			lines = append(lines, fmt.Sprintf("0, 0, %s, 2, %s", pattern, QuoteField(body)))
+		}
 	}
 	return lines
 }
@@ -554,7 +593,7 @@ func (c *Converter) convertScriptRules(ctx context.Context, m *ir.Module, report
 			sctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 			defer cancel()
 
-			b64, err := FetchAndEncodeScript(sctx, c.Fetcher, s.ScriptPath, c.BaseURL, c.Opts.FetchScripts, s.Phase, c.Opts.UseStreamScript, c.Opts.WrapScripts)
+			b64, err := FetchAndEncodeScript(sctx, c.Fetcher, s.ScriptPath, c.BaseURL, c.Opts.FetchScripts, s.Phase, c.Opts.UseStreamScript, c.Opts.WrapScripts, s.Argument)
 			if err != nil {
 				report.AddScriptErr(fmt.Sprintf("脚本下载失败 %s: %v", s.ScriptPath, err))
 				// 降级为占位符，保证输出文件完整
@@ -696,7 +735,9 @@ func (c *Converter) inferContentType(lines []string) string {
 			// 跳过 pattern，找到 ", 2, " 或 ", 3"
 			if idx := strings.Index(rest, ", 2, "); idx >= 0 {
 				content := strings.TrimSpace(rest[idx+len(", 2, "):])
-				if strings.HasPrefix(content, "{") || strings.HasPrefix(content, `"{"`) || strings.Contains(content, `"code"`) {
+				if strings.HasPrefix(content, "{") || strings.HasPrefix(content, "[") ||
+					strings.HasPrefix(content, `"{"`) || strings.HasPrefix(content, `"["`) ||
+					strings.Contains(content, `"code"`) {
 					hasJSON = true
 					break
 				}

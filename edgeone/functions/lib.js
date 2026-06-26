@@ -15,31 +15,31 @@ const splitSections = (content) => {
   const sections = [];
   let current = null;
   const bodyLines = [];
-  for (const raw of content.split('\n')) {
-    const line = raw.replace(/\r$/, '');
+  for (const raw of content.split("\n")) {
+    const line = raw.replace(/\r$/, "");
     const trimmed = line.trim();
-    if (trimmed === '') {
+    if (trimmed === "") {
       if (current) bodyLines.push(line);
       continue;
     }
-    if (trimmed.startsWith('#!')) {
-      if (!current) current = { name: '__meta__', body: '' };
+    if (trimmed.startsWith("#!")) {
+      if (!current) current = { name: "__meta__", body: "" };
       bodyLines.push(line);
       continue;
     }
-    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
       if (current) {
-        current.body = bodyLines.join('\n');
+        current.body = bodyLines.join("\n");
         sections.push(current);
       }
-      current = { name: trimmed.slice(1, -1).trim(), body: '' };
+      current = { name: trimmed.slice(1, -1).trim(), body: "" };
       bodyLines.length = 0;
       continue;
     }
     bodyLines.push(line);
   }
   if (current) {
-    current.body = bodyLines.join('\n');
+    current.body = bodyLines.join("\n");
     sections.push(current);
   }
   return sections;
@@ -47,11 +47,11 @@ const splitSections = (content) => {
 
 const parseMeta = (body) => {
   const meta = {};
-  for (const line of body.split('\n')) {
+  for (const line of body.split("\n")) {
     const trimmed = line.trim();
-    if (!trimmed.startsWith('#!')) continue;
+    if (!trimmed.startsWith("#!")) continue;
     const kv = trimmed.slice(2);
-    const idx = kv.indexOf('=');
+    const idx = kv.indexOf("=");
     if (idx < 0) continue;
     const key = kv.slice(0, idx).trim();
     const val = kv.slice(idx + 1).trim();
@@ -62,7 +62,7 @@ const parseMeta = (body) => {
 
 const splitCSVFields = (line) => {
   const fields = [];
-  let buf = '';
+  let buf = "";
   let inQuote = false;
   for (let i = 0; i < line.length; i++) {
     const c = line[i];
@@ -79,9 +79,9 @@ const splitCSVFields = (line) => {
       }
     } else if (c === '"') {
       inQuote = true;
-    } else if (c === ',') {
+    } else if (c === ",") {
       fields.push(buf.trim());
-      buf = '';
+      buf = "";
     } else {
       buf += c;
     }
@@ -95,7 +95,7 @@ const parseKeyValueList = (tokens) => {
   const positional = [];
   for (const t of tokens) {
     if (!t) continue;
-    const idx = t.indexOf('=');
+    const idx = t.indexOf("=");
     if (idx > 0) {
       args[t.slice(0, idx).trim().toLowerCase()] = t.slice(idx + 1).trim();
     } else {
@@ -114,19 +114,21 @@ const trimQuotes = (s) => {
 };
 
 const normalizeHostnames = (raw) => {
-  const parts = raw.split(',');
+  const parts = raw.split(",");
   const out = [];
   const seen = new Set();
   for (let p of parts) {
     p = p.trim();
     if (!p) continue;
-    p = p.replace(/^%APPEND%/i, '').trim();
-    if (p.startsWith('*.')) {
+    p = p.replace(/^%APPEND%/i, "").trim();
+    if (p.startsWith("*.")) {
       p = p.slice(2);
-    } else if (p.startsWith('*') && !p.includes('.')) {
+    } else if (p.startsWith("*")) {
       p = p.slice(1);
     }
+    if (p.startsWith("-")) continue;
     p = p.trim();
+    if (/[*?]/.test(p)) continue;
     if (!p || seen.has(p)) continue;
     seen.add(p);
     out.push(p);
@@ -147,20 +149,20 @@ const dedupStrings = (arr) => {
 };
 
 const splitFirstWhitespace = (s) => {
-  s = s.replace(/^[\t ]+/, '');
+  s = s.replace(/^[\t ]+/, "");
   for (let i = 0; i < s.length; i++) {
-    if (s[i] === ' ' || s[i] === '\t') {
-      return [s.slice(0, i), s.slice(i + 1).replace(/^[\t ]+/, '')];
+    if (s[i] === " " || s[i] === "\t") {
+      return [s.slice(0, i), s.slice(i + 1).replace(/^[\t ]+/, "")];
     }
   }
-  return [s, ''];
+  return [s, ""];
 };
 
 const splitWhitespace = (s) => s.split(/\s+/).filter(Boolean);
 
 const tokenizeKV = (s) => {
   const tokens = [];
-  let buf = '';
+  let buf = "";
   let inQuote = false;
   for (let i = 0; i < s.length; i++) {
     const c = s[i];
@@ -170,10 +172,10 @@ const tokenizeKV = (s) => {
     } else if (c === '"') {
       inQuote = true;
       buf += c;
-    } else if (c === ' ' || c === '\t') {
+    } else if (c === " " || c === "\t") {
       if (buf) {
         tokens.push(buf);
-        buf = '';
+        buf = "";
       }
     } else {
       buf += c;
@@ -186,7 +188,7 @@ const tokenizeKV = (s) => {
 const parseKVArgs = (s, args) => {
   const tokens = tokenizeKV(s);
   for (const t of tokens) {
-    const idx = t.indexOf('=');
+    const idx = t.indexOf("=");
     if (idx <= 0) continue;
     const key = t.slice(0, idx).trim().toLowerCase();
     const val = trimQuotes(t.slice(idx + 1));
@@ -198,32 +200,32 @@ const parseKVArgs = (s, args) => {
 
 const convertURLPattern = (pattern, generalize) => {
   if (!pattern) return pattern;
-  pattern = pattern.replace(/\\\//g, '/');
+  pattern = pattern.replace(/\\\//g, "/");
   if (generalize) {
     pattern = generalizeHost(pattern);
   }
-  if (pattern.endsWith('\\?')) {
-    pattern = pattern.slice(0, -2) + '(?:\\?|$)';
+  if (pattern.endsWith("\\?")) {
+    pattern = pattern.slice(0, -2) + "(?:\\?|$)";
   }
   return pattern;
 };
 
 function generalizeHost(pattern) {
-  if (!pattern.startsWith('^http')) return pattern;
-  const idx = pattern.indexOf('://');
+  if (!pattern.startsWith("^http")) return pattern;
+  const idx = pattern.indexOf("://");
   if (idx < 0) return pattern;
   const rest = pattern.slice(idx + 3);
-  const slash = rest.indexOf('/');
+  const slash = rest.indexOf("/");
   if (slash < 0) return pattern;
   const hostPart = rest.slice(0, slash);
   if (containsCaptureGroup(hostPart)) return pattern;
-  return pattern.slice(0, idx + 3) + '[^/]+' + rest.slice(slash);
+  return pattern.slice(0, idx + 3) + "[^/]+" + rest.slice(slash);
 }
 
 function containsCaptureGroup(s) {
   for (let i = 0; i < s.length; i++) {
-    if (s[i] === '(') {
-      if (i + 2 < s.length && s[i + 1] === '?') continue;
+    if (s[i] === "(") {
+      if (i + 2 < s.length && s[i + 1] === "?") continue;
       return true;
     }
   }
@@ -232,25 +234,25 @@ function containsCaptureGroup(s) {
 
 const dotPathToJSONPath = (dotPath) => {
   dotPath = dotPath.trim();
-  if (!dotPath) return '$';
-  if (dotPath.startsWith('$.') || dotPath === '$') return dotPath;
-  const parts = dotPath.split('.');
-  let result = '$';
+  if (!dotPath) return "$";
+  if (dotPath.startsWith("$.") || dotPath === "$") return dotPath;
+  const parts = dotPath.split(".");
+  let result = "$";
   for (const part of parts) {
     if (!part) continue;
-    const bracketIdx = part.indexOf('[');
+    const bracketIdx = part.indexOf("[");
     if (bracketIdx >= 0) {
       const key = part.slice(0, bracketIdx);
       const brackets = part.slice(bracketIdx);
-      if (key) result += '.' + key;
+      if (key) result += "." + key;
       result += brackets;
       continue;
     }
     if (/^\d+$/.test(part)) {
-      result += '[' + part + ']';
+      result += "[" + part + "]";
       continue;
     }
-    result += '.' + part;
+    result += "." + part;
   }
   return result;
 };
@@ -265,12 +267,22 @@ const quoteField = (field) => {
 
 function hasSignificantWhitespace(s) {
   if (!s) return false;
-  return s[0] === ' ' || s[0] === '\t' || s[s.length - 1] === ' ' || s[s.length - 1] === '\t';
+  return (
+    s[0] === " " ||
+    s[0] === "\t" ||
+    s[s.length - 1] === " " ||
+    s[s.length - 1] === "\t"
+  );
 }
 
 const hasCaptureGroup = (s) => {
   for (let i = 0; i < s.length; i++) {
-    if (s[i] === '$' && i + 1 < s.length && s[i + 1] >= '1' && s[i + 1] <= '9') {
+    if (
+      s[i] === "$" &&
+      i + 1 < s.length &&
+      s[i + 1] >= "1" &&
+      s[i + 1] <= "9"
+    ) {
       return true;
     }
   }
@@ -279,17 +291,24 @@ const hasCaptureGroup = (s) => {
 
 // ===================== 远程获取 =====================
 
-const GITHUB_PROXIES = ['https://ghfast.top/', 'https://ph.ipv9.win/'];
-const GITHUB_HOSTS = ['raw.githubusercontent.com', 'github.com', 'gist.githubusercontent.com', 'codeload.github.com'];
-const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const GITHUB_PROXIES = ["https://ghfast.top/", "https://ph.ipv9.win/"];
+const GITHUB_HOSTS = [
+  "raw.githubusercontent.com",
+  "github.com",
+  "gist.githubusercontent.com",
+  "codeload.github.com",
+];
+const DEFAULT_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const USER_AGENTS = {
-  surge: 'Shadowrocket/308 CFNetwork/1568.300 Darwin/24.1.0',
-  loon: 'Loon/750 CFNetwork/1568.300 Darwin/24.1.0',
-  quantumultx: 'Quantumult%20X%20Patched/1.0.30 (iPhone;iOS%2017.0)',
+  surge: "Shadowrocket/308 CFNetwork/1568.300 Darwin/24.1.0",
+  loon: "Loon/750 CFNetwork/1568.300 Darwin/24.1.0",
+  quantumultx: "Quantumult%20X%20Patched/1.0.30 (iPhone;iOS%2017.0)",
   unknown: DEFAULT_USER_AGENT,
 };
 
-const getUserAgent = (source) => (!source ? DEFAULT_USER_AGENT : USER_AGENTS[source] || DEFAULT_USER_AGENT);
+const getUserAgent = (source) =>
+  !source ? DEFAULT_USER_AGENT : USER_AGENTS[source] || DEFAULT_USER_AGENT;
 
 function isGitHubURL(url) {
   return GITHUB_HOSTS.some((host) => url.includes(host));
@@ -304,7 +323,7 @@ function isProxyURL(url) {
 }
 
 function proxyURLWithPrefix(proxyPrefix, rawURL) {
-  return proxyPrefix + rawURL.replace(/^https:\/\//, '');
+  return proxyPrefix + rawURL.replace(/^https:\/\//, "");
 }
 
 // fetchRaw 带超时（10 秒），避免代理卡死整个请求
@@ -312,13 +331,15 @@ function proxyURLWithPrefix(proxyPrefix, rawURL) {
 async function fetchRaw(url, userAgent) {
   var ua = userAgent || DEFAULT_USER_AGENT;
   var fetchPromise = fetch(url, {
-    headers: { 'User-Agent': ua, Accept: '*/*' },
+    headers: { "User-Agent": ua, Accept: "*/*" },
   });
   var timeoutPromise = new Promise(function (_, reject) {
-    setTimeout(function () { reject(new Error('timeout 10s: ' + url)); }, 10000);
+    setTimeout(function () {
+      reject(new Error("timeout 10s: " + url));
+    }, 10000);
   });
   var resp = await Promise.race([fetchPromise, timeoutPromise]);
-  if (!resp.ok) throw new Error('请求 ' + url + ' 返回状态码 ' + resp.status);
+  if (!resp.ok) throw new Error("请求 " + url + " 返回状态码 " + resp.status);
   return await resp.text();
 }
 
@@ -334,21 +355,23 @@ async function fetchRemoteWithProxy(url, userAgent) {
     try {
       var data = await fetchRaw(proxyURL, ua);
       if (data) return data;
-    } catch (e) { /* 代理失败，继续尝试下一个 */ }
+    } catch (e) {
+      /* 代理失败，继续尝试下一个 */
+    }
   }
   return fetchRaw(url, ua);
 }
 
 function isRemote(path) {
   const lower = path.toLowerCase();
-  return lower.startsWith('http://') || lower.startsWith('https://');
+  return lower.startsWith("http://") || lower.startsWith("https://");
 }
 
 function resolveScriptPath(scriptPath, baseURL) {
   if (isRemote(scriptPath)) return scriptPath;
   if (!baseURL) return scriptPath;
-  if (isRemote(baseURL) && !scriptPath.startsWith('/')) {
-    const idx = baseURL.lastIndexOf('/');
+  if (isRemote(baseURL) && !scriptPath.startsWith("/")) {
+    const idx = baseURL.lastIndexOf("/");
     if (idx > 0) return baseURL.slice(0, idx + 1) + scriptPath;
   }
   return scriptPath;
@@ -356,20 +379,65 @@ function resolveScriptPath(scriptPath, baseURL) {
 
 // ===================== 脚本改写 =====================
 
-async function fetchAndEncodeScript(scriptPath, fetchScripts, phase, useStreamScript, userAgent, wrap) {
+const scriptCache = new Map();
+
+function scriptCacheKey(
+  scriptPath,
+  fetchScripts,
+  phase,
+  useStreamScript,
+  wrap,
+  argument,
+) {
+  return [
+    scriptPath || "",
+    fetchScripts ? "1" : "0",
+    String(phase),
+    useStreamScript ? "1" : "0",
+    wrap ? "1" : "0",
+    String(argument || ""),
+  ].join("|");
+}
+
+async function fetchAndEncodeScript(
+  scriptPath,
+  fetchScripts,
+  phase,
+  useStreamScript,
+  userAgent,
+  wrap,
+  argument,
+) {
+  const cacheKey = scriptCacheKey(
+    scriptPath,
+    fetchScripts,
+    phase,
+    useStreamScript,
+    wrap,
+    argument,
+  );
+  if (scriptCache.has(cacheKey)) return scriptCache.get(cacheKey);
   if (!fetchScripts) {
     const placeholder = `function process(ctx){Anywhere.log.warning("script not fetched: ${scriptPath}");}`;
-    return btoa(unescape(encodeURIComponent(placeholder)));
+    const encoded = btoa(unescape(encodeURIComponent(placeholder)));
+    scriptCache.set(cacheKey, encoded);
+    return encoded;
   }
   try {
     const src = await fetchRemoteWithProxy(scriptPath, userAgent);
     // 包装执行模式：不做字符串替换，直接 base64 编码上游脚本
     if (wrap) {
-      return encodeWrappedScript(src, phase);
+      const encoded = encodeWrappedScript(src, phase, argument || "");
+      scriptCache.set(cacheKey, encoded);
+      return encoded;
     }
-    const rewritten = rewriteScriptAPI(src, phase);
-    const finalSrc = useStreamScript ? wrapAsStreamScript(rewritten, phase) : rewritten;
-    return btoa(unescape(encodeURIComponent(finalSrc)));
+    const rewritten = rewriteScriptAPI(src, phase, argument || "");
+    const finalSrc = useStreamScript
+      ? wrapAsStreamScript(rewritten, phase)
+      : rewritten;
+    const encoded = btoa(unescape(encodeURIComponent(finalSrc)));
+    scriptCache.set(cacheKey, encoded);
+    return encoded;
   } catch (e) {
     throw new Error(`下载脚本失败 "${scriptPath}": ${e}`);
   }
@@ -378,9 +446,9 @@ async function fetchAndEncodeScript(scriptPath, fetchScripts, phase, useStreamSc
 function encodeInlineScript(rawJS, phase, wrap) {
   // 包装执行模式：将上游脚本源码 base64 编码，在 process(ctx) 中用 new Function()() 执行
   if (wrap) {
-    return encodeWrappedScript(rawJS, phase);
+    return encodeWrappedScript(rawJS, phase, "");
   }
-  const rewritten = rewriteScriptAPI(rawJS, phase);
+  const rewritten = rewriteScriptAPI(rawJS, phase, "");
   return btoa(unescape(encodeURIComponent(rewritten)));
 }
 
@@ -391,18 +459,22 @@ function encodeInlineScript(rawJS, phase, wrap) {
  * 这种方式不做字符串替换，能最大程度保持上游脚本的原始逻辑，
  * 适用于 wloc.js 等自包含跨平台脚本。
  */
-function encodeWrappedScript(rawJS, phase) {
-  const phaseCheck = phase === 1 ? 'response' : 'request';
+function encodeWrappedScript(rawJS, phase, argument) {
+  const phaseCheck = phase === 1 ? "response" : "request";
   // 检测是否需要 async（与 rewriteScriptAPI 保持一致）
-  const needsAsync = rawJS.includes('$httpClient') || rawJS.includes('$.http') ||
-    rawJS.includes('$env.http') || rawJS.includes('await ') || rawJS.includes('async ') ||
-    rawJS.includes('$done({response:');
+  const needsAsync =
+    rawJS.includes("$httpClient") ||
+    rawJS.includes("$.http") ||
+    rawJS.includes("$env.http") ||
+    rawJS.includes("await ") ||
+    rawJS.includes("async ") ||
+    rawJS.includes("$done({response:");
 
   // 将上游脚本源码 base64 编码
   const upstreamB64 = btoa(unescape(encodeURIComponent(rawJS)));
 
   // 生成包装器脚本
-  const wrapper = `${needsAsync ? 'async ' : ''}function process(ctx) {
+  const wrapper = `${needsAsync ? "async " : ""}function process(ctx) {
   if (ctx.phase !== "${phaseCheck}") return;
   var _globalsSnapshot = {};
   var _GLOBAL_POLLUTABLE_NAMES = ["$request", "$response", "$argument", "$persistentStore", "$done", "$loon", "$environment", "$script", "$httpClient", "$notification"];
@@ -430,8 +502,9 @@ function encodeWrappedScript(rawJS, phase) {
       globalThis.$loon = {};
       globalThis.$environment = undefined;
       globalThis.$script = { startTime: new Date() };
-      // $argument 应为对象（上游脚本可能读取属性或做 Object.keys），空字符串会导致 TypeError
-      globalThis.$argument = {};
+      // $argument 先注入原始字符串，供脚本自行解析；空 argument 兜底为空对象 {}，
+      // 防止上游脚本使用 Object.keys($argument) 或读取属性时 TypeError（与 Go 侧 BuildWrappedScript 保持一致）
+      globalThis.$argument = ${String(argument || "").trim() ? JSON.stringify(String(argument)) : "{}"};
       globalThis.$request = {
         url: ctx.url || '',
         method: ctx.method || 'GET',
@@ -570,7 +643,7 @@ function encodeWrappedScript(rawJS, phase) {
       }
     }).then(function(out) {
       var response = out.response || out;
-      var body = _wlocBytes(response.bodyBytes || response.rawBody || response.body);
+      var body = _boxBytes(response.bodyBytes || response.rawBody || response.body);
       if (body.length > 0) ctx.body = body;
     });
   } finally {
@@ -578,13 +651,79 @@ function encodeWrappedScript(rawJS, phase) {
   }
 }
 
-function _wlocBytes(value) {
+function _boxBytes(value) {
   if (!value) return new Uint8Array();
   if (value instanceof Uint8Array) return value;
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
   if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-  if (typeof value === "string") return Anywhere.codec.utf8.encode(value);
-  return new Uint8Array();
+  if (typeof value === 'string') return Anywhere.codec.utf8.encode(value);
+  return Anywhere.codec.utf8.encode(JSON.stringify(value));
+}
+function _boxHeaderPairs(headers) {
+  if (!headers) return [];
+  if (Array.isArray(headers)) return headers;
+  if (headers && headers._items) return headers._items;
+  var out = [];
+  for (var name in headers) { if (headers.hasOwnProperty(name)) out.push([String(name), String(headers[name])]); }
+  return out;
+}
+function _boxRequest(input, init) {
+  var req = {};
+  if (typeof input === 'string') req.url = input;
+  else if (input && typeof input === 'object') { for (var k in input) if (input.hasOwnProperty(k)) req[k] = input[k]; }
+  if (init && typeof init === 'object') { for (var k2 in init) if (init.hasOwnProperty(k2)) req[k2] = init[k2]; }
+  req.method = String(req.method || (req.body ? 'POST' : 'GET')).toUpperCase();
+  req.headers = _boxHeaderPairs(req.headers);
+  if (req.body) req.body = _boxBytes(req.body);
+  return req;
+}
+
+if (typeof globalThis.TextEncoder === 'undefined') {
+  globalThis.TextEncoder = function() {};
+  globalThis.TextEncoder.prototype.encode = function(value) { return Anywhere.codec.utf8.encode(String(value)); };
+}
+if (typeof globalThis.TextDecoder === 'undefined') {
+  globalThis.TextDecoder = function() {};
+  globalThis.TextDecoder.prototype.decode = function(value) { return Anywhere.codec.utf8.decode(_boxBytes(value)); };
+}
+if (typeof globalThis.Headers === 'undefined') {
+  globalThis.Headers = function(init) { this._items = _boxHeaderPairs(init); };
+  globalThis.Headers.prototype.append = function(name, value) { this._items.push([String(name), String(value)]); };
+  globalThis.Headers.prototype.get = function(name) { name = String(name).toLowerCase(); for (var i = 0; i < this._items.length; i++) if (String(this._items[i][0]).toLowerCase() === name) return this._items[i][1]; return null; };
+  globalThis.Headers.prototype.has = function(name) { return this.get(name) !== null; };
+  globalThis.Headers.prototype.set = function(name, value) { this.delete(name); this.append(name, value); };
+  globalThis.Headers.prototype.delete = function(name) { name = String(name).toLowerCase(); this._items = this._items.filter(function(h) { return String(h[0]).toLowerCase() !== name; }); };
+  globalThis.Headers.prototype.forEach = function(cb, thisArg) { for (var i = 0; i < this._items.length; i++) cb.call(thisArg, this._items[i][1], this._items[i][0], this); };
+}
+if (typeof globalThis.Request === 'undefined') {
+  globalThis.Request = function(input, init) { var req = _boxRequest(input, init); this.url = req.url; this.method = req.method; this.headers = new globalThis.Headers(req.headers); this.body = req.body; };
+}
+if (typeof globalThis.Response === 'undefined') {
+  globalThis.Response = function(body, init) { init = init || {}; this.body = _boxBytes(body); this.status = init.status || 200; this.headers = new globalThis.Headers(init.headers); };
+  globalThis.Response.prototype.text = function() { var self = this; return Promise.resolve(Anywhere.codec.utf8.decode(self.body || new Uint8Array())); };
+  globalThis.Response.prototype.json = function() { return this.text().then(function(t) { return JSON.parse(t); }); };
+  globalThis.Response.prototype.arrayBuffer = function() { return Promise.resolve((this.body || new Uint8Array()).buffer); };
+}
+if (typeof globalThis.fetch === 'undefined') {
+  globalThis.fetch = function(input, init) {
+    var req = _boxRequest(input, init);
+    var opts = { method: req.method, headers: req.headers, body: req.body };
+    if (req.method === 'GET' || req.method === 'HEAD') delete opts.body;
+    var p = req.method === 'GET' ? Anywhere.http.get(req.url, opts) : req.method === 'POST' ? Anywhere.http.post(req.url, opts) : req.method === 'PUT' ? Anywhere.http.put(req.url, opts) : req.method === 'DELETE' ? Anywhere.http.delete(req.url, opts) : Anywhere.http.request(opts);
+    return p.then(function(res) { return new globalThis.Response(res.body || new Uint8Array(), { status: res.status || 200, headers: res.headers || [] }); });
+  };
+}
+if (typeof globalThis.setTimeout === 'undefined') globalThis.setTimeout = function(fn, ms) { return Anywhere.wait(ms || 0).then(fn); };
+if (typeof globalThis.clearTimeout === 'undefined') globalThis.clearTimeout = function() {};
+if (typeof globalThis.setInterval === 'undefined') globalThis.setInterval = function(fn, ms) { var h = { active: true }; (function tick(){ if (!h.active) return; Anywhere.wait(ms || 0).then(function(){ if (!h.active) return; fn(); tick(); }); })(); return h; };
+if (typeof globalThis.clearInterval === 'undefined') globalThis.clearInterval = function(h) { if (h) h.active = false; };
+if (typeof globalThis.console !== 'undefined') {
+  if (typeof globalThis.console.assert === 'undefined') globalThis.console.assert = function(cond) { if (!cond) globalThis.console.warn('Assertion failed'); };
+  if (typeof globalThis.console.trace === 'undefined') globalThis.console.trace = function() { globalThis.console.warn('trace'); };
+  if (typeof globalThis.console.table === 'undefined') globalThis.console.table = function(obj) { globalThis.console.info(JSON.stringify(obj)); };
+}
+if (typeof globalThis.JSON !== 'undefined') {
+  if (typeof globalThis.JSON.parse !== 'function') {}
 }
 `;
   return btoa(unescape(encodeURIComponent(wrapper)));
@@ -592,49 +731,71 @@ function _wlocBytes(value) {
 
 function encodeInlineRewriteJS(rawJS, phase) {
   let js = rawJS.trim();
-  if (js.startsWith('{') && js.endsWith('}')) js = js.slice(1, -1).trim();
+  if (js.startsWith("{") && js.endsWith("}")) js = js.slice(1, -1).trim();
   return encodeInlineScript(js, phase);
 }
 
-function rewriteScriptAPI(src, phase) {
+function rewriteScriptAPI(src, phase, argument) {
   // 检测是否需要 async（含 $httpClient / await / async / $done({response: 等）
   // 注意：需与 encodeWrappedScript 的检测条件保持一致
-  const needsAsync = src.includes('$httpClient') || src.includes('$.http') ||
-    src.includes('$env.http') || src.includes('await ') || src.includes('async ') ||
-    src.includes('$done({response:');
+  const needsAsync =
+    src.includes("$httpClient") ||
+    src.includes("$.http") ||
+    src.includes("$env.http") ||
+    src.includes("await ") ||
+    src.includes("async ") ||
+    src.includes("$done({response:");
   let out = src;
-  out = out.replace(/\$request\.url/g, 'ctx.url');
-  out = out.replace(/\$request\.method/g, 'ctx.method');
+  out = out.replace(/\$request\.url/g, "ctx.url");
+  out = out.replace(/\$request\.method/g, "ctx.method");
   // 注意：ctx.headers 是 [[name, value], ...] 数组对格式（per MITM.md），
   // Loon/Surge 的 $request.headers/$response.headers 是 {name: value} 对象格式。
   // 替换为预转换变量 _headersObj（由 wrapAsProcess 在 process 函数体开头注入）
-  out = out.replace(/\$request\.headers/g, '_headersObj');
-  out = out.replace(/\$response\.headers/g, '_headersObj');
+  out = out.replace(/\$request\.headers/g, "_headersObj");
+  out = out.replace(/\$response\.headers/g, "_headersObj");
   // 注意：必须先替换更长的标识符（statusCode/bodyBytes），否则会被 $response.status/$response.body 部分匹配
   // $response.statusCode 是 $response.status 的别名 → ctx.status
-  out = out.replace(/\$response\.statusCode/g, 'ctx.status');
-  out = out.replace(/\$response\.status/g, 'ctx.status');
+  out = out.replace(/\$response\.statusCode/g, "ctx.status");
+  out = out.replace(/\$response\.status/g, "ctx.status");
   // $response.bodyBytes / $request.bodyBytes 是 Loon 的二进制 body API，直接映射为 ctx.body（Uint8Array）
-  out = out.replace(/\$request\.bodyBytes/g, 'ctx.body');
-  out = out.replace(/\$response\.bodyBytes/g, 'ctx.body');
-  out = out.replace(/\$request\.body/g, 'Anywhere.codec.utf8.decode(ctx.body)');
-  out = out.replace(/\$response\.body/g, 'Anywhere.codec.utf8.decode(ctx.body)');
+  out = out.replace(/\$request\.bodyBytes/g, "ctx.body");
+  out = out.replace(/\$response\.bodyBytes/g, "ctx.body");
+  out = out.replace(/\$request\.body/g, "Anywhere.codec.utf8.decode(ctx.body)");
+  out = out.replace(
+    /\$response\.body/g,
+    "Anywhere.codec.utf8.decode(ctx.body)",
+  );
   out = rewriteDoneCalls(out);
-  out = out.replace(/\$persistentStore\.read\(\s*([^)]+?)\s*\)/g, 'Anywhere.store.getString($1, true)');
+  out = out.replace(
+    /\$persistentStore\.read\(\s*([^)]+?)\s*\)/g,
+    "Anywhere.store.getString($1, true)",
+  );
   // $persistentStore.write(val, key) — 处理 null/undefined 的删除语义
-  out = out.replace(/\$persistentStore\.write\(\s*(null|undefined)\s*,\s*([^)]+?)\s*\)/g, 'Anywhere.store.delete($2, true)');
-  out = out.replace(/\$persistentStore\.write\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)/g, (match, val, key) => {
-    // 如果 val 已经是 null/undefined 字面量，上面已经处理
-    if (val === 'null' || val === 'undefined') return match;
-    // 否则生成运行时判断代码
-    return `((${val} === null || ${val} === undefined) ? Anywhere.store.delete(${key}, true) : Anywhere.store.set(${key}, String(${val}), true))`;
-  });
-  out = out.replace(/\$notification\.post\(\s*([^,]+?)\s*,\s*([^,]*?)\s*,\s*([^)]+?)\s*\)/g, 'Anywhere.log.info($1 + " " + $2 + " " + $3)');
+  out = out.replace(
+    /\$persistentStore\.write\(\s*(null|undefined)\s*,\s*([^)]+?)\s*\)/g,
+    "Anywhere.store.delete($2, true)",
+  );
+  out = out.replace(
+    /\$persistentStore\.write\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)/g,
+    (match, val, key) => {
+      // 如果 val 已经是 null/undefined 字面量，上面已经处理
+      if (val === "null" || val === "undefined") return match;
+      // 否则生成运行时判断代码
+      return `((${val} === null || ${val} === undefined) ? Anywhere.store.delete(${key}, true) : Anywhere.store.set(${key}, String(${val}), true))`;
+    },
+  );
+  out = out.replace(
+    /\$notification\.post\(\s*([^,]+?)\s*,\s*([^,]*?)\s*,\s*([^)]+?)\s*\)/g,
+    'Anywhere.log.info($1 + " " + $2 + " " + $3)',
+  );
   out = rewriteHttpClientCalls(out);
-  out = out.replace(/JSON\.parse\(ctx\.body\)/g, 'JSON.parse(Anywhere.codec.utf8.decode(ctx.body))');
+  out = out.replace(
+    /JSON\.parse\(ctx\.body\)/g,
+    "JSON.parse(Anywhere.codec.utf8.decode(ctx.body))",
+  );
   // 注入 BoxJS Env 兼容层（如果脚本使用了 Env 类或 $.xxx API）
   out = injectBoxJSPolyfill(out);
-  out = wrapAsProcess(out, phase, needsAsync);
+  out = wrapAsProcess(out, phase, needsAsync, argument || "");
   return out;
 }
 
@@ -649,12 +810,26 @@ function rewriteScriptAPI(src, phase) {
  */
 function injectBoxJSPolyfill(src) {
   // 检测脚本是否使用了 BoxJS Env 类或 $.xxx API 或常见缺失 Web API
-  const usesEnv = /new\s+Env\s*\(/.test(src) ||
-    /\$\.(getdata|setdata|getjson|setjson|msg|log|logErr|http|isQuanX|isSurge|isLoon|isNode|wait|done|name)/.test(src) ||
+  // 注意：$.xxx 部分用 i flag 大小写不敏感，与 Go 侧 boxjsEnvPattern 的 (?i) 保持一致
+  const usesEnv =
+    /new\s+Env\s*\(/.test(src) ||
+    /\$\.(getdata|setdata|getjson|setjson|msg|log|logErr|http|fetch|request|notify|runScript|toURL|setvalue|getvalue|isQuanX|isSurge|isLoon|isNode|wait|done|name)/i.test(
+      src,
+    ) ||
     /\$env\s*\./.test(src) ||
     /URLSearchParams/.test(src) ||
     /new\s+URL\s*\(/.test(src) ||
-    /console\.(log|warn|error|info|debug)/.test(src);
+    /\bfetch\s*\(/.test(src) ||
+    /\bTextEncoder\b/.test(src) ||
+    /\bTextDecoder\b/.test(src) ||
+    /\bHeaders\b/.test(src) ||
+    /\bRequest\b/.test(src) ||
+    /\bResponse\b/.test(src) ||
+    /\bsetTimeout\s*\(/.test(src) ||
+    /\bsetInterval\s*\(/.test(src) ||
+    /\bclearTimeout\s*\(/.test(src) ||
+    /\bclearInterval\s*\(/.test(src) ||
+    /console\.(log|warn|error|info|debug|assert|trace|table)/.test(src);
 
   if (!usesEnv) return src;
 
@@ -748,6 +923,75 @@ if (typeof globalThis.atob === 'undefined') {
   globalThis.btoa = function(str) { return Anywhere.codec.base64.encode(Anywhere.codec.utf8.encode(str)); };
 }
 
+function _boxBytes(value) {
+  if (!value) return new Uint8Array();
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  if (typeof value === 'string') return Anywhere.codec.utf8.encode(value);
+  return Anywhere.codec.utf8.encode(JSON.stringify(value));
+}
+function _boxHeaderPairs(headers) {
+  if (!headers) return [];
+  if (Array.isArray(headers)) return headers;
+  if (headers && headers._items) return headers._items;
+  var out = [];
+  for (var name in headers) { if (headers.hasOwnProperty(name)) out.push([String(name), String(headers[name])]); }
+  return out;
+}
+function _boxRequest(input, init) {
+  var req = {};
+  if (typeof input === 'string') req.url = input;
+  else if (input && typeof input === 'object') { for (var k in input) if (input.hasOwnProperty(k)) req[k] = input[k]; }
+  if (init && typeof init === 'object') { for (var k2 in init) if (init.hasOwnProperty(k2)) req[k2] = init[k2]; }
+  req.method = String(req.method || (req.body ? 'POST' : 'GET')).toUpperCase();
+  req.headers = _boxHeaderPairs(req.headers);
+  if (req.body) req.body = _boxBytes(req.body);
+  return req;
+}
+if (typeof globalThis.TextEncoder === 'undefined') {
+  globalThis.TextEncoder = function() {};
+  globalThis.TextEncoder.prototype.encode = function(value) { return Anywhere.codec.utf8.encode(String(value)); };
+}
+if (typeof globalThis.TextDecoder === 'undefined') {
+  globalThis.TextDecoder = function() {};
+  globalThis.TextDecoder.prototype.decode = function(value) { return Anywhere.codec.utf8.decode(_boxBytes(value)); };
+}
+if (typeof globalThis.Headers === 'undefined') {
+  globalThis.Headers = function(init) { this._items = _boxHeaderPairs(init); };
+  globalThis.Headers.prototype.append = function(name, value) { this._items.push([String(name), String(value)]); };
+  globalThis.Headers.prototype.get = function(name) { name = String(name).toLowerCase(); for (var i = 0; i < this._items.length; i++) if (String(this._items[i][0]).toLowerCase() === name) return this._items[i][1]; return null; };
+  globalThis.Headers.prototype.has = function(name) { return this.get(name) !== null; };
+  globalThis.Headers.prototype.set = function(name, value) { this.delete(name); this.append(name, value); };
+  globalThis.Headers.prototype.delete = function(name) { name = String(name).toLowerCase(); this._items = this._items.filter(function(h) { return String(h[0]).toLowerCase() !== name; }); };
+  globalThis.Headers.prototype.forEach = function(cb, thisArg) { for (var i = 0; i < this._items.length; i++) cb.call(thisArg, this._items[i][1], this._items[i][0], this); };
+}
+if (typeof globalThis.Request === 'undefined') {
+  globalThis.Request = function(input, init) { var req = _boxRequest(input, init); this.url = req.url; this.method = req.method; this.headers = new globalThis.Headers(req.headers); this.body = req.body; };
+}
+if (typeof globalThis.Response === 'undefined') {
+  globalThis.Response = function(body, init) { init = init || {}; this.body = _boxBytes(body); this.status = init.status || 200; this.headers = new globalThis.Headers(init.headers); };
+  globalThis.Response.prototype.text = function() { var self = this; return Promise.resolve(Anywhere.codec.utf8.decode(self.body || new Uint8Array())); };
+  globalThis.Response.prototype.json = function() { return this.text().then(function(t) { return JSON.parse(t); }); };
+  globalThis.Response.prototype.arrayBuffer = function() { return Promise.resolve((this.body || new Uint8Array()).buffer); };
+}
+if (typeof globalThis.fetch === 'undefined') {
+  globalThis.fetch = function(input, init) {
+    var req = _boxRequest(input, init);
+    var opts = { method: req.method, headers: req.headers, body: req.body };
+    if (req.method === 'GET' || req.method === 'HEAD') delete opts.body;
+    var p = req.method === 'GET' ? Anywhere.http.get(req.url, opts) : req.method === 'POST' ? Anywhere.http.post(req.url, opts) : req.method === 'PUT' ? Anywhere.http.put(req.url, opts) : req.method === 'DELETE' ? Anywhere.http.delete(req.url, opts) : Anywhere.http.request(opts);
+    return p.then(function(res) { return new globalThis.Response(res.body || new Uint8Array(), { status: res.status || 200, headers: res.headers || [] }); });
+  };
+}
+if (typeof globalThis.setTimeout === 'undefined') globalThis.setTimeout = function(fn, ms) { return Anywhere.wait(ms || 0).then(fn); };
+if (typeof globalThis.clearTimeout === 'undefined') globalThis.clearTimeout = function() {};
+if (typeof globalThis.setInterval === 'undefined') globalThis.setInterval = function(fn, ms) { var h = { active: true }; (function tick(){ if (!h.active) return; Anywhere.wait(ms || 0).then(function(){ if (!h.active) return; fn(); tick(); }); })(); return h; };
+if (typeof globalThis.clearInterval === 'undefined') globalThis.clearInterval = function(h) { if (h) h.active = false; };
+if (typeof globalThis.console.assert === 'undefined') globalThis.console.assert = function(cond) { if (!cond) globalThis.console.warn('Assertion failed'); };
+if (typeof globalThis.console.trace === 'undefined') globalThis.console.trace = function() { globalThis.console.warn('trace'); };
+if (typeof globalThis.console.table === 'undefined') globalThis.console.table = function(obj) { globalThis.console.info(JSON.stringify(obj)); };
+
 // --- BoxJS Env 类 ---
 function Env(name) {
   this.name = name || 'BoxJS';
@@ -767,6 +1011,20 @@ function _wrapBoxJSResponse(res) {
     bodyBytes: res.body,
     url: res.url
   };
+}
+function _wrapBoxJSRequest(opts) {
+  if (typeof opts === 'string') return opts;
+  if (!opts || typeof opts !== 'object') return opts;
+  var out = {};
+  for (var k in opts) { if (opts.hasOwnProperty(k)) out[k] = opts[k]; }
+  if (out.headers && !Array.isArray(out.headers)) {
+    var hs = [];
+    for (var name in out.headers) { if (out.headers.hasOwnProperty(name)) hs.push([String(name), String(out.headers[name])]); }
+    out.headers = hs;
+  }
+  if (typeof out.body === 'string') out.body = Anywhere.codec.utf8.encode(out.body);
+  else if (out.body && typeof out.body === 'object' && !(out.body instanceof Uint8Array) && !(out.body instanceof ArrayBuffer) && !ArrayBuffer.isView(out.body)) out.body = Anywhere.codec.utf8.encode(JSON.stringify(out.body));
+  return out;
 }
 Env.prototype.getdata = function(key) {
   return Anywhere.store.getString(key, true) || null;
@@ -794,27 +1052,48 @@ Env.prototype.log = function(msg) {
 Env.prototype.logErr = function(msg) {
   Anywhere.log.warning(String(msg));
 };
+Env.prototype.notify = function(title, subtitle, body) {
+  Anywhere.log.info((title || '') + (subtitle ? ' ' + subtitle : '') + (body ? ' ' + body : ''));
+};
+Env.prototype.fetch = function(input, init) {
+  return Anywhere.http.request(_wrapBoxJSRequest(typeof input === 'string' ? { url: input } : input, init)).then(function(res) { return _wrapBoxJSResponse(res); });
+};
+Env.prototype.request = function(input, init) {
+  return this.fetch(input, init);
+};
+Env.prototype.runScript = function(script) {
+  return Promise.resolve().then(function() { return eval(script); });
+};
+Env.prototype.toURL = function(value, base) {
+  return new URL(String(value || ''), base);
+};
+Env.prototype.getvalue = function(key) { return this.getdata(key); };
+Env.prototype.setvalue = function(val, key) { return this.setdata(val, key); };
 Env.prototype.http = {
   // 包装响应：Anywhere.http 返回 headers: [[name, value], ...] + body: Uint8Array
   // BoxJS 脚本期望 headers: {name: value} + body: string
   get: function(opts) {
-    var url = typeof opts === 'string' ? opts : opts.url;
-    return Anywhere.http.get(url, opts).then(function(res) { return _wrapBoxJSResponse(res); });
+    var req = _wrapBoxJSRequest(opts);
+    var url = typeof req === 'string' ? req : req.url;
+    return Anywhere.http.get(url, req).then(function(res) { return _wrapBoxJSResponse(res); });
   },
   post: function(opts) {
-    var url = typeof opts === 'string' ? opts : opts.url;
-    return Anywhere.http.post(url, opts).then(function(res) { return _wrapBoxJSResponse(res); });
+    var req = _wrapBoxJSRequest(opts);
+    var url = typeof req === 'string' ? req : req.url;
+    return Anywhere.http.post(url, req).then(function(res) { return _wrapBoxJSResponse(res); });
   },
   put: function(opts) {
-    var url = typeof opts === 'string' ? opts : opts.url;
-    return Anywhere.http.put(url, opts).then(function(res) { return _wrapBoxJSResponse(res); });
+    var req = _wrapBoxJSRequest(opts);
+    var url = typeof req === 'string' ? req : req.url;
+    return Anywhere.http.put(url, req).then(function(res) { return _wrapBoxJSResponse(res); });
   },
   delete: function(opts) {
-    var url = typeof opts === 'string' ? opts : opts.url;
-    return Anywhere.http.delete(url, opts).then(function(res) { return _wrapBoxJSResponse(res); });
+    var req = _wrapBoxJSRequest(opts);
+    var url = typeof req === 'string' ? req : req.url;
+    return Anywhere.http.delete(url, req).then(function(res) { return _wrapBoxJSResponse(res); });
   },
   request: function(opts) {
-    return Anywhere.http.request(opts).then(function(res) { return _wrapBoxJSResponse(res); });
+    return Anywhere.http.request(_wrapBoxJSRequest(opts)).then(function(res) { return _wrapBoxJSResponse(res); });
   }
 };
 Env.prototype.isQuanX = function() { return false; };
@@ -841,7 +1120,7 @@ var btoa = globalThis.btoa;
 
 // === BoxJS Env 兼容层 + Web API Polyfill 结束 ===
 `;
-  return polyfill + '\n' + src;
+  return polyfill + "\n" + src;
 }
 
 function rewriteHttpClientCalls(src) {
@@ -854,71 +1133,140 @@ function rewriteHttpClientCalls(src) {
   // 注意：Anywhere.http 返回的 res.headers 是 [[name, value], ...] 数组对格式，
   // Loon/Surge 的 $httpClient 回调中 resp.headers 是 {name: value} 对象格式，需要转换
   function buildCallbackVars(params) {
-    var paramList = params.split(',').map(function(p) { return p.trim(); }).filter(function(p) { return p; });
-    var varDecls = '';
-    if (paramList.length > 0) varDecls += 'var ' + paramList[0] + ' = null;';
-    if (paramList.length > 1) varDecls += 'var ' + paramList[1] + ' = {status: res.status, headers: (function(h){var o={};if(h&&h.forEach){h.forEach(function(p){o[String(p[0]||"")]=String(p[1]||"")]});}return o;})(res.headers)};';
-    if (paramList.length > 2) varDecls += 'var ' + paramList[2] + ' = Anywhere.codec.utf8.decode(res.body || new Uint8Array());';
+    var paramList = params
+      .split(",")
+      .map(function (p) {
+        return p.trim();
+      })
+      .filter(function (p) {
+        return p;
+      });
+    var varDecls = "";
+    if (paramList.length > 0) varDecls += "var " + paramList[0] + " = null;";
+    if (paramList.length > 1)
+      varDecls +=
+        "var " +
+        paramList[1] +
+        ' = {status: res.status, headers: (function(h){var o={};if(h&&h.forEach){h.forEach(function(p){o[String(p[0]||"")]=String(p[1]||"");});}return o;})(res.headers)};';
+    if (paramList.length > 2)
+      varDecls +=
+        "var " +
+        paramList[2] +
+        " = Anywhere.codec.utf8.decode(res.body || new Uint8Array());";
     return varDecls;
   }
 
   // $httpClient.get/put/delete(url, function(err, resp, body) { ... })
   out = out.replace(
     /\$httpClient\.(get|put|delete)\(\s*([^,]+?)\s*,\s*function\s*\(([^)]*)\)\s*\{/g,
-    function(match, method, url, params) {
-      return 'await Anywhere.http.' + method + '(' + url + ').then(function(res) {' + buildCallbackVars(params);
-    }
+    function (match, method, url, params) {
+      return (
+        "await Anywhere.http." +
+        method +
+        "(" +
+        url +
+        ").then(function(res) {" +
+        buildCallbackVars(params)
+      );
+    },
   );
   // 箭头函数形式: $httpClient.get/put/delete(url, (err, resp, body) => {
   out = out.replace(
     /\$httpClient\.(get|put|delete)\(\s*([^,]+?)\s*,\s*\(([^)]*)\)\s*=>\s*\{/g,
-    function(match, method, url, params) {
-      return 'await Anywhere.http.' + method + '(' + url + ').then(function(res) {' + buildCallbackVars(params);
-    }
+    function (match, method, url, params) {
+      return (
+        "await Anywhere.http." +
+        method +
+        "(" +
+        url +
+        ").then(function(res) {" +
+        buildCallbackVars(params)
+      );
+    },
   );
   // 单参数箭头函数: $httpClient.get/put/delete(url, err => {
   out = out.replace(
     /\$httpClient\.(get|put|delete)\(\s*([^,]+?)\s*,\s*(\w+)\s*=>\s*\{/g,
-    function(match, method, url, paramName) {
-      return 'await Anywhere.http.' + method + '(' + url + ').then(function(res) {var ' + paramName + ' = null;';
-    }
+    function (match, method, url, paramName) {
+      return (
+        "await Anywhere.http." +
+        method +
+        "(" +
+        url +
+        ").then(function(res) {var " +
+        paramName +
+        " = null;"
+      );
+    },
   );
 
   // $httpClient.post(url, opts, function(err, resp, body) { ... })
   out = out.replace(
     /\$httpClient\.post\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,\s*function\s*\(([^)]*)\)\s*\{/g,
-    function(match, url, opts, params) {
-      return 'await Anywhere.http.post(' + url + ', ' + opts + ').then(function(res) {' + buildCallbackVars(params);
-    }
+    function (match, url, opts, params) {
+      return (
+        "await Anywhere.http.post(" +
+        url +
+        ", " +
+        opts +
+        ").then(function(res) {" +
+        buildCallbackVars(params)
+      );
+    },
   );
   // 箭头函数形式
   out = out.replace(
     /\$httpClient\.post\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,\s*\(([^)]*)\)\s*=>\s*\{/g,
-    function(match, url, opts, params) {
-      return 'await Anywhere.http.post(' + url + ', ' + opts + ').then(function(res) {' + buildCallbackVars(params);
-    }
+    function (match, url, opts, params) {
+      return (
+        "await Anywhere.http.post(" +
+        url +
+        ", " +
+        opts +
+        ").then(function(res) {" +
+        buildCallbackVars(params)
+      );
+    },
   );
   // 单参数箭头函数
   out = out.replace(
     /\$httpClient\.post\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,\s*(\w+)\s*=>\s*\{/g,
-    function(match, url, opts, paramName) {
-      return 'await Anywhere.http.post(' + url + ', ' + opts + ').then(function(res) {var ' + paramName + ' = null;';
-    }
+    function (match, url, opts, paramName) {
+      return (
+        "await Anywhere.http.post(" +
+        url +
+        ", " +
+        opts +
+        ").then(function(res) {var " +
+        paramName +
+        " = null;"
+      );
+    },
   );
 
   // $httpClient.request(opts, function(err, resp, body) { ... })
   out = out.replace(
     /\$httpClient\.request\(\s*([^,]+?)\s*,\s*function\s*\(([^)]*)\)\s*\{/g,
-    function(match, opts, params) {
-      return 'await Anywhere.http.request(' + opts + ').then(function(res) {' + buildCallbackVars(params);
-    }
+    function (match, opts, params) {
+      return (
+        "await Anywhere.http.request(" +
+        opts +
+        ").then(function(res) {" +
+        buildCallbackVars(params)
+      );
+    },
   );
   // 箭头函数形式
   out = out.replace(
     /\$httpClient\.request\(\s*([^,]+?)\s*,\s*\(([^)]*)\)\s*=>\s*\{/g,
-    function(match, opts, params) {
-      return 'await Anywhere.http.request(' + opts + ').then(function(res) {' + buildCallbackVars(params);
-    }
+    function (match, opts, params) {
+      return (
+        "await Anywhere.http.request(" +
+        opts +
+        ").then(function(res) {" +
+        buildCallbackVars(params)
+      );
+    },
   );
 
   return out;
@@ -927,76 +1275,104 @@ function rewriteHttpClientCalls(src) {
 function rewriteDoneCalls(src) {
   let out = src;
   // $done({}) → Anywhere.done()
-  out = out.replace(/\$done\(\s*\{\s*\}\s*\)/g, 'Anywhere.done()');
+  out = out.replace(/\$done\(\s*\{\s*\}\s*\)/g, "Anywhere.done()");
   // $done() → Anywhere.done()
-  out = out.replace(/\$done\(\s*\)/g, 'Anywhere.done()');
+  out = out.replace(/\$done\(\s*\)/g, "Anywhere.done()");
   // $done({body: xxx}) → ctx.body = Anywhere.codec.utf8.encode(xxx); Anywhere.done()
-  out = out.replace(/\$done\(\s*\{\s*body\s*:\s*([^}]+?)\s*\}\s*\)/g, 'ctx.body = Anywhere.codec.utf8.encode($1); Anywhere.done()');
+  out = out.replace(
+    /\$done\(\s*\{\s*body\s*:\s*([^}]+?)\s*\}\s*\)/g,
+    "ctx.body = Anywhere.codec.utf8.encode($1); Anywhere.done()",
+  );
   // $done({ body }) ES6 shorthand
-  out = out.replace(/\$done\(\s*\{\s*body\s*\}\s*\)/g, 'ctx.body = Anywhere.codec.utf8.encode(body); Anywhere.done()');
+  out = out.replace(
+    /\$done\(\s*\{\s*body\s*\}\s*\)/g,
+    "ctx.body = Anywhere.codec.utf8.encode(body); Anywhere.done()",
+  );
 
   // $done({response: {...}}) — 需要处理嵌套大括号
   // 使用标记替换法来正确匹配嵌套大括号
-  out = out.replace(/\$done\(\s*\{\s*response\s*:\s*/g, '__DONE_RESPONSE_START__');
-  out = out.replace(/__DONE_RESPONSE_START__(\{[\s\S]*?\}\s*\})\s*\)/g, function(match, responseObj) {
-    // 验证大括号是否平衡
-    var depth = 0;
-    var endIdx = -1;
-    for (var i = 0; i < responseObj.length; i++) {
-      if (responseObj[i] === '{') depth++;
-      else if (responseObj[i] === '}') depth--;
-      if (depth === 0) { endIdx = i; break; }
-    }
-    if (endIdx >= 0) {
-      var inner = responseObj.slice(0, endIdx + 1);
-      return 'Anywhere.respond(' + inner + ')';
-    }
-    return match;
-  });
+  out = out.replace(
+    /\$done\(\s*\{\s*response\s*:\s*/g,
+    "__DONE_RESPONSE_START__",
+  );
+  out = out.replace(
+    /__DONE_RESPONSE_START__(\{[\s\S]*?\}\s*\})\s*\)/g,
+    function (match, responseObj) {
+      // 验证大括号是否平衡
+      var depth = 0;
+      var endIdx = -1;
+      for (var i = 0; i < responseObj.length; i++) {
+        if (responseObj[i] === "{") depth++;
+        else if (responseObj[i] === "}") depth--;
+        if (depth === 0) {
+          endIdx = i;
+          break;
+        }
+      }
+      if (endIdx >= 0) {
+        var inner = responseObj.slice(0, endIdx + 1);
+        return "Anywhere.respond(" + inner + ")";
+      }
+      return match;
+    },
+  );
 
   // $done({...}) 其他情况 → Anywhere.done()
-  out = out.replace(/\$done\(\s*\{/g, '__DONE_OBJECT_START__{');
-  out = out.replace(/__DONE_OBJECT_START__\{[\s\S]*?\}\s*\)/g, function(match) {
-    var inner = match.slice('__DONE_OBJECT_START__'.length, -1).trim();
-    var depth = 0;
-    var balanced = true;
-    for (var i = 0; i < inner.length; i++) {
-      if (inner[i] === '{') depth++;
-      else if (inner[i] === '}') depth--;
-      if (depth < 0) { balanced = false; break; }
-    }
-    if (balanced && depth === 0) return 'Anywhere.done()';
-    return match;
-  });
+  out = out.replace(/\$done\(\s*\{/g, "__DONE_OBJECT_START__{");
+  out = out.replace(
+    /__DONE_OBJECT_START__\{[\s\S]*?\}\s*\)/g,
+    function (match) {
+      var inner = match.slice("__DONE_OBJECT_START__".length, -1).trim();
+      var depth = 0;
+      var balanced = true;
+      for (var i = 0; i < inner.length; i++) {
+        if (inner[i] === "{") depth++;
+        else if (inner[i] === "}") depth--;
+        if (depth < 0) {
+          balanced = false;
+          break;
+        }
+      }
+      if (balanced && depth === 0) return "Anywhere.done()";
+      return match;
+    },
+  );
 
   return out;
 }
 
-function wrapAsProcess(src, phase, needsAsync) {
+function wrapAsProcess(src, phase, needsAsync, argument) {
   const trimmed = src.trim();
-  const asyncKw = needsAsync ? 'async ' : '';
-  const phaseCheck = phase === 1 ? 'response' : 'request';
+  const asyncKw = needsAsync ? "async " : "";
+  const phaseCheck = phase === 1 ? "response" : "request";
 
   // 检测是否注入了 BoxJS polyfill（由 injectBoxJSPolyfill 添加的标记）
-  const hasPolyfill = trimmed.includes('_BoxJS_Env_injected');
+  const hasPolyfill = trimmed.includes("_BoxJS_Env_injected");
 
   // 局部变量映射已移至 polyfill 字符串末尾（在 globalThis.XXX 赋值之后）
   // 注意：之前在这里注入 var URLSearchParams = globalThis.URLSearchParams; 会导致
   //       赋值在 polyfill 安装之前执行，读到 undefined。
   //       现在在 polyfill 字符串中所有 globalThis.XXX 赋值之后才声明 var，顺序正确。
-  const localVarMappings = '';
+  const localVarMappings = "";
 
   // headers 预转换：将 ctx.headers（[[name, value], ...] 数组对）转换为 {name: value} 对象
   // Loon/Surge 的 $request.headers/$response.headers 是对象格式，rewriteScriptAPI 中替换为 _headersObj
   // 注意：必须在 process 函数体最开头执行，确保上游脚本使用前已初始化
-  const needsHeadersObj = trimmed.includes('_headersObj');
+  const needsHeadersObj = trimmed.includes("_headersObj");
   const headersInject = needsHeadersObj
-    ? '  var _headersObj = (function(h){var o={};if(h&&h.forEach){h.forEach(function(p){o[String(p[0]||"")]=String(p[1]||"")]});}return o;})(ctx.headers);\n'
-    : '';
+    ? '  var _headersObj = (function(h){var o={};if(h&&h.forEach){h.forEach(function(p){o[String(p[0]||"")]=String(p[1]||"");});}return o;})(ctx.headers);\n'
+    : "";
+  const argumentInject = String(argument || "").trim()
+    ? `  globalThis.$argument = ${JSON.stringify(String(argument || ""))};\n  var $argument = globalThis.$argument;\n`
+    : "";
 
   // 检测是否需要 globalThis 隔离（上游脚本可能往 globalThis 写 $loon/$environment 等）
-  const needsIsolation = trimmed.includes('$loon') || trimmed.includes('$environment') ||
-    trimmed.includes('$script') || trimmed.includes('$argument') || trimmed.includes('globalThis.$');
+  const needsIsolation =
+    trimmed.includes("$loon") ||
+    trimmed.includes("$environment") ||
+    trimmed.includes("$script") ||
+    trimmed.includes("$argument") ||
+    trimmed.includes("globalThis.$");
 
   // 隔离代码：将 _saveGlobals/_restoreGlobals 定义内联，确保在 try 块之前就可用
   // （JSCore 不会将 try 块内的 function 声明提升到外层函数作用域）
@@ -1007,33 +1383,54 @@ function wrapAsProcess(src, phase, needsAsync) {
   function _restoreGlobals(snapshot) { var keys = Object.keys(snapshot); for (var i = 0; i < keys.length; i++) { var name = keys[i]; if (typeof snapshot[name] === "undefined") delete globalThis[name]; else globalThis[name] = snapshot[name]; } }
   _saveGlobals(_globalsSnapshot);
   try {
-` : '';
+`
+    : "";
   const isoSuffix = needsIsolation
-    ? '\n  } finally { _restoreGlobals(_globalsSnapshot); }\n' : '';
+    ? "\n  } finally { _restoreGlobals(_globalsSnapshot); }\n"
+    : "";
 
   // 已有 process 函数定义时，将 polyfill 和局部变量映射注入到函数体内部
   if (/^function\s+process\s*\(\s*ctx\s*\)/m.test(trimmed)) {
     let out = trimmed;
-    if (needsAsync && !out.startsWith('async ')) out = 'async ' + out;
+    if (needsAsync && !out.startsWith("async ")) out = "async " + out;
     // 注入 headers 预转换变量（必须在最开头，polyfill 之前）
     if (headersInject) {
-      out = out.replace(/(function\s+process\s*\(\s*ctx\s*\)\s*\{)/, '$1\n' + headersInject);
+      out = out.replace(
+        /(function\s+process\s*\(\s*ctx\s*\)\s*\{)/,
+        "$1\n" + headersInject + argumentInject,
+      );
+    } else if (argumentInject) {
+      out = out.replace(
+        /(function\s+process\s*\(\s*ctx\s*\)\s*\{)/,
+        "$1\n" + argumentInject,
+      );
     }
     // 将 polyfill 代码（process 函数外部）移到 process 函数体内部
     if (hasPolyfill) {
       // 提取 polyfill 部分（从 _BoxJS_Env_injected 到 === 结束标记）
-      const polyfillMatch = out.match(/\/\/ === BoxJS Env 兼容层[\s\S]*?\/\/ === BoxJS Env 兼容层 \+ Web API Polyfill 结束 ===\n/);
-      const polyfillCode = polyfillMatch ? polyfillMatch[0] : '';
+      const polyfillMatch = out.match(
+        /\/\/ === BoxJS Env 兼容层[\s\S]*?\/\/ === BoxJS Env 兼容层 \+ Web API Polyfill 结束 ===\n/,
+      );
+      const polyfillCode = polyfillMatch ? polyfillMatch[0] : "";
       // 从原位置移除 polyfill
-      if (polyfillCode) out = out.replace(polyfillCode, '');
+      if (polyfillCode) out = out.replace(polyfillCode, "");
       // 注入到 process 函数体开头
-      const injectCode = localVarMappings + (polyfillCode ? polyfillCode.replace(/\n/g, '\n  ') : '');
-      out = out.replace(/(function\s+process\s*\(\s*ctx\s*\)\s*\{)/, '$1\n' + injectCode);
+      const injectCode =
+        localVarMappings +
+        (polyfillCode ? polyfillCode.replace(/\n/g, "\n  ") : "");
+      out = out.replace(
+        /(function\s+process\s*\(\s*ctx\s*\)\s*\{)/,
+        "$1\n" + injectCode,
+      );
     }
     if (isoPrefix) {
-      out = out.replace(/(function\s+process\s*\(\s*ctx\s*\)\s*\{)/, '$1\n' + isoPrefix);
-      const lastBrace = out.lastIndexOf('}');
-      if (lastBrace > 0) out = out.slice(0, lastBrace) + isoSuffix + out.slice(lastBrace);
+      out = out.replace(
+        /(function\s+process\s*\(\s*ctx\s*\)\s*\{)/,
+        "$1\n" + isoPrefix,
+      );
+      const lastBrace = out.lastIndexOf("}");
+      if (lastBrace > 0)
+        out = out.slice(0, lastBrace) + isoSuffix + out.slice(lastBrace);
     }
     return out;
   }
@@ -1041,40 +1438,68 @@ function wrapAsProcess(src, phase, needsAsync) {
     let out = trimmed;
     // 注入 headers 预转换变量（必须在最开头，polyfill 之前）
     if (headersInject) {
-      out = out.replace(/(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)/, '$1\n' + headersInject);
+      out = out.replace(
+        /(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)/,
+        "$1\n" + headersInject + argumentInject,
+      );
+    } else if (argumentInject) {
+      out = out.replace(
+        /(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)/,
+        "$1\n" + argumentInject,
+      );
     }
     if (hasPolyfill) {
-      const polyfillMatch = out.match(/\/\/ === BoxJS Env 兼容层[\s\S]*?\/\/ === BoxJS Env 兼容层 \+ Web API Polyfill 结束 ===\n/);
-      const polyfillCode = polyfillMatch ? polyfillMatch[0] : '';
-      if (polyfillCode) out = out.replace(polyfillCode, '');
-      const injectCode = localVarMappings + (polyfillCode ? polyfillCode.replace(/\n/g, '\n  ') : '');
-      out = out.replace(/(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)/, '$1\n' + injectCode);
+      const polyfillMatch = out.match(
+        /\/\/ === BoxJS Env 兼容层[\s\S]*?\/\/ === BoxJS Env 兼容层 \+ Web API Polyfill 结束 ===\n/,
+      );
+      const polyfillCode = polyfillMatch ? polyfillMatch[0] : "";
+      if (polyfillCode) out = out.replace(polyfillCode, "");
+      const injectCode =
+        localVarMappings +
+        (polyfillCode ? polyfillCode.replace(/\n/g, "\n  ") : "");
+      out = out.replace(
+        /(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)/,
+        "$1\n" + injectCode,
+      );
     }
     if (isoPrefix) {
-      out = out.replace(/(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)/, '$1\n' + isoPrefix);
-      const lastBrace = out.lastIndexOf('}');
-      if (lastBrace > 0) out = out.slice(0, lastBrace) + isoSuffix + out.slice(lastBrace);
+      out = out.replace(
+        /(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)/,
+        "$1\n" + isoPrefix,
+      );
+      const lastBrace = out.lastIndexOf("}");
+      if (lastBrace > 0)
+        out = out.slice(0, lastBrace) + isoSuffix + out.slice(lastBrace);
     }
     return out;
   }
   if (/^function\s+run\s*\(\s*\)/m.test(trimmed)) {
     return `${asyncKw}function process(ctx) {
   if (ctx.phase !== "${phaseCheck}") return;
-${headersInject}${localVarMappings}${isoPrefix}  try { run(); } catch (e) { Anywhere.log.warning("script error: " + e); }${isoSuffix}
+${headersInject}${argumentInject}${localVarMappings}${isoPrefix}  try { run(); } catch (e) { Anywhere.log.warning("script error: " + e); }${isoSuffix}
 }
 ${trimmed}`;
   }
-  return `${asyncKw}function process(ctx) {
-  if (ctx.phase !== "${phaseCheck}") return;
-${headersInject}${localVarMappings}${isoPrefix}  try {
-${indent(trimmed, '    ')}
-  } catch (e) { Anywhere.log.warning("script error: " + e); }${isoSuffix}
+  return `${asyncKw}
+  function process(ctx) {
+  if (ctx.phase !== "${phaseCheck}") 
+  return;
+  ${headersInject}${argumentInject}${localVarMappings}${isoPrefix}  
+  try {
+    ${indent(trimmed, "    ")}
+  } 
+  catch (e) { 
+    Anywhere.log.warning("script error: " + e); 
+  }${isoSuffix}
   Anywhere.done();
 }`;
 }
 
 function indent(s, prefix) {
-  return s.split('\n').map((l) => (l ? prefix + l : l)).join('\n');
+  return s
+    .split("\n")
+    .map((l) => (l ? prefix + l : l))
+    .join("\n");
 }
 
 function buildRedirectScript(pattern, captureURL, _status) {
@@ -1090,19 +1515,24 @@ function buildRedirectScript(pattern, captureURL, _status) {
 }
 
 function jsRegexLiteral(pattern) {
-  const escaped = pattern.replace(/\//g, '\\/');
-  return '/' + escaped + '/';
+  const escaped = pattern.replace(/\//g, "\\/");
+  return "/" + escaped + "/";
 }
 
 function jsCaptureReplace(url) {
   let buf = '"';
   let i = 0;
   while (i < url.length) {
-    if (url[i] === '$' && i + 1 < url.length && url[i + 1] >= '1' && url[i + 1] <= '9') {
+    if (
+      url[i] === "$" &&
+      i + 1 < url.length &&
+      url[i + 1] >= "1" &&
+      url[i + 1] <= "9"
+    ) {
       buf += '" + m[' + url[i + 1] + '] + "';
       i += 2;
     } else {
-      if (url[i] === '"' || url[i] === '\\') buf += '\\';
+      if (url[i] === '"' || url[i] === "\\") buf += "\\";
       buf += url[i];
       i++;
     }
@@ -1112,7 +1542,7 @@ function jsCaptureReplace(url) {
 }
 
 function wrapAsStreamScript(rewrittenSrc, phase) {
-  const phaseCheck = phase === 1 ? 'response' : 'request';
+  const phaseCheck = phase === 1 ? "response" : "request";
   const inner = extractProcessBody(rewrittenSrc) || rewrittenSrc;
   return `async function process(ctx) {
   if (ctx.phase !== "${phaseCheck}" || !ctx.body) return;
@@ -1123,7 +1553,7 @@ function wrapAsStreamScript(rewrittenSrc, phase) {
   if (!ctx.frame || !ctx.frame.end) return;
   try {
     ctx.body = Anywhere.codec.utf8.encode(ctx.state.text);
-${indent(inner, '    ')}
+${indent(inner, "    ")}
   } catch (e) { Anywhere.log.warning("stream process failed: " + e); }
   Anywhere.done();
 }`;
@@ -1131,10 +1561,10 @@ ${indent(inner, '    ')}
 
 function extractProcessBody(src) {
   const trimmed = src.trim();
-  if (!trimmed.includes('function process(ctx)')) return '';
-  const firstBrace = trimmed.indexOf('{');
-  const lastBrace = trimmed.lastIndexOf('}');
-  if (firstBrace < 0 || lastBrace < 0 || lastBrace <= firstBrace) return '';
+  if (!trimmed.includes("function process(ctx)")) return "";
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace < 0 || lastBrace < 0 || lastBrace <= firstBrace) return "";
   return trimmed.slice(firstBrace + 1, lastBrace).trim();
 }
 
@@ -1142,27 +1572,45 @@ function extractProcessBody(src) {
 
 function detectSource(content, filename) {
   const lowerName = filename.toLowerCase();
-  if (lowerName.endsWith('.plugin')) return 'loon';
-  if (lowerName.endsWith('.sgmodule')) return 'surge';
-  if (lowerName.endsWith('.conf')) return 'quantumultx';
+  if (lowerName.endsWith(".plugin")) return "loon";
+  if (lowerName.endsWith(".sgmodule")) return "surge";
+  if (lowerName.endsWith(".conf")) return "quantumultx";
   const lowerContent = content.toLowerCase();
-  if (lowerContent.includes('[url rewrite]') || lowerContent.includes('[header rewrite]') || lowerContent.includes('[map local]')) return 'surge';
-  if (lowerContent.includes('[rewrite]') || lowerContent.includes('[argument]')) return 'loon';
-  if (content.includes('[MitM]')) return 'loon';
-  if (content.includes('[MITM]')) return 'surge';
+  if (
+    lowerContent.includes("[url rewrite]") ||
+    lowerContent.includes("[header rewrite]") ||
+    lowerContent.includes("[map local]")
+  )
+    return "surge";
+  if (lowerContent.includes("[rewrite]") || lowerContent.includes("[argument]"))
+    return "loon";
+  if (content.includes("[MitM]")) return "loon";
+  if (content.includes("[MITM]")) return "surge";
   // 无段头且含 QX 行式规则特征时识别为 QuantumultX
-  if (/^\S+\s+url\s+(reject|script-response-body|script-request-body|echo-response|jsonjq-response-body|response-body|302|307)/im.test(content)) return 'quantumultx';
-  return 'loon';
+  if (
+    /^\S+\s+url\s+(reject|script-response-body|script-request-body|echo-response|jsonjq-response-body|response-body|302|307)/im.test(
+      content,
+    )
+  )
+    return "quantumultx";
+  return "loon";
 }
 
 function parseLoonRules(body) {
   const rules = [];
-  for (const line of body.split('\n')) {
+  for (const line of body.split("\n")) {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) continue;
+    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("//"))
+      continue;
     const fields = splitCSVFields(trimmed);
     if (fields.length < 2) continue;
-    const r = { raw: trimmed, type: fields[0].toUpperCase().trim(), value: fields[1].trim(), action: '', options: [] };
+    const r = {
+      raw: trimmed,
+      type: fields[0].toUpperCase().trim(),
+      value: fields[1].trim(),
+      action: "",
+      options: [],
+    };
     if (fields.length >= 3) r.action = fields[2].toUpperCase().trim();
     if (fields.length > 3) r.options = fields.slice(3);
     rules.push(r);
@@ -1174,80 +1622,118 @@ function parseLoonRewriteAction(rest) {
   const args = {};
   let [action, remain] = splitFirstWhitespace(rest);
   action = action.toLowerCase().trim();
-  if (action === 'url') { [action, remain] = splitFirstWhitespace(remain); action = action.toLowerCase().trim(); }
+  if (action === "url") {
+    [action, remain] = splitFirstWhitespace(remain);
+    action = action.toLowerCase().trim();
+  }
+  // 兼容紧贴写法：302$1$3 / 307https://... → 动作与目标 URL 之间补出空格语义
+  if (action.startsWith("302") && action.length > 3) {
+    remain = action.slice(3) + (remain ? " " + remain.trim() : "");
+    action = "302";
+  } else if (action.startsWith("307") && action.length > 3) {
+    remain = action.slice(3) + (remain ? " " + remain.trim() : "");
+    action = "307";
+  }
+  // 跳过 - / _ 占位符（部分模块写成 "pattern - reject" 或 "pattern _ reject"）
+  if (action === "-" || action === "_") {
+    [action, remain] = splitFirstWhitespace(remain);
+    action = action.toLowerCase().trim();
+  }
   switch (action) {
-    case 'reject': case 'reject-200': case 'reject-dict': case 'reject-array': case 'reject-img':
-      return { action, args, rawJS: '' };
-    case 'reject-data':
+    case "reject":
+    case "reject-200":
+    case "reject-dict":
+    case "reject-array":
+    case "reject-img":
+      return { action, args, rawJS: "" };
+    case "reject-data":
       args.data = remain.trim();
-      return { action, args, rawJS: '' };
-    case '302': case '307':
+      return { action, args, rawJS: "" };
+    case "302":
+    case "307":
       args.url = remain.trim();
-      return { action, args, rawJS: '' };
-    case 'transparent': case 'rewrite':
+      return { action, args, rawJS: "" };
+    case "transparent":
+    case "rewrite":
       args.url = remain.trim();
-      return { action, args, rawJS: '' };
-    case 'mock-response-body':
+      return { action, args, rawJS: "" };
+    case "mock-response-body":
       parseKVArgs(remain, args);
-      return { action, args, rawJS: '' };
-    case 'response-body-json-del': case 'response-body-json-add': case 'response-body-json-replace': {
+      return { action, args, rawJS: "" };
+    case "response-body-json-del":
+    case "response-body-json-add":
+    case "response-body-json-replace": {
       const tokens = splitWhitespace(remain);
       if (tokens.length >= 1) args.path = tokens[0];
-      if (tokens.length >= 2) args.value = tokens.slice(1).join(' ');
-      return { action, args, rawJS: '' };
+      if (tokens.length >= 2) args.value = tokens.slice(1).join(" ");
+      return { action, args, rawJS: "" };
     }
-    case 'response-body-json-delete-recursive': {
+    case "response-body-json-delete-recursive": {
       const tokens = splitWhitespace(remain);
       if (tokens.length >= 1) args.key = tokens[0];
-      return { action, args, rawJS: '' };
+      return { action, args, rawJS: "" };
     }
-    case 'response-body-json-replace-recursive': {
+    case "response-body-json-replace-recursive": {
       const tokens = splitWhitespace(remain);
       if (tokens.length >= 1) args.key = tokens[0];
-      if (tokens.length >= 2) args.value = tokens.slice(1).join(' ');
-      return { action, args, rawJS: '' };
+      if (tokens.length >= 2) args.value = tokens.slice(1).join(" ");
+      return { action, args, rawJS: "" };
     }
-    case 'response-body-json-remove-where-key-exists': {
+    case "response-body-json-remove-where-key-exists": {
       const tokens = splitWhitespace(remain);
       if (tokens.length >= 1) args.path = tokens[0];
       if (tokens.length >= 2) args.key = tokens[1];
-      return { action, args, rawJS: '' };
+      return { action, args, rawJS: "" };
     }
-    case 'response-body-json-remove-where-field-in': {
+    case "response-body-json-remove-where-field-in": {
       const tokens = splitWhitespace(remain);
       if (tokens.length >= 1) args.path = tokens[0];
       if (tokens.length >= 2) args.field = tokens[1];
-      if (tokens.length >= 3) args.values = tokens.slice(2).join(' ');
-      return { action, args, rawJS: '' };
+      if (tokens.length >= 3) args.values = tokens.slice(2).join(" ");
+      return { action, args, rawJS: "" };
     }
-    case 'request-header': case 'request-body': case 'response-body':
+    case "request-header":
+    case "request-body":
+    case "response-body":
       return { action, args, rawJS: remain.trim() };
-    case 'header-del':
+    case "header-del":
       args.header = remain.trim();
-      return { action, args, rawJS: '' };
-    case 'response-body-replace-regex': {
+      return { action, args, rawJS: "" };
+    case "response-body-replace-regex": {
       const [search, repl] = splitFirstWhitespace(remain);
       args.search = trimQuotes(search);
       args.replacement = trimQuotes(repl);
-      return { action, args, rawJS: '' };
+      return { action, args, rawJS: "" };
     }
     default:
       args._raw = remain.trim();
-      return { action, args, rawJS: '' };
+      return { action, args, rawJS: "" };
   }
 }
 
 function parseLoonRewrites(body) {
   const rules = [];
-  for (const line of body.split('\n')) {
+  for (const line of body.split("\n")) {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) continue;
-    const r = { raw: trimmed, pattern: '', action: '', args: {}, rawJS: '' };
-    const [pattern, rest] = splitFirstWhitespace(trimmed);
+    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("//"))
+      continue;
+    const r = {
+      raw: trimmed,
+      pattern: "",
+      action: "",
+      args: {},
+      rawJS: "",
+    };
+    const [pattern, rest] = splitRewritePatternAndRest(trimmed);
     r.pattern = pattern;
-    if (!rest) { rules.push(r); continue; }
+    if (!rest) {
+      rules.push(r);
+      continue;
+    }
     const { action, args, rawJS } = parseLoonRewriteAction(rest);
-    r.action = action; r.args = args; r.rawJS = rawJS;
+    r.action = action;
+    r.args = args;
+    r.rawJS = rawJS;
     rules.push(r);
   }
   return rules;
@@ -1257,30 +1743,57 @@ function parseLoonScriptLine(line) {
   const [phase, rest] = splitFirstWhitespace(line);
   if (!rest) return null;
   const [pattern, params] = splitFirstWhitespace(rest);
-  const s = { raw: line, pattern, phase: 0, scriptPath: '', requiresBody: false, binaryBody: false, argument: '', tag: '', maxSize: 0, engine: '' };
+  const s = {
+    raw: line,
+    pattern,
+    phase: 0,
+    scriptPath: "",
+    requiresBody: false,
+    binaryBody: false,
+    argument: "",
+    tag: "",
+    maxSize: 0,
+    engine: "",
+  };
   switch (phase.toLowerCase().trim()) {
-    case 'http-request': s.phase = 0; break;
-    case 'http-response': s.phase = 1; break;
-    case 'cron': return null;
-    default: return null;
+    case "http-request":
+      s.phase = 0;
+      break;
+    case "http-response":
+      s.phase = 1;
+      break;
+    case "cron":
+      return null;
+    default:
+      return null;
   }
   const tokens = splitCSVFields(params);
   const { args } = parseKeyValueList(tokens);
-  s.scriptPath = args['script-path'] || '';
-  s.tag = args.tag || '';
-  s.argument = args.argument || '';
-  s.engine = args.engine || '';
-  if (args['requires-body']) s.requiresBody = args['requires-body'].toLowerCase() === 'true' || args['requires-body'] === '1';
-  if (args['binary-body-mode']) s.binaryBody = args['binary-body-mode'].toLowerCase() === 'true' || args['binary-body-mode'] === '1';
-  if (args['max-size']) { const n = parseInt(args['max-size'], 10); if (!isNaN(n)) s.maxSize = n; }
+  s.scriptPath = args["script-path"] || "";
+  s.tag = args.tag || "";
+  s.argument = args.argument || "";
+  s.engine = args.engine || "";
+  if (args["requires-body"])
+    s.requiresBody =
+      args["requires-body"].toLowerCase() === "true" ||
+      args["requires-body"] === "1";
+  if (args["binary-body-mode"])
+    s.binaryBody =
+      args["binary-body-mode"].toLowerCase() === "true" ||
+      args["binary-body-mode"] === "1";
+  if (args["max-size"]) {
+    const n = parseInt(args["max-size"], 10);
+    if (!isNaN(n)) s.maxSize = n;
+  }
   return s;
 }
 
 function parseLoonScripts(body) {
   const scripts = [];
-  for (const line of body.split('\n')) {
+  for (const line of body.split("\n")) {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) continue;
+    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("//"))
+      continue;
     const s = parseLoonScriptLine(trimmed);
     if (s) scripts.push(s);
   }
@@ -1289,33 +1802,54 @@ function parseLoonScripts(body) {
 
 function parseLoonArguments(body) {
   const args = [];
-  for (const line of body.split('\n')) {
+  for (const line of body.split("\n")) {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) continue;
-    const idx = trimmed.indexOf('=');
+    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("//"))
+      continue;
+    const idx = trimmed.indexOf("=");
     if (idx <= 0) continue;
-    args.push({ key: trimmed.slice(0, idx).trim(), value: trimmed.slice(idx + 1).trim(), raw: trimmed });
+    args.push({
+      key: trimmed.slice(0, idx).trim(),
+      value: trimmed.slice(idx + 1).trim(),
+      raw: trimmed,
+    });
   }
   return args;
 }
 
 function parseLoonMitM(body) {
-  for (const line of body.split('\n')) {
+  for (const line of body.split("\n")) {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const idx = trimmed.indexOf('=');
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const idx = trimmed.indexOf("=");
     if (idx <= 0) continue;
     const key = trimmed.slice(0, idx).trim().toLowerCase();
-    if (key === 'hostname') return normalizeHostnames(trimmed.slice(idx + 1));
+    if (key === "hostname") return normalizeHostnames(trimmed.slice(idx + 1));
   }
   return [];
 }
 
 function parseLoon(content) {
-  const m = { source: 'loon', name: '', desc: '', author: '', homepage: '', date: '', rawMeta: {}, hostnames: [], contentType: '', rules: [], rewrites: [], scripts: [], headerRWs: [], mapLocals: [], arguments: [] };
+  const m = {
+    source: "loon",
+    name: "",
+    desc: "",
+    author: "",
+    homepage: "",
+    date: "",
+    rawMeta: {},
+    hostnames: [],
+    contentType: "",
+    rules: [],
+    rewrites: [],
+    scripts: [],
+    headerRWs: [],
+    mapLocals: [],
+    arguments: [],
+  };
   for (const sec of splitSections(content)) {
     switch (sec.name) {
-      case '__meta__': {
+      case "__meta__": {
         const meta = parseMeta(sec.body);
         m.rawMeta = meta;
         if (meta.name) m.name = meta.name;
@@ -1325,11 +1859,21 @@ function parseLoon(content) {
         if (meta.date) m.date = meta.date;
         break;
       }
-      case 'Rule': m.rules.push(...parseLoonRules(sec.body)); break;
-      case 'Rewrite': m.rewrites.push(...parseLoonRewrites(sec.body)); break;
-      case 'Script': m.scripts.push(...parseLoonScripts(sec.body)); break;
-      case 'Argument': m.arguments.push(...parseLoonArguments(sec.body)); break;
-      case 'MitM': m.hostnames.push(...parseLoonMitM(sec.body)); break;
+      case "Rule":
+        m.rules.push(...parseLoonRules(sec.body));
+        break;
+      case "Rewrite":
+        m.rewrites.push(...parseLoonRewrites(sec.body));
+        break;
+      case "Script":
+        m.scripts.push(...parseLoonScripts(sec.body));
+        break;
+      case "Argument":
+        m.arguments.push(...parseLoonArguments(sec.body));
+        break;
+      case "MitM":
+        m.hostnames.push(...parseLoonMitM(sec.body));
+        break;
     }
   }
   return m;
@@ -1339,66 +1883,159 @@ function parseSurgeURLRewriteAction(rest) {
   const args = {};
   let [action, remain] = splitFirstWhitespace(rest);
   action = action.toLowerCase().trim();
+  // 兼容紧贴写法：302$1$3 / 307https://... → 动作与目标 URL 之间补出空格语义
+  if (action.startsWith("302") && action.length > 3) {
+    remain = action.slice(3) + (remain ? " " + remain.trim() : "");
+    action = "302";
+  } else if (action.startsWith("307") && action.length > 3) {
+    remain = action.slice(3) + (remain ? " " + remain.trim() : "");
+    action = "307";
+  }
+  // 跳过 - / _ 占位符（部分模块写成 "pattern - reject" 或 "pattern _ reject"）
+  if (action === "-" || action === "_") {
+    [action, remain] = splitFirstWhitespace(remain);
+    action = action.toLowerCase().trim();
+  }
   switch (action) {
-    case 'reject': case 'reject-200': case 'reject-dict': case 'reject-array': case 'reject-img':
-      return { action, args, rawJS: '' };
-    case '302': case '307':
+    case "reject":
+    case "reject-200":
+    case "reject-dict":
+    case "reject-array":
+    case "reject-img":
+      return { action, args, rawJS: "" };
+    case "302":
+    case "307":
       args.url = remain.trim();
-      return { action, args, rawJS: '' };
-    case '_request-header': case '_request-body': case '_response-body':
+      return { action, args, rawJS: "" };
+    case "_request-header":
+    case "_request-body":
+    case "_response-body":
       return { action, args, rawJS: remain.trim() };
-    case '_header-del':
+    case "_header-del":
       args.header = remain.trim();
-      return { action: 'header-del', args, rawJS: '' };
+      return { action: "header-del", args, rawJS: "" };
     default: {
       // Surge [URL Rewrite] 中无动作前缀的纯 URL 替换是 transparent rewrite
       const trimmedRemain = remain.trim();
-      if (trimmedRemain.startsWith('http://') || trimmedRemain.startsWith('https://')) {
+      if (
+        trimmedRemain.startsWith("http://") ||
+        trimmedRemain.startsWith("https://")
+      ) {
         args.url = trimmedRemain;
-        return { action: 'transparent', args, rawJS: '' };
+        return { action: "transparent", args, rawJS: "" };
       }
       args._raw = trimmedRemain;
-      return { action, args, rawJS: '' };
+      return { action, args, rawJS: "" };
     }
   }
 }
 
 function parseSurgeURLRewrites(body) {
   const rules = [];
-  for (const line of body.split('\n')) {
+  for (const line of body.split("\n")) {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) continue;
-    const r = { raw: trimmed, pattern: '', action: '', args: {}, rawJS: '' };
-    const [pattern, rest] = splitFirstWhitespace(trimmed);
+    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("//"))
+      continue;
+    const r = {
+      raw: trimmed,
+      pattern: "",
+      action: "",
+      args: {},
+      rawJS: "",
+    };
+    const [pattern, rest] = splitRewritePatternAndRest(trimmed);
     r.pattern = pattern;
-    if (!rest) { rules.push(r); continue; }
+    if (!rest) {
+      rules.push(r);
+      continue;
+    }
     const { action, args, rawJS } = parseSurgeURLRewriteAction(rest);
-    r.action = action; r.args = args; r.rawJS = rawJS;
+    r.action = action;
+    r.args = args;
+    r.rawJS = rawJS;
     rules.push(r);
   }
   return rules;
 }
 
+function splitRewritePatternAndRest(line) {
+  const [pattern, rest] = splitFirstWhitespace(line);
+  if (rest) return [pattern, rest];
+  for (const marker of [
+    "-302",
+    "-307",
+    "_302",
+    "_307",
+    "-reject-200",
+    "_reject-200",
+    "-reject-dict",
+    "_reject-dict",
+    "-reject-array",
+    "_reject-array",
+    "-reject-img",
+    "_reject-img",
+    "-reject",
+    "_reject",
+  ]) {
+    const idx = line.toLowerCase().lastIndexOf(marker);
+    if (
+      idx > 0 &&
+      isTightRewriteActionSuffix(line.slice(idx + marker.length), marker)
+    ) {
+      return [line.slice(0, idx).trim(), line.slice(idx + 1).trim()];
+    }
+  }
+  return [pattern, rest];
+}
+
+function isTightRewriteActionSuffix(suffix, marker) {
+  const action = marker.replace(/^[-_]/, "");
+  suffix = suffix.trim();
+  if (action.startsWith("reject")) return suffix === "";
+  if (action === "302" || action === "307") {
+    return (
+      suffix !== "" &&
+      (suffix.startsWith("$") ||
+        suffix.startsWith("http://") ||
+        suffix.startsWith("https://"))
+    );
+  }
+  return false;
+}
+
 function parseSurgeHeaderRewrites(body) {
   const rules = [];
-  for (const line of body.split('\n')) {
+  for (const line of body.split("\n")) {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) continue;
-    const r = { raw: trimmed, pattern: '', phase: 0, op: '', name: '', value: '' };
+    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("//"))
+      continue;
+    const r = {
+      raw: trimmed,
+      pattern: "",
+      phase: 0,
+      op: "",
+      name: "",
+      value: "",
+    };
     const [pattern, rest] = splitFirstWhitespace(trimmed);
     r.pattern = pattern;
     if (!rest) continue;
     const [target, rest2] = splitFirstWhitespace(rest);
     switch (target.toLowerCase().trim()) {
-      case 'request-header': r.phase = 0; break;
-      case 'response-header': r.phase = 1; break;
-      default: continue;
+      case "request-header":
+        r.phase = 0;
+        break;
+      case "response-header":
+        r.phase = 1;
+        break;
+      default:
+        continue;
     }
     const [op, rest3] = splitFirstWhitespace(rest2);
     r.op = op.toLowerCase().trim();
     const tokens = splitWhitespace(rest3);
     if (tokens.length >= 1) r.name = tokens[0];
-    if (tokens.length >= 2) r.value = tokens.slice(1).join(' ');
+    if (tokens.length >= 2) r.value = tokens.slice(1).join(" ");
     rules.push(r);
   }
   return rules;
@@ -1406,20 +2043,21 @@ function parseSurgeHeaderRewrites(body) {
 
 function parseSurgeMapLocals(body) {
   const rules = [];
-  for (const line of body.split('\n')) {
+  for (const line of body.split("\n")) {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) continue;
-    const r = { raw: trimmed, pattern: '', dataURL: '', header: '' };
+    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("//"))
+      continue;
+    const r = { raw: trimmed, pattern: "", dataURL: "", header: "" };
     const [pattern, rest] = splitFirstWhitespace(trimmed);
     r.pattern = pattern;
     const tokens = tokenizeKV(rest);
     for (const t of tokens) {
-      const idx = t.indexOf('=');
+      const idx = t.indexOf("=");
       if (idx <= 0) continue;
       const key = t.slice(0, idx).trim().toLowerCase();
       const val = trimQuotes(t.slice(idx + 1));
-      if (key === 'data') r.dataURL = val;
-      else if (key === 'header') r.header = val;
+      if (key === "data") r.dataURL = val;
+      else if (key === "header") r.header = val;
     }
     rules.push(r);
   }
@@ -1427,29 +2065,127 @@ function parseSurgeMapLocals(body) {
 }
 
 function parseSurgeScriptLine(line) {
-  const idx = line.indexOf('=');
+  const idx = line.indexOf("=");
   if (idx <= 0) return null;
   const params = line.slice(idx + 1).trim();
   const tokens = splitCSVFields(params);
   const { args } = parseKeyValueList(tokens);
-  const s = { raw: line, pattern: args.pattern || '', phase: 0, scriptPath: args['script-path'] || '', requiresBody: false, binaryBody: false, argument: args.argument || '', tag: args.tag || '', maxSize: 0, engine: args.engine || '' };
-  switch ((args.type || '').toLowerCase().trim()) {
-    case 'http-request': s.phase = 0; break;
-    case 'http-response': s.phase = 1; break;
-    case 'cron': return null;
-    default: return null;
+  if (!args["script-path"]) {
+    // 兼容混合写法：type=http-response,pattern=... url script-response-header <script-url>
+    // 这类规则本质上是 QX/Loon 的 url script-* 语法混入 Surge 模块中，需归一化为 ScriptRule。
+    const mixed = parseMixedURLScriptParams(args, line);
+    if (mixed) return mixed;
   }
-  if (args['requires-body']) s.requiresBody = args['requires-body'] === '1' || args['requires-body'].toLowerCase() === 'true';
-  if (args['binary-body-mode']) s.binaryBody = args['binary-body-mode'] === '1' || args['binary-body-mode'].toLowerCase() === 'true';
-  if (args['max-size']) { const n = parseInt(args['max-size'], 10); if (!isNaN(n)) s.maxSize = n; }
+  const s = {
+    raw: line,
+    pattern: args.pattern || "",
+    phase: 0,
+    scriptPath: args["script-path"] || "",
+    requiresBody: false,
+    binaryBody: false,
+    argument: args.argument || "",
+    tag: args.tag || "",
+    maxSize: 0,
+    engine: args.engine || "",
+  };
+  switch ((args.type || "").toLowerCase().trim()) {
+    case "http-request":
+      s.phase = 0;
+      break;
+    case "http-response":
+      s.phase = 1;
+      break;
+    case "cron":
+      return null;
+    default:
+      return null;
+  }
+  if (args["requires-body"])
+    s.requiresBody =
+      args["requires-body"] === "1" ||
+      args["requires-body"].toLowerCase() === "true";
+  if (args["binary-body-mode"])
+    s.binaryBody =
+      args["binary-body-mode"] === "1" ||
+      args["binary-body-mode"].toLowerCase() === "true";
+  if (args["max-size"]) {
+    const n = parseInt(args["max-size"], 10);
+    if (!isNaN(n)) s.maxSize = n;
+  }
   return s;
+}
+
+function parseMixedURLScriptParams(args, raw) {
+  const patternValue = String(args.pattern || "").trim();
+  const lower = patternValue.toLowerCase();
+  const marker = " url ";
+  const idx = lower.indexOf(marker);
+  if (idx < 0) return null;
+  const pattern = patternValue.slice(0, idx).trim();
+  const right = patternValue.slice(idx + marker.length).trim();
+  if (!String(args.type || "").trim() || !String(args.pattern || "").trim())
+    return null;
+  const tokens = splitWhitespace(right);
+  if (tokens.length < 2) return null;
+  const action = tokens[0].toLowerCase().trim();
+  const parsedScript = splitScriptPathAndTrailingArgs(tokens[1] || "");
+  const scriptPath = parsedScript.scriptPath;
+  const trailingTokens = parsedScript.trailingArgs.slice();
+  for (const token of tokens.slice(2)) {
+    if (token.includes("=")) trailingTokens.push(token);
+  }
+  if (trailingTokens.length) {
+    const extra = parseKeyValueList(trailingTokens).args;
+    Object.assign(args, extra);
+  }
+  if (!scriptPath) return null;
+  const s = {
+    raw,
+    pattern,
+    phase: 0,
+    scriptPath,
+    requiresBody:
+      args["requires-body"] === "1" ||
+      String(args["requires-body"] || "").toLowerCase() === "true",
+    binaryBody:
+      args["binary-body-mode"] === "1" ||
+      String(args["binary-body-mode"] || "").toLowerCase() === "true",
+    argument: args.argument || "",
+    tag: args.tag || "",
+    maxSize: 0,
+    engine: args.engine || "",
+  };
+  if (args["max-size"]) {
+    const n = parseInt(args["max-size"], 10);
+    if (!isNaN(n)) s.maxSize = n;
+  }
+  if (action === "script-request-body" || action === "script-request-header") {
+    s.phase = 0;
+    return s;
+  }
+  if (
+    action === "script-response-body" ||
+    action === "script-response-header" ||
+    action === "script-analyze-echo-response"
+  ) {
+    s.phase = 1;
+    return s;
+  }
+  return null;
+}
+
+function splitScriptPathAndTrailingArgs(raw) {
+  const parts = splitCSVFields(String(raw || "").trim());
+  if (!parts.length) return { scriptPath: "", trailingArgs: [] };
+  return { scriptPath: parts[0].trim(), trailingArgs: parts.slice(1) };
 }
 
 function parseSurgeScripts(body) {
   const scripts = [];
-  for (const line of body.split('\n')) {
+  for (const line of body.split("\n")) {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) continue;
+    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("//"))
+      continue;
     const s = parseSurgeScriptLine(trimmed);
     if (s) scripts.push(s);
   }
@@ -1457,22 +2193,38 @@ function parseSurgeScripts(body) {
 }
 
 function parseSurgeMITM(body) {
-  for (const line of body.split('\n')) {
+  for (const line of body.split("\n")) {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const idx = trimmed.indexOf('=');
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const idx = trimmed.indexOf("=");
     if (idx <= 0) continue;
     const key = trimmed.slice(0, idx).trim().toLowerCase();
-    if (key === 'hostname') return normalizeHostnames(trimmed.slice(idx + 1));
+    if (key === "hostname") return normalizeHostnames(trimmed.slice(idx + 1));
   }
   return [];
 }
 
 function parseSurge(content) {
-  const m = { source: 'surge', name: '', desc: '', author: '', homepage: '', date: '', rawMeta: {}, hostnames: [], contentType: '', rules: [], rewrites: [], scripts: [], headerRWs: [], mapLocals: [], arguments: [] };
+  const m = {
+    source: "surge",
+    name: "",
+    desc: "",
+    author: "",
+    homepage: "",
+    date: "",
+    rawMeta: {},
+    hostnames: [],
+    contentType: "",
+    rules: [],
+    rewrites: [],
+    scripts: [],
+    headerRWs: [],
+    mapLocals: [],
+    arguments: [],
+  };
   for (const sec of splitSections(content)) {
     switch (sec.name) {
-      case '__meta__': {
+      case "__meta__": {
         const meta = parseMeta(sec.body);
         m.rawMeta = meta;
         if (meta.name) m.name = meta.name;
@@ -1482,38 +2234,66 @@ function parseSurge(content) {
         if (meta.date) m.date = meta.date;
         break;
       }
-      case 'Rule': m.rules.push(...parseLoonRules(sec.body)); break;
-      case 'URL Rewrite': m.rewrites.push(...parseSurgeURLRewrites(sec.body)); break;
-      case 'Header Rewrite': m.headerRWs.push(...parseSurgeHeaderRewrites(sec.body)); break;
-      case 'Map Local': m.mapLocals.push(...parseSurgeMapLocals(sec.body)); break;
-      case 'Script': m.scripts.push(...parseSurgeScripts(sec.body)); break;
-      case 'MITM': m.hostnames.push(...parseSurgeMITM(sec.body)); break;
+      case "Rule":
+        m.rules.push(...parseLoonRules(sec.body));
+        break;
+      case "URL Rewrite":
+        m.rewrites.push(...parseSurgeURLRewrites(sec.body));
+        break;
+      case "Header Rewrite":
+        m.headerRWs.push(...parseSurgeHeaderRewrites(sec.body));
+        break;
+      case "Map Local":
+        m.mapLocals.push(...parseSurgeMapLocals(sec.body));
+        break;
+      case "Script":
+        m.scripts.push(...parseSurgeScripts(sec.body));
+        break;
+      case "MITM":
+        m.hostnames.push(...parseSurgeMITM(sec.body));
+        break;
     }
   }
   return m;
 }
 
 function parseQuantumultX(content) {
-  const m = { source: 'quantumultx', name: '', desc: '', author: '', homepage: '', date: '', rawMeta: {}, hostnames: [], contentType: '', rules: [], rewrites: [], scripts: [], headerRWs: [], mapLocals: [], arguments: [] };
+  const m = {
+    source: "quantumultx",
+    name: "",
+    desc: "",
+    author: "",
+    homepage: "",
+    date: "",
+    rawMeta: {},
+    hostnames: [],
+    contentType: "",
+    rules: [],
+    rewrites: [],
+    scripts: [],
+    headerRWs: [],
+    mapLocals: [],
+    arguments: [],
+  };
   applyUserScriptMeta(m, content);
 
-  const rawLines = content.split('\n');
+  const rawLines = content.split("\n");
   const hostnames = [];
 
   // 第一遍：提取 hostname
   for (let i = 0; i < rawLines.length; i++) {
     const line = rawLines[i].trim();
-    if (line === '') continue;
+    if (line === "") continue;
     const hs = extractQXHostnameValue(line);
-    if (hs !== '') {
+    if (hs !== "") {
       hostnames.push(...normalizeHostnames(hs));
       continue;
     }
     // 注释行后可能紧跟 hostname
-    if (line.startsWith('#') || line.startsWith('//')) {
-      const next = (rawLines[i + 1] || '').trim();
+    if (line.startsWith("#") || line.startsWith("//")) {
+      const next = (rawLines[i + 1] || "").trim();
       const nhs = extractQXHostnameValue(next);
-      if (nhs !== '') hostnames.push(...normalizeHostnames(nhs));
+      if (nhs !== "") hostnames.push(...normalizeHostnames(nhs));
     }
   }
   m.hostnames = dedupStrings(hostnames);
@@ -1521,16 +2301,16 @@ function parseQuantumultX(content) {
   // 第二遍：解析行式规则
   for (const raw of rawLines) {
     const line = raw.trim();
-    if (line === '' || line.startsWith('#') || line.startsWith('//')) continue;
-    if (line.startsWith('#!')) continue;
-    if (extractQXHostnameValue(line) !== '') continue;
-    if (line.startsWith('[') && line.endsWith(']')) continue;
+    if (line === "" || line.startsWith("#") || line.startsWith("//")) continue;
+    if (line.startsWith("#!")) continue;
+    if (extractQXHostnameValue(line) !== "") continue;
+    if (line.startsWith("[") && line.endsWith("]")) continue;
 
     const rule = parseQuantumultXLine(line);
     if (rule) {
-      if (rule.kind === 'rewrite') {
+      if (rule.kind === "rewrite") {
         m.rewrites.push(rule.rewrite);
-      } else if (rule.kind === 'script') {
+      } else if (rule.kind === "script") {
         m.scripts.push(rule.script);
       }
       continue;
@@ -1544,15 +2324,18 @@ function parseQuantumultX(content) {
 }
 
 function applyUserScriptMeta(m, content) {
-  const lines = content.split('\n');
+  const lines = content.split("\n");
   let inBlock = false;
   for (const raw of lines) {
     const line = raw.trim();
-    if (line === '// ==UserScript==') { inBlock = true; continue; }
-    if (line === '// ==/UserScript==') break;
+    if (line === "// ==UserScript==") {
+      inBlock = true;
+      continue;
+    }
+    if (line === "// ==/UserScript==") break;
     if (!inBlock) continue;
-    if (!line.startsWith('// @')) continue;
-    const rest = line.slice('// @'.length).trim();
+    if (!line.startsWith("// @")) continue;
+    const rest = line.slice("// @".length).trim();
     const idx = rest.search(/\s/);
     if (idx <= 0) continue;
     const key = rest.slice(0, idx).trim();
@@ -1560,23 +2343,25 @@ function applyUserScriptMeta(m, content) {
     if (!key || !val) continue;
     m.rawMeta[key] = val;
     const lk = key.toLowerCase();
-    if (lk === 'scriptname' && !m.name) m.name = val;
-    else if (lk === 'author' && !m.author) m.author = val;
-    else if ((lk === 'function' || lk === 'description') && !m.desc) m.desc = val;
-    else if (lk === 'updatetime' && !m.date) m.date = val;
-    else if ((lk === 'homepage' || lk === 'homepageurl') && !m.homepage) m.homepage = val;
+    if (lk === "scriptname" && !m.name) m.name = val;
+    else if (lk === "author" && !m.author) m.author = val;
+    else if ((lk === "function" || lk === "description") && !m.desc)
+      m.desc = val;
+    else if (lk === "updatetime" && !m.date) m.date = val;
+    else if ((lk === "homepage" || lk === "homepageurl") && !m.homepage)
+      m.homepage = val;
   }
 }
 
 function extractQXHostnameValue(line) {
-  if (!line) return '';
+  if (!line) return "";
   const lower = line.toLowerCase();
-  const idx = lower.indexOf('hostname');
-  if (idx < 0) return '';
-  let rest = line.slice(idx + 'hostname'.length);
-  rest = rest.replace(/^[ \t]+/, '');
-  if (!rest || rest[0] !== '=') return '';
-  rest = rest.slice(1).replace(/^[ \t]+/, '');
+  const idx = lower.indexOf("hostname");
+  if (idx < 0) return "";
+  let rest = line.slice(idx + "hostname".length);
+  rest = rest.replace(/^[ \t]+/, "");
+  if (!rest || rest[0] !== "=") return "";
+  rest = rest.slice(1).replace(/^[ \t]+/, "");
   return rest;
 }
 
@@ -1585,62 +2370,100 @@ function parseQuantumultXLine(line) {
   const tokens = splitQXTokens(line);
   if (tokens.length < 3) return null;
   const pattern = tokens[0];
-  if (tokens[1].toLowerCase() !== 'url') return null;
+  if (tokens[1].toLowerCase() !== "url") return null;
   const action = tokens[2].toLowerCase();
 
   // 脚本类
-  if (action.startsWith('script-') || action === 'script-analyze-echo-response') {
+  if (
+    action.startsWith("script-") ||
+    action === "script-analyze-echo-response"
+  ) {
     let phase = 1;
-    if (action === 'script-request-body' || action === 'script-request-header') phase = 0;
-    const scriptPath = tokens[3] || '';
+    if (action === "script-request-body" || action === "script-request-header")
+      phase = 0;
+    const scriptPath = tokens[3] || "";
     if (!scriptPath) return null;
-    return { kind: 'script', script: { raw: line, pattern, phase, scriptPath, requiresBody: false, binaryBody: false, argument: '', tag: '', maxSize: 0, engine: '' } };
+    return {
+      kind: "script",
+      script: {
+        raw: line,
+        pattern,
+        phase,
+        scriptPath,
+        requiresBody: false,
+        binaryBody: false,
+        argument: "",
+        tag: "",
+        maxSize: 0,
+        engine: "",
+      },
+    };
   }
 
   // echo-response / jsonjq-response-body / response-body 双 url 标记
-  if (action === 'echo-response') {
-    const r = { raw: line, pattern, action, args: {}, rawJS: '' };
-    if (tokens.length >= 4) r.args['content-type'] = tokens[3];
+  if (action === "echo-response") {
+    const r = { raw: line, pattern, action, args: {}, rawJS: "" };
+    if (tokens.length >= 4) r.args["content-type"] = tokens[3];
     if (tokens.length >= 7) {
-      let body = tokens.slice(6).join(' ');
-      if (body.startsWith('body ')) body = body.slice(5);
+      let body = tokens.slice(6).join(" ");
+      if (body.startsWith("body ")) body = body.slice(5);
       r.args.body = body;
     }
-    return { kind: 'rewrite', rewrite: r };
+    return { kind: "rewrite", rewrite: r };
   }
-  if (action === 'response-body') {
-    const r = { raw: line, pattern, action, args: {}, rawJS: '' };
+  if (action === "response-body") {
+    const r = { raw: line, pattern, action, args: {}, rawJS: "" };
     if (tokens.length >= 4) r.args.search = tokens[3];
     if (tokens.length >= 7) r.args.replacement = tokens[6];
-    return { kind: 'rewrite', rewrite: r };
+    return { kind: "rewrite", rewrite: r };
   }
-  if (action === 'jsonjq-response-body') {
-    const r = { raw: line, pattern, action, args: {}, rawJS: '' };
-    if (tokens.length >= 4) r.args.jq = trimQuotes(tokens.slice(3).join(' '));
-    return { kind: 'rewrite', rewrite: r };
+  if (action === "jsonjq-response-body") {
+    const r = { raw: line, pattern, action, args: {}, rawJS: "" };
+    if (tokens.length >= 4) r.args.jq = trimQuotes(tokens.slice(3).join(" "));
+    return { kind: "rewrite", rewrite: r };
   }
 
   // reject / 302 等：复用 Loon rewrite action 解析（去掉 url token 后的 rest）
-  const rest = tokens.slice(2).join(' ');
+  const rest = tokens.slice(2).join(" ");
   const parsed = parseLoonRewriteAction(rest);
-  const r = { raw: line, pattern, action: parsed.action, args: parsed.args, rawJS: parsed.rawJS };
+  const r = {
+    raw: line,
+    pattern,
+    action: parsed.action,
+    args: parsed.args,
+    rawJS: parsed.rawJS,
+  };
   // Loon 解析器会把 302 的 url 放到 args.url，与 QX 一致
-  return { kind: 'rewrite', rewrite: r };
+  return { kind: "rewrite", rewrite: r };
 }
 
 function splitQXTokens(line) {
   const tokens = [];
-  let buf = '';
+  let buf = "";
   let inSingle = false;
   let inDouble = false;
   for (let i = 0; i < line.length; i++) {
     const c = line[i];
-    if (inSingle) { buf += c; if (c === "'") inSingle = false; }
-    else if (inDouble) { buf += c; if (c === '"') inDouble = false; }
-    else if (c === "'") { inSingle = true; buf += c; }
-    else if (c === '"') { inDouble = true; buf += c; }
-    else if (c === ' ' || c === '\t') { if (buf) { tokens.push(buf); buf = ''; } }
-    else { buf += c; }
+    if (inSingle) {
+      buf += c;
+      if (c === "'") inSingle = false;
+    } else if (inDouble) {
+      buf += c;
+      if (c === '"') inDouble = false;
+    } else if (c === "'") {
+      inSingle = true;
+      buf += c;
+    } else if (c === '"') {
+      inDouble = true;
+      buf += c;
+    } else if (c === " " || c === "\t") {
+      if (buf) {
+        tokens.push(buf);
+        buf = "";
+      }
+    } else {
+      buf += c;
+    }
   }
   if (buf) tokens.push(buf);
   return tokens;
@@ -1650,38 +2473,70 @@ function splitQXTokens(line) {
 // 格式：TYPE,value,action[,options...]，例如 DOMAIN-SUFFIX,example.com,DIRECT。
 // 不是路由规则时返回 null。
 function parseQXRoutingRule(line) {
-  if (line[0] === '^') return null;
+  if (line[0] === "^") return null;
   var fields = splitCSVFields(line);
   if (fields.length < 3) return null;
   var ruleType = fields[0].toUpperCase().trim();
-  var validTypes = ['DOMAIN', 'DOMAIN-SUFFIX', 'DOMAIN-KEYWORD', 'DOMAIN-SET', 'RULE-SET',
-    'IP-CIDR', 'IP-CIDR6', 'IP6-CIDR', 'GEOIP', 'USER-AGENT',
-    'DEST-PORT', 'SRC-PORT', 'SRC-IP', 'SRC-IP-CIDR', 'PROCESS-NAME',
-    'SUBNET', 'CELLULAR-RADIO'];
+  var validTypes = [
+    "DOMAIN",
+    "DOMAIN-SUFFIX",
+    "DOMAIN-KEYWORD",
+    "DOMAIN-SET",
+    "RULE-SET",
+    "IP-CIDR",
+    "IP-CIDR6",
+    "IP6-CIDR",
+    "GEOIP",
+    "USER-AGENT",
+    "DEST-PORT",
+    "SRC-PORT",
+    "SRC-IP",
+    "SRC-IP-CIDR",
+    "PROCESS-NAME",
+    "SUBNET",
+    "CELLULAR-RADIO",
+  ];
   if (validTypes.indexOf(ruleType) < 0) return null;
   var options = [];
   for (var i = 3; i < fields.length; i++) options.push(fields[i].trim());
-  return { raw: line, type: ruleType, value: fields[1].trim(), action: fields[2].toUpperCase().trim(), options: options };
+  return {
+    raw: line,
+    type: ruleType,
+    value: fields[1].trim(),
+    action: fields[2].toUpperCase().trim(),
+    options: options,
+  };
 }
 
 function parse(content, source) {
   switch (source) {
-    case 'loon': return parseLoon(content);
-    case 'surge': return parseSurge(content);
-    case 'quantumultx': return parseQuantumultX(content);
-    default: return parseLoon(content);
+    case "loon":
+      return parseLoon(content);
+    case "surge":
+      return parseSurge(content);
+    case "quantumultx":
+      return parseQuantumultX(content);
+    default:
+      return parseLoon(content);
   }
 }
 
 // ===================== 核心转换器 =====================
 
 function isRejectAction(action) {
-  return ['REJECT', 'REJECT-DICT', 'REJECT-ARRAY', 'REJECT-IMG', 'REJECT-200', 'REJECT-DATA'].includes(action);
+  return [
+    "REJECT",
+    "REJECT-DICT",
+    "REJECT-ARRAY",
+    "REJECT-IMG",
+    "REJECT-200",
+    "REJECT-DATA",
+  ].includes(action);
 }
 
 /** appendByAction 按 action 类型将规则行分配到对应的 arrs 分组 */
 function appendByAction(action, line, directLines, rejectLines, otherLines) {
-  if (action && action.toUpperCase() === 'DIRECT') {
+  if (action && action.toUpperCase() === "DIRECT") {
     directLines.push(line);
   } else if (isRejectAction(action)) {
     rejectLines.push(line);
@@ -1691,17 +2546,29 @@ function appendByAction(action, line, directLines, rejectLines, otherLines) {
 }
 
 function defaultConvertOptions() {
-  return { generalizeHost: true, encodingPreprocess: true, fetchScripts: true, includeMetadata: true, useStreamScript: false, autoContentType: true, addResourceURL: '', wrapScripts: false };
+  return {
+    generalizeHost: false,
+    encodingPreprocess: true,
+    fetchScripts: true,
+    includeMetadata: true,
+    useStreamScript: false,
+    autoContentType: true,
+    addResourceURL: "",
+    wrapScripts: false,
+  };
 }
 
 async function convert(m, opts) {
   const options = { ...defaultConvertOptions(), ...opts };
   const report = { skipped: [], degraded: [], warnings: [], scriptErr: [] };
-  const baseName = m.name || 'module2anywhere';
+  const baseName = m.name || "module2anywhere";
 
   const cleanedHosts = [];
   for (const h of m.hostnames) {
-    if (/[?*]/.test(h)) { report.warnings.push(`hostname 含通配符无法静态展开，已跳过: ${h}`); continue; }
+    if (/[?*]/.test(h)) {
+      report.warnings.push(`hostname 含通配符无法静态展开，已跳过: ${h}`);
+      continue;
+    }
     cleanedHosts.push(h);
   }
   m.hostnames = cleanedHosts;
@@ -1716,26 +2583,26 @@ async function convert(m, opts) {
   var arrsGroups = [];
   if (directLines.length > 0) {
     arrsGroups.push({
-      content: generateArrs(baseName + '-Direct', directLines, m, options, 1),
-      name: baseName + '-Direct.arrs',
+      content: generateArrs(baseName + "-Direct", directLines, m, options, 1),
+      name: baseName + "-Direct.arrs",
       routing: 1,
-      endpoint: '/direct.arrs'
+      endpoint: "/direct.arrs",
     });
   }
   if (rejectLines.length > 0) {
     arrsGroups.push({
-      content: generateArrs(baseName + '-Reject', rejectLines, m, options, 2),
-      name: baseName + '-Reject.arrs',
+      content: generateArrs(baseName + "-Reject", rejectLines, m, options, 2),
+      name: baseName + "-Reject.arrs",
       routing: 2,
-      endpoint: '/reject.arrs'
+      endpoint: "/reject.arrs",
     });
   }
   if (otherLines.length > 0) {
     arrsGroups.push({
       content: generateArrs(baseName, otherLines, m, options, 0),
-      name: baseName + '.arrs',
+      name: baseName + ".arrs",
       routing: 0,
-      endpoint: '/rule.arrs'
+      endpoint: "/rule.arrs",
     });
   }
 
@@ -1743,12 +2610,13 @@ async function convert(m, opts) {
     ...amrsFromRules,
     ...convertRewriteRules(m, options, report),
     ...convertHeaderRules(m.headerRWs, options, report),
-    ...await convertMapLocals(m.mapLocals, options, report, m.source),
-    ...await convertScriptRules(m, options, report, m.source),
+    ...(await convertMapLocals(m.mapLocals, options, report, m.source)),
+    ...(await convertScriptRules(m, options, report, m.source)),
   ];
 
   let finalAmrsLines = amrsLines;
-  if (options.encodingPreprocess) finalAmrsLines = addEncodingPreprocess(amrsLines);
+  if (options.encodingPreprocess)
+    finalAmrsLines = addEncodingPreprocess(amrsLines);
   if (options.autoContentType && !m.contentType) {
     const ct = inferContentType(finalAmrsLines);
     if (ct) m.contentType = ct;
@@ -1760,8 +2628,8 @@ async function convert(m, opts) {
   return {
     arrs: generateArrs(baseName, allArrsLines, m, options, 0),
     amrs: generateAmrs(baseName, m.hostnames, finalAmrsLines, m, options),
-    arrsName: baseName + '.arrs',
-    amrsName: baseName + '.amrs',
+    arrsName: baseName + ".arrs",
+    amrsName: baseName + ".amrs",
     arrsGroups: arrsGroups,
     report,
   };
@@ -1775,42 +2643,51 @@ function convertRoutingRules(rules, opts, report) {
   for (var i = 0; i < rules.length; i++) {
     var r = rules[i];
     switch (r.type) {
-      case 'DOMAIN-SUFFIX': case 'DOMAIN': {
-        var line = '2, ' + r.value;
+      case "DOMAIN-SUFFIX":
+      case "DOMAIN": {
+        var line = "2, " + r.value;
         appendByAction(r.action, line, directLines, rejectLines, otherLines);
         break;
       }
-      case 'DOMAIN-KEYWORD': {
-        var line = '3, ' + r.value;
+      case "DOMAIN-KEYWORD": {
+        var line = "3, " + r.value;
         appendByAction(r.action, line, directLines, rejectLines, otherLines);
         break;
       }
-      case 'IP-CIDR': {
-        var line = '0, ' + r.value;
+      case "IP-CIDR": {
+        var line = "0, " + r.value;
         appendByAction(r.action, line, directLines, rejectLines, otherLines);
         break;
       }
-      case 'IP-CIDR6': {
-        var line = '1, ' + r.value;
+      case "IP-CIDR6": {
+        var line = "1, " + r.value;
         appendByAction(r.action, line, directLines, rejectLines, otherLines);
         break;
       }
-      case 'URL-REGEX':
+      case "URL-REGEX":
         if (isRejectAction(r.action)) {
           var line = convertURLRegexReject(r, opts, report);
           if (line) amrsLines.push(line);
         } else {
-          report.skipped.push('URL-REGEX 非 REJECT 类不可转换: ' + r.raw);
+          report.skipped.push("URL-REGEX 非 REJECT 类不可转换: " + r.raw);
         }
         break;
-      case 'GEOIP': case 'PROCESS-NAME': case 'DEST-PORT': case 'SRC-PORT': case 'SRC-IP': case 'SRC-IP-CIDR': case 'CELLULAR-RADIO': case 'SUBNET':
-        report.skipped.push(r.type + ' 不可转换: ' + r.raw);
+      case "GEOIP":
+      case "PROCESS-NAME":
+      case "DEST-PORT":
+      case "SRC-PORT":
+      case "SRC-IP":
+      case "SRC-IP-CIDR":
+      case "CELLULAR-RADIO":
+      case "SUBNET":
+        report.skipped.push(r.type + " 不可转换: " + r.raw);
         break;
-      case 'DOMAIN-SET': case 'RULE-SET':
-        report.warnings.push('DOMAIN-SET/RULE-SET 需单独下载展开: ' + r.raw);
+      case "DOMAIN-SET":
+      case "RULE-SET":
+        report.warnings.push("DOMAIN-SET/RULE-SET 需单独下载展开: " + r.raw);
         break;
       default:
-        report.skipped.push('未知规则类型 ' + r.type + ': ' + r.raw);
+        report.skipped.push("未知规则类型 " + r.type + ": " + r.raw);
     }
   }
   return [directLines, rejectLines, otherLines, amrsLines];
@@ -1819,87 +2696,129 @@ function convertRoutingRules(rules, opts, report) {
 function convertURLRegexReject(r, opts, report) {
   const pattern = convertURLPattern(r.value, opts.generalizeHost);
   switch (r.action) {
-    case 'REJECT': case 'REJECT-200': return `0, 0, ${pattern}, 2`;
-    case 'REJECT-DICT': return `0, 0, ${pattern}, 2, {}`;
-    case 'REJECT-ARRAY': return `0, 0, ${pattern}, 2, []`;
-    case 'REJECT-IMG': return `0, 0, ${pattern}, 3`;
-    default: report.skipped.push(`URL-REGEX 未知 REJECT 动作 ${r.action}: ${r.raw}`); return '';
+    case "REJECT":
+    case "REJECT-200":
+      return `0, 0, ${pattern}, 2`;
+    case "REJECT-DICT":
+      return `0, 0, ${pattern}, 2, {}`;
+    case "REJECT-ARRAY":
+      return `0, 0, ${pattern}, 2, []`;
+    case "REJECT-IMG":
+      return `0, 0, ${pattern}, 3`;
+    default:
+      report.skipped.push(`URL-REGEX 未知 REJECT 动作 ${r.action}: ${r.raw}`);
+      return "";
   }
 }
 
 function convertRewriteRules(m, opts, report) {
   const lines = [];
-  for (const r of m.rewrites) { const line = convertRewriteRule(r, m, opts, report); if (line) lines.push(line); }
+  for (const r of m.rewrites) {
+    const line = convertRewriteRule(r, m, opts, report);
+    if (line) lines.push(line);
+  }
   return lines;
 }
 
 function convertRewriteRule(r, m, opts, report) {
   const pattern = convertURLPattern(r.pattern, opts.generalizeHost);
   switch (r.action) {
-    case 'reject': case 'reject-200': return `0, 0, ${pattern}, 2`;
-    case 'reject-dict': return `0, 0, ${pattern}, 2, {}`;
-    case 'reject-array': return `0, 0, ${pattern}, 2, []`;
-    case 'reject-img': return `0, 0, ${pattern}, 3`;
-    case '302': {
-      const url = r.args.url || '';
+    case "reject":
+    case "reject-200":
+      return `0, 0, ${pattern}, 2`;
+    case "reject-dict":
+      return `0, 0, ${pattern}, 2, {}`;
+    case "reject-array":
+      return `0, 0, ${pattern}, 2, []`;
+    case "reject-img":
+      return `0, 0, ${pattern}, 3`;
+    case "302": {
+      const url = r.args.url || "";
       // Anywhere rewrite sub-mode 1 原生支持 $1 捕获引用，直接输出
       return `0, 0, ${pattern}, 1, ${url}`;
     }
-    case '307': {
-      const url = r.args.url || '';
+    case "307": {
+      const url = r.args.url || "";
       report.degraded.push(`307 降级为 302: ${r.raw}`);
       return `0, 0, ${pattern}, 1, ${url}`;
     }
     // 透明 URL 重写：Anywhere rewrite sub-mode 0 原生支持 $1 捕获引用
-    case 'transparent': case 'rewrite': {
-      const url = r.args.url || '';
-      if (!url) { report.skipped.push(`transparent rewrite 缺少 url: ${r.raw}`); return ''; }
+    case "transparent":
+    case "rewrite": {
+      const url = r.args.url || "";
+      if (!url) {
+        report.skipped.push(`transparent rewrite 缺少 url: ${r.raw}`);
+        return "";
+      }
       return `0, 0, ${pattern}, 0, ${url}`;
     }
     // reject-data：返回 base64 二进制数据
-    case 'reject-data': {
-      const data = r.args.data || '';
+    case "reject-data": {
+      const data = r.args.data || "";
       if (data) return `0, 0, ${pattern}, 4, ${quoteField(data)}`;
       return `0, 0, ${pattern}, 4`;
     }
-    case 'mock-response-body': return `0, 0, ${pattern}, 2, ${quoteField(r.args.data || '')}`;
-    case 'response-body-json-del': return `1, 5, ${pattern}, delete, ${dotPathToJSONPath(r.args.path || '')}`;
-    case 'response-body-json-add': return `1, 5, ${pattern}, add, ${dotPathToJSONPath(r.args.path || '')}, ${quoteField(r.args.value || '')}`;
-    case 'response-body-json-replace': return `1, 5, ${pattern}, replace, ${dotPathToJSONPath(r.args.path || '')}, ${quoteField(r.args.value || '')}`;
+    case "mock-response-body":
+      return `0, 0, ${pattern}, 2, ${quoteField(r.args.data || "")}`;
+    case "response-body-json-del":
+      return `1, 5, ${pattern}, delete, ${dotPathToJSONPath(r.args.path || "")}`;
+    case "response-body-json-add":
+      return `1, 5, ${pattern}, add, ${dotPathToJSONPath(r.args.path || "")}, ${quoteField(r.args.value || "")}`;
+    case "response-body-json-replace":
+      return `1, 5, ${pattern}, replace, ${dotPathToJSONPath(r.args.path || "")}, ${quoteField(r.args.value || "")}`;
     // body-json 递归操作（Anywhere 原生支持）
-    case 'response-body-json-delete-recursive': return `1, 5, ${pattern}, delete-recursive, ${quoteField(r.args.key || '')}`;
-    case 'response-body-json-replace-recursive': return `1, 5, ${pattern}, replace-recursive, ${quoteField(r.args.key || '')}, ${quoteField(r.args.value || '')}`;
-    case 'response-body-json-remove-where-key-exists': return `1, 5, ${pattern}, remove-where-key-exists, ${dotPathToJSONPath(r.args.path || '')}, ${quoteField(r.args.key || '')}`;
-    case 'response-body-json-remove-where-field-in': return `1, 5, ${pattern}, remove-where-field-in, ${dotPathToJSONPath(r.args.path || '')}, ${quoteField(r.args.field || '')}, ${quoteField(r.args.values || '')}`;
-    case 'request-header': case 'request-body': return `0, 100, ${pattern}, ${encodeInlineRewriteJS(r.rawJS, 0)}`;
-    case 'response-body': return `1, 100, ${pattern}, ${encodeInlineRewriteJS(r.rawJS, 1)}`;
-    case '_request-header': case '_request-body': return `0, 100, ${pattern}, ${encodeInlineRewriteJS(r.rawJS, 0)}`;
-    case '_response-body': return `1, 100, ${pattern}, ${encodeInlineRewriteJS(r.rawJS, 1)}`;
-    case 'header-del': {
-      const headerName = r.args.header || '';
-      if (!headerName) return '';
+    case "response-body-json-delete-recursive":
+      return `1, 5, ${pattern}, delete-recursive, ${quoteField(r.args.key || "")}`;
+    case "response-body-json-replace-recursive":
+      return `1, 5, ${pattern}, replace-recursive, ${quoteField(r.args.key || "")}, ${quoteField(r.args.value || "")}`;
+    case "response-body-json-remove-where-key-exists":
+      return `1, 5, ${pattern}, remove-where-key-exists, ${dotPathToJSONPath(r.args.path || "")}, ${quoteField(r.args.key || "")}`;
+    case "response-body-json-remove-where-field-in":
+      return `1, 5, ${pattern}, remove-where-field-in, ${dotPathToJSONPath(r.args.path || "")}, ${quoteField(r.args.field || "")}, ${quoteField(r.args.values || "")}`;
+    case "request-header":
+    case "request-body":
+      return `0, 100, ${pattern}, ${encodeInlineRewriteJS(r.rawJS, 0)}`;
+    case "response-body":
+      return `1, 100, ${pattern}, ${encodeInlineRewriteJS(r.rawJS, 1)}`;
+    case "_request-header":
+    case "_request-body":
+      return `0, 100, ${pattern}, ${encodeInlineRewriteJS(r.rawJS, 0)}`;
+    case "_response-body":
+      return `1, 100, ${pattern}, ${encodeInlineRewriteJS(r.rawJS, 1)}`;
+    case "header-del": {
+      const headerName = r.args.header || "";
+      if (!headerName) return "";
       return `0, 2, ${pattern}, ${quoteField(headerName)}`;
     }
-    case 'response-body-replace-regex': {
-      const search = r.args.search || '';
-      const replacement = r.args.replacement || '';
-      if (!search) return '';
+    case "response-body-replace-regex": {
+      const search = r.args.search || "";
+      const replacement = r.args.replacement || "";
+      if (!search) return "";
       return `1, 4, ${pattern}, ${quoteField(search)}, ${quoteField(replacement)}`;
     }
-    case 'echo-response': {
-      const body = r.args.body || '';
-      const ct = r.args['content-type'] || 'application/json; charset=utf-8';
-      if (!body) { report.skipped.push(`echo-response 缺少 body: ${r.raw}`); return ''; }
+    case "echo-response": {
+      const body = r.args.body || "";
+      const ct = r.args["content-type"] || "application/json; charset=utf-8";
+      if (!body) {
+        report.skipped.push(`echo-response 缺少 body: ${r.raw}`);
+        return "";
+      }
       // 通过模块级 content-type 传递响应类型
       if (m && !m.contentType) m.contentType = ct;
-      return `1, 0, ${pattern}, 2, ${quoteField(body)}`;
+      // op 0 rewrite 在 Anywhere 中是 request-only；echo-response 本质是请求阶段直接合成响应
+      return `0, 0, ${pattern}, 2, ${quoteField(body)}`;
     }
-    case 'jsonjq-response-body': {
-      const jq = r.args.jq || '';
-      if (!jq) { report.skipped.push(`jsonjq-response-body 缺少 jq: ${r.raw}`); return ''; }
+    case "jsonjq-response-body": {
+      const jq = r.args.jq || "";
+      if (!jq) {
+        report.skipped.push(`jsonjq-response-body 缺少 jq: ${r.raw}`);
+        return "";
+      }
       return `1, 5, ${pattern}, ${quoteField(jq)}`;
     }
-    default: report.skipped.push(`未知重写动作 ${r.action}: ${r.raw}`); return '';
+    default:
+      report.skipped.push(`未知重写动作 ${r.action}: ${r.raw}`);
+      return "";
   }
 }
 
@@ -1908,10 +2827,21 @@ function convertHeaderRules(rules, opts, report) {
   for (const r of rules) {
     const pattern = convertURLPattern(r.pattern, opts.generalizeHost);
     switch (r.op) {
-      case 'add': lines.push(`${r.phase}, 1, ${pattern}, ${quoteField(r.name)}, ${quoteField(r.value)}`); break;
-      case 'replace': lines.push(`${r.phase}, 3, ${pattern}, ${quoteField(r.name)}, ${quoteField(r.value)}`); break;
-      case 'delete': lines.push(`${r.phase}, 2, ${pattern}, ${quoteField(r.name)}`); break;
-      default: report.skipped.push(`未知 header 操作 ${r.op}: ${r.raw}`);
+      case "add":
+        lines.push(
+          `${r.phase}, 1, ${pattern}, ${quoteField(r.name)}, ${quoteField(r.value)}`,
+        );
+        break;
+      case "replace":
+        lines.push(
+          `${r.phase}, 3, ${pattern}, ${quoteField(r.name)}, ${quoteField(r.value)}`,
+        );
+        break;
+      case "delete":
+        lines.push(`${r.phase}, 2, ${pattern}, ${quoteField(r.name)}`);
+        break;
+      default:
+        report.skipped.push(`未知 header 操作 ${r.op}: ${r.raw}`);
     }
   }
   return lines;
@@ -1922,13 +2852,42 @@ async function convertMapLocals(rules, opts, report, source) {
   const userAgent = getUserAgent(source);
   for (const r of rules) {
     const pattern = convertURLPattern(r.pattern, opts.generalizeHost);
-    if (!r.dataURL) { report.skipped.push(`Map Local 无 data: ${r.raw}`); continue; }
-    let body = r.dataURL;
-    if (r.dataURL.startsWith('http')) {
-      try { body = await fetchRemoteWithProxy(r.dataURL, userAgent); }
-      catch (e) { report.scriptErr.push(`Map Local 下载 data 失败 ${r.dataURL}: ${e}`); continue; }
+    if (!r.dataURL) {
+      report.skipped.push(`Map Local 无 data: ${r.raw}`);
+      continue;
     }
-    lines.push(`0, 0, ${pattern}, 2, ${quoteField(body)}`);
+    let headerName = "";
+    let headerValue = "";
+    if (r.header && String(r.header).trim()) {
+      const parts = String(r.header).split(":", 2);
+      if (parts.length !== 2) {
+        report.warnings.push(`Map Local header 格式非法，已忽略: ${r.raw}`);
+      } else {
+        headerName = parts[0].trim();
+        headerValue = parts[1].trim();
+        if (!headerName) {
+          report.warnings.push(`Map Local header 名称为空，已忽略: ${r.raw}`);
+          headerName = "";
+          headerValue = "";
+        }
+      }
+    }
+    let body = r.dataURL;
+    if (r.dataURL.startsWith("http")) {
+      try {
+        body = await fetchRemoteWithProxy(r.dataURL, userAgent);
+      } catch (e) {
+        report.scriptErr.push(`Map Local 下载 data 失败 ${r.dataURL}: ${e}`);
+        continue;
+      }
+    }
+    if (headerName) {
+      lines.push(
+        `0, 0, ${pattern}, 2, ${quoteField(body)}, ${quoteField(headerName)}, ${quoteField(headerValue)}`,
+      );
+    } else {
+      lines.push(`0, 0, ${pattern}, 2, ${quoteField(body)}`);
+    }
   }
   return lines;
 }
@@ -1938,13 +2897,26 @@ async function convertScriptRules(m, opts, report, source) {
   const userAgent = getUserAgent(source);
   for (const s of m.scripts) {
     const pattern = convertURLPattern(s.pattern, opts.generalizeHost);
-    if (!s.scriptPath) { report.skipped.push(`脚本无 script-path: ${s.raw}`); continue; }
+    if (!s.scriptPath) {
+      report.skipped.push(`脚本无 script-path: ${s.raw}`);
+      continue;
+    }
     try {
       const resolved = resolveScriptPath(s.scriptPath, m.name);
-      const b64 = await fetchAndEncodeScript(resolved, opts.fetchScripts, s.phase, opts.useStreamScript, userAgent, opts.wrapScripts);
-      const op = opts.useStreamScript ? '101' : '100';
+      const b64 = await fetchAndEncodeScript(
+        resolved,
+        opts.fetchScripts,
+        s.phase,
+        opts.useStreamScript,
+        userAgent,
+        opts.wrapScripts,
+        s.argument || "",
+      );
+      const op = opts.useStreamScript ? "101" : "100";
       lines.push(`${s.phase}, ${op}, ${pattern}, ${b64}`);
-    } catch (e) { report.scriptErr.push(`脚本下载失败 ${s.scriptPath}: ${e}`); }
+    } catch (e) {
+      report.scriptErr.push(`脚本下载失败 ${s.scriptPath}: ${e}`);
+    }
   }
   return lines;
 }
@@ -1954,12 +2926,16 @@ function addEncodingPreprocess(lines) {
   for (const line of lines) {
     const fields = splitAmrsFields(line);
     if (fields.length < 2) continue;
-    if (fields[0] !== '1') continue;
-    if (['4', '5', '100', '101'].includes(fields[1]) && fields.length >= 3) patterns.add(fields[2]);
+    if (fields[0] !== "1") continue;
+    if (["4", "5", "100", "101"].includes(fields[1]) && fields.length >= 3)
+      patterns.add(fields[2]);
   }
   if (patterns.size === 0) return lines;
   const pre = [];
-  for (const p of patterns) { pre.push(`0, 2, ${p}, accept-encoding`); pre.push(`0, 1, ${p}, accept-encoding, identity`); }
+  for (const p of patterns) {
+    pre.push(`0, 2, ${p}, accept-encoding`);
+    pre.push(`0, 1, ${p}, accept-encoding, identity`);
+  }
   return [...pre, ...lines];
 }
 
@@ -1967,8 +2943,12 @@ function splitAmrsFields(line) {
   const fields = [];
   let rest = line;
   for (let i = 0; i < 3 && rest; i++) {
-    const idx = rest.indexOf(',');
-    if (idx < 0) { fields.push(rest.trim()); rest = ''; break; }
+    const idx = rest.indexOf(",");
+    if (idx < 0) {
+      fields.push(rest.trim());
+      rest = "";
+      break;
+    }
     fields.push(rest.slice(0, idx).trim());
     rest = rest.slice(idx + 1);
   }
@@ -1977,67 +2957,76 @@ function splitAmrsFields(line) {
 }
 
 function generateArrs(name, lines, m, opts, routing) {
-  if (lines.length === 0) return '';
+  if (lines.length === 0) return "";
   const parts = [];
   if (opts.includeMetadata) parts.push(metadataComments(m, opts));
-  parts.push('name = ' + name);
-  if (routing && routing > 0) parts.push('routing = ' + routing);
-  parts.push('');
+  parts.push("name = " + name);
+  if (routing && routing > 0) parts.push("routing = " + routing);
+  parts.push("");
   parts.push(...lines);
-  return parts.join('\n') + '\n';
+  return parts.join("\n") + "\n";
 }
 
 function generateAmrs(name, hostnames, lines, m, opts) {
-  if (lines.length === 0 && hostnames.length === 0) return '';
+  if (lines.length === 0 && hostnames.length === 0) return "";
   const parts = [];
   if (opts.includeMetadata) parts.push(metadataComments(m, opts));
   parts.push(`name = ${name}`);
-  if (hostnames.length > 0) parts.push(`hostname = ${hostnames.join(', ')}`);
+  if (hostnames.length > 0) parts.push(`hostname = ${hostnames.join(", ")}`);
   if (m.contentType) parts.push(`content-type = ${m.contentType}`);
-  parts.push('');
+  parts.push("");
   parts.push(...lines);
-  return parts.join('\n') + '\n';
+  return parts.join("\n") + "\n";
 }
 
 function inferContentType(lines) {
   for (const line of lines) {
-    if (line.startsWith('0, 0, ')) {
+    if (line.startsWith("0, 0, ")) {
       const rest = line.slice(6);
-      const idx = rest.indexOf(', 2, ');
+      const idx = rest.indexOf(", 2, ");
       if (idx >= 0) {
         const content = rest.slice(idx + 5).trim();
-        if (content.startsWith('{') || content.startsWith('"{"') || content.includes('"code"')) return 'application/json; charset=utf-8';
+        if (
+          content.startsWith("{") ||
+          content.startsWith("[") ||
+          content.startsWith('"{"') ||
+          content.startsWith('"["') ||
+          content.includes('"code"')
+        )
+          return "application/json; charset=utf-8";
       }
     }
   }
-  return '';
+  return "";
 }
 
 function metadataComments(m, opts) {
   opts = opts || {};
-  const parts = ['# 由 module2anywhere 从 ' + m.source + ' 模块转换'];
-  if (opts.sourceURL) parts.push('# source: ' + opts.sourceURL);
+  const parts = ["# 由 module2anywhere 从 " + m.source + " 模块转换"];
+  if (opts.sourceURL) parts.push("# source: " + opts.sourceURL);
   // 如果是从 quantumult.app add-resource 链接提取的，添加解码后的原始地址
-  if (opts.addResourceURL) parts.push('# add-resource: ' + opts.addResourceURL);
-  if (opts.serviceURL) parts.push('# this: ' + opts.serviceURL);
-  if (m.desc) parts.push('# desc: ' + m.desc);
-  if (m.author) parts.push('# author: ' + m.author);
-  if (m.homepage) parts.push('# homepage: ' + m.homepage);
-  if (m.date) parts.push('# date: ' + m.date);
-  parts.push('');
-  return parts.join('\n');
+  if (opts.addResourceURL) parts.push("# add-resource: " + opts.addResourceURL);
+  if (opts.serviceURL) parts.push("# this: " + opts.serviceURL);
+  if (m.desc) parts.push("# desc: " + m.desc);
+  if (m.author) parts.push("# author: " + m.author);
+  if (m.homepage) parts.push("# homepage: " + m.homepage);
+  if (m.date) parts.push("# date: " + m.date);
+  parts.push("");
+  return parts.join("\n");
 }
 
 function deriveNameFromURL(rawURL) {
   try {
     const url = new URL(rawURL);
-    const parts = url.pathname.split('/');
+    const parts = url.pathname.split("/");
     let filename = parts[parts.length - 1];
-    for (const ext of ['.plugin', '.sgmodule', '.lpx', '.conf', '.list']) {
+    for (const ext of [".plugin", ".sgmodule", ".lpx", ".conf", ".list"]) {
       if (filename.endsWith(ext)) filename = filename.slice(0, -ext.length);
     }
-    return filename || 'Unnamed';
-  } catch { return 'Unnamed'; }
+    return filename || "Unnamed";
+  } catch {
+    return "Unnamed";
+  }
 }
 
 // isAddResourceURL 判断 URL 是否为 Quantumult X 的 add-resource 一键订阅协议。
@@ -2045,28 +3034,39 @@ function deriveNameFromURL(rawURL) {
 function isAddResourceURL(rawURL) {
   try {
     const u = new URL(rawURL);
-    const host = (u.hostname || '').toLowerCase();
-    if (!host.endsWith('quantumult.app')) return false;
+    const host = (u.hostname || "").toLowerCase();
+    if (!host.endsWith("quantumult.app")) return false;
     let p = u.pathname;
-    if (p.endsWith('/')) p = p.slice(0, -1);
-    return p === '/x/open-app/add-resource';
-  } catch { return false; }
+    if (p.endsWith("/")) p = p.slice(0, -1);
+    return p === "/x/open-app/add-resource";
+  } catch {
+    return false;
+  }
 }
 
 // extractAddResourceURLs 从 quantumult.app add-resource 链接展开远端订阅 URL 列表。
 // remote-resource 既可能直接是 JSON，也可能被 URL 编码一次；返回的列表只保留以 http(s):// 开头的纯 URL。
 function extractAddResourceURLs(rawURL) {
   const u = new URL(rawURL);
-  let raw = u.searchParams.get('remote-resource') || '';
-  if (!raw) throw new Error('缺少 remote-resource 参数');
-  try { raw = decodeURIComponent(raw); } catch (e) { /* 保留原值 */ }
+  let raw = u.searchParams.get("remote-resource") || "";
+  if (!raw) throw new Error("缺少 remote-resource 参数");
+  try {
+    raw = decodeURIComponent(raw);
+  } catch (e) {
+    /* 保留原值 */
+  }
   let payload;
   try {
     payload = JSON.parse(raw);
   } catch (e) {
-    throw new Error('remote-resource JSON 解析失败: ' + e.message);
+    throw new Error("remote-resource JSON 解析失败: " + e.message);
   }
-  const keys = ['rewrite_remote', 'server_remote', 'filter_remote', 'task_remote'];
+  const keys = [
+    "rewrite_remote",
+    "server_remote",
+    "filter_remote",
+    "task_remote",
+  ];
   const all = [];
   for (const k of keys) {
     const arr = payload[k];
@@ -2074,12 +3074,12 @@ function extractAddResourceURLs(rawURL) {
   }
   const urls = [];
   for (const entry of all) {
-    if (typeof entry !== 'string') continue;
+    if (typeof entry !== "string") continue;
     let s = entry.trim();
     if (!s) continue;
-    const idx = s.indexOf(',');
+    const idx = s.indexOf(",");
     if (idx > 0) s = s.slice(0, idx).trim();
-    if (s.startsWith('http://') || s.startsWith('https://')) urls.push(s);
+    if (s.startsWith("http://") || s.startsWith("https://")) urls.push(s);
   }
   return urls;
 }
@@ -2119,50 +3119,119 @@ function cachePut(key, value) {
       if (firstKey !== undefined) _cacheStore.delete(firstKey);
     }
   }
-  _cacheStore.set(key, { value: value, expiresAt: Date.now() + CACHE_TTL_MS });
+  _cacheStore.set(key, {
+    value: value,
+    expiresAt: Date.now() + CACHE_TTL_MS,
+  });
 }
 
 // cacheKey 生成缓存键。
 function cacheKey(url, name, fetchScripts, generalize) {
-  return url + '|' + name + '|' + fetchScripts + '|' + generalize;
+  return url + "|" + name + "|" + fetchScripts + "|" + generalize;
 }
 
 const lib = {
-  detectSource, parse, deriveNameFromURL, defaultConvertOptions, convert,
+  detectSource,
+  parse,
+  deriveNameFromURL,
+  defaultConvertOptions,
+  convert,
   appendByAction,
-  fetchRemoteWithProxy, getUserAgent, isAddResourceURL, extractAddResourceURLs,
-  cacheGet, cachePut, cacheKey,
+  fetchRemoteWithProxy,
+  getUserAgent,
+  isAddResourceURL,
+  extractAddResourceURLs,
+  cacheGet,
+  cachePut,
+  cacheKey,
 };
 
 // 将所有函数通过命名导出暴露
 export {
-  splitSections, parseMeta, splitCSVFields, parseKeyValueList, trimQuotes,
-  normalizeHostnames, dedupStrings, splitFirstWhitespace, splitWhitespace,
-  tokenizeKV, parseKVArgs,
-  convertURLPattern, generalizeHost, dotPathToJSONPath, quoteField, hasCaptureGroup,
-  GITHUB_PROXIES, GITHUB_HOSTS, DEFAULT_USER_AGENT, USER_AGENTS,
-  getUserAgent, isGitHubURL, isProxyURL, proxyURLWithPrefix, fetchRemoteWithProxy,
-  isRemote, resolveScriptPath,
-  encodeInlineScript, encodeInlineRewriteJS,
-  rewriteScriptAPI, rewriteHttpClientCalls, rewriteDoneCalls,
-  wrapAsProcess, indent, buildRedirectScript, jsRegexLiteral, jsCaptureReplace,
-  wrapAsStreamScript, extractProcessBody,
+  splitSections,
+  parseMeta,
+  splitCSVFields,
+  parseKeyValueList,
+  trimQuotes,
+  normalizeHostnames,
+  dedupStrings,
+  splitFirstWhitespace,
+  splitWhitespace,
+  tokenizeKV,
+  parseKVArgs,
+  convertURLPattern,
+  generalizeHost,
+  dotPathToJSONPath,
+  quoteField,
+  hasCaptureGroup,
+  GITHUB_PROXIES,
+  GITHUB_HOSTS,
+  DEFAULT_USER_AGENT,
+  USER_AGENTS,
+  getUserAgent,
+  isGitHubURL,
+  isProxyURL,
+  proxyURLWithPrefix,
+  fetchRemoteWithProxy,
+  isRemote,
+  resolveScriptPath,
+  encodeInlineScript,
+  encodeInlineRewriteJS,
+  rewriteScriptAPI,
+  rewriteHttpClientCalls,
+  rewriteDoneCalls,
+  wrapAsProcess,
+  indent,
+  buildRedirectScript,
+  jsRegexLiteral,
+  jsCaptureReplace,
+  wrapAsStreamScript,
+  extractProcessBody,
   detectSource,
-  parseLoonRules, parseLoonRewriteAction, parseLoonRewrites, parseLoonScriptLine,
-  parseLoonScripts, parseLoonArguments, parseLoonMitM, parseLoon,
-  parseSurgeURLRewriteAction, parseSurgeURLRewrites, parseSurgeHeaderRewrites,
-  parseSurgeMapLocals, parseSurgeScriptLine, parseSurgeScripts, parseSurgeMITM, parseSurge,
-  parseQuantumultX, applyUserScriptMeta, extractQXHostnameValue,
-  parseQuantumultXLine, splitQXTokens, parseQXRoutingRule,
+  parseLoonRules,
+  parseLoonRewriteAction,
+  parseLoonRewrites,
+  parseLoonScriptLine,
+  parseLoonScripts,
+  parseLoonArguments,
+  parseLoonMitM,
+  parseLoon,
+  parseSurgeURLRewriteAction,
+  parseSurgeURLRewrites,
+  parseSurgeHeaderRewrites,
+  parseSurgeMapLocals,
+  parseSurgeScriptLine,
+  parseSurgeScripts,
+  parseSurgeMITM,
+  parseSurge,
+  parseQuantumultX,
+  applyUserScriptMeta,
+  extractQXHostnameValue,
+  parseQuantumultXLine,
+  splitQXTokens,
+  parseQXRoutingRule,
   parse,
-  isRejectAction, defaultConvertOptions, convert,
-  convertRoutingRules, appendByAction,
-  convertURLRegexReject, convertRewriteRules, convertRewriteRule,
+  isRejectAction,
+  defaultConvertOptions,
+  convert,
+  convertRoutingRules,
+  appendByAction,
+  convertURLRegexReject,
+  convertRewriteRules,
+  convertRewriteRule,
   convertHeaderRules,
-  addEncodingPreprocess, splitAmrsFields,
-  generateArrs, generateAmrs, inferContentType, metadataComments, deriveNameFromURL,
-  isAddResourceURL, extractAddResourceURLs,
-  cacheGet, cachePut, cacheKey,
+  addEncodingPreprocess,
+  splitAmrsFields,
+  generateArrs,
+  generateAmrs,
+  inferContentType,
+  metadataComments,
+  deriveNameFromURL,
+  isAddResourceURL,
+  extractAddResourceURLs,
+  cacheGet,
+  cachePut,
+  cacheKey,
   // 也导出 lib 对象本身，方便端点文件使用 lib.xxx 形式
   lib,
 };

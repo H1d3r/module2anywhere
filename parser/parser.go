@@ -296,8 +296,13 @@ func normalizeHostnames(raw string) []string {
 		// 去除通配符前缀
 		p = strings.TrimPrefix(p, "*.")
 		p = strings.TrimPrefix(p, "*")
-		// Loon 通配符 ap?.bilibili.com 无法静态展开，保留原样（Anywhere 会按后缀匹配失败，但至少不报错）
+		if strings.HasPrefix(p, "-") {
+			continue
+		}
 		p = strings.TrimSpace(p)
+		if strings.ContainsAny(p, "*?") {
+			continue
+		}
 		if p == "" || seen[p] {
 			continue
 		}

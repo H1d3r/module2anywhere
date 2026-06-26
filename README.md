@@ -574,19 +574,24 @@ Loon `request-header <JS>` / `response-body <JS>` / `request-body <JS>` 和 Surg
 |----------------|-------------|------|
 | `$request.url` | `ctx.url` | 请求 URL |
 | `$request.method` | `ctx.method` | 请求方法 |
-| `$request.headers` | `ctx.headers`（`[[name,value],...]`） | 请求头（只读） |
-| `$request.body` | `ctx.body`（`Uint8Array`，phase=0） | 请求体 |
+| `$request.headers` | `_headersObj`（`{name:value}` 对象，由 `wrapAsProcess` 预转换） | 请求头（保持 Loon/Surge 对象格式） |
+| `$request.body` | `Anywhere.codec.utf8.decode(ctx.body)` | 请求体（字符串，phase=0） |
+| `$request.bodyBytes` | `ctx.body`（`Uint8Array`） | 请求体二进制 |
 | `$response.status` | `ctx.status` | 响应状态码 |
-| `$response.headers` | `ctx.headers` | 响应头（只读） |
-| `$response.body` | `ctx.body`（`Uint8Array`，phase=1） | 响应体 |
+| `$response.statusCode` | `ctx.status` | 响应状态码别名 |
+| `$response.headers` | `_headersObj`（`{name:value}` 对象，由 `wrapAsProcess` 预转换） | 响应头（保持 Loon/Surge 对象格式） |
+| `$response.body` | `Anywhere.codec.utf8.decode(ctx.body)` | 响应体（字符串，phase=1） |
+| `$response.bodyBytes` | `ctx.body`（`Uint8Array`） | 响应体二进制 |
 | `$done({})` | `Anywhere.done()` | 提交当前 ctx，跳过后续规则 |
 | `$done({body: x})` | `ctx.body = x; Anywhere.done()` | 设置 body 后提交 |
 | `$done({response: {...}})` | `Anywhere.respond({status, headers, body})` | 请求阶段直接返回响应 |
+| `$done({response: {headers}})` | `headers: [[name,value],...]` | 响应头保持数组对格式 |
 | `$persistentStore.read(key)` | `Anywhere.store.getString(key, true)` | 持久化存储读取 |
 | `$persistentStore.write(val, key)` | `Anywhere.store.set(key, val, true)` | 持久化存储写入 |
 | `$persistentStore.write(null, key)` | `Anywhere.store.delete(key, true)` | 写入 null 时删除存储（Surge/Loon 语义） |
 | `$httpClient.get(url, cb)` | `await Anywhere.http.get(url)` | HTTP GET（需 async） |
 | `$httpClient.post(url, opts, cb)` | `await Anywhere.http.post(url, opts)` | HTTP POST（需 async） |
+| `$httpClient.request(opts, cb)` | `await Anywhere.http.request(opts)` | 通用 HTTP 请求（需 async） |
 | `$notification.post(title,sub,body)` | `Anywhere.log.info(...)` | Anywhere 无通知，降级为日志 |
 | `JSON.parse($response.body)` | `JSON.parse(Anywhere.codec.utf8.decode(ctx.body))` | body 需先 decode |
 | `body = JSON.stringify(obj)` | `ctx.body = Anywhere.codec.utf8.encode(JSON.stringify(obj))` | body 需 encode |
@@ -606,10 +611,14 @@ Loon `request-header <JS>` / `response-body <JS>` / `request-body <JS>` 和 Surg
 | `$.log(msg)` | `Anywhere.log.info(msg)` | 日志输出 |
 | `$.logErr(msg)` | `Anywhere.log.warning(msg)` | 错误日志 |
 | `$.http.get/post/put/delete(opts)` | `Anywhere.http.get/post/put/delete(...)` | HTTP 请求 |
+| `$.http.request(opts)` | `Anywhere.http.request(...)` | 通用 HTTP 请求 |
 | `$.isQuanX()` / `$.isSurge()` / `$.isLoon()` | `return false` | 环境检测（Anywhere 非 QX/Surge/Loon） |
 | `$.wait(ms)` | `new Promise(resolve => setTimeout(resolve, ms))` | 延时 |
 | `$.done()` | `Anywhere.done()` | 完成 |
 | `$env` | `{ isBoxJS: false, isAnywhere: true }` | QX 环境变量兼容 |
+
+> 说明：`$.msg` 在 Anywhere 中降级为日志输出，不弹系统通知；`$.http` 返回的 `headers` 为对象，和 BoxJS 页面上常见的数组对格式不同。
+> 兼容别名：已补齐 `$.fetch` / `$.request` / `$.notify` / `$.runScript` / `$.toURL` / `$.setvalue` / `$.getvalue`，以及 `fetch` / `TextEncoder` / `TextDecoder` / `Headers` / `Request` / `Response` / 定时器等常见 Web API。
 
 #### 7.3.2 Web API Polyfill
 
@@ -621,8 +630,12 @@ Anywhere 的 JavaScriptCore 运行时不提供浏览器环境 API，BoxJS 脚本
 | `URL` | 基于 `String.match()` 的轻量实现，支持 `protocol/hostname/port/pathname/search/hash/searchParams` | URL 解析构造 |
 | `console.log/warn/error/info/debug` | 映射到 `Anywhere.log.info/warning/error/info/debug` | 日志输出 |
 | `atob(str)` / `btoa(str)` | 基于 `Anywhere.codec.base64` + `Anywhere.codec.utf8` | Base64 编解码 |
+| `TextEncoder` / `TextDecoder` | 纯 JS 轻量实现 | UTF-8 编解码 |
+| `fetch` | 基于 `Anywhere.http.request` 的轻量封装 | 常见浏览器式请求 |
+| `Headers` / `Request` / `Response` | 轻量实现 | 为 `fetch` / Web API 脚本提供最小兼容 |
+| `setTimeout` / `setInterval` / `clearTimeout` / `clearInterval` | 运行时原生或兼容实现 | 定时器 |
 
-> **检测逻辑**：转换器自动检测脚本中是否包含 `new Env(`、`$.getdata`/`$.setdata`、`URLSearchParams`、`new URL(`、`console.log` 等特征，仅在检测到时注入 polyfill，不影响不使用这些 API 的脚本。所有 polyfill 均使用 `if (typeof XXX === 'undefined')` 守卫，不会覆盖 Anywhere 运行时已有的原生实现。
+> **检测逻辑**：转换器自动检测脚本中是否包含 `new Env(`、`$.getdata`/`$.setdata`、`URLSearchParams`、`new URL(`、`console.log`、`fetch`、`TextEncoder`、`TextDecoder` 等特征，仅在检测到时注入 polyfill，不影响不使用这些 API 的脚本。所有 polyfill 均使用 `if (typeof XXX === 'undefined')` 守卫，不会覆盖 Anywhere 运行时已有的原生实现。
 
 #### 7.3.3 globalThis 污染隔离
 
@@ -664,6 +677,8 @@ Anywhere.respond({
 })
 // 请求阶段直接返回，不走上游
 ```
+
+> `ctx.headers`、`Anywhere.respond.headers`、`Anywhere.http` 返回的 `headers` 都统一使用 `[[name, value], ...]` 数组对格式；只有 BoxJS/Surge/Loon 脚本内部访问时，才会在兼容层里临时转为对象。
 
 **Anywhere.json 静态函数**（bytes-in/bytes-out，无需 decode/encode）：
 

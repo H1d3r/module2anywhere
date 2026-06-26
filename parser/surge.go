@@ -71,7 +71,7 @@ func parseSurgeURLRewrites(body string) []ir.RewriteRule {
 			continue
 		}
 		r := ir.RewriteRule{Raw: line, Args: map[string]string{}}
-		pattern, rest := splitFirstWhitespace(line)
+		pattern, rest := splitRewritePatternAndRest(line)
 		r.Pattern = pattern
 		if rest == "" {
 			rules = append(rules, r)
@@ -86,11 +86,64 @@ func parseSurgeURLRewrites(body string) []ir.RewriteRule {
 	return rules
 }
 
+// splitRewritePatternAndRest 拆分 rewrite 的 pattern 与动作部分。
+// 除空白分隔外，兼容紧贴写法：pattern-302$1$3 / pattern_reject / pattern-reject。
+func splitRewritePatternAndRest(line string) (string, string) {
+	pattern, rest := splitFirstWhitespace(line)
+	if rest != "" {
+		return pattern, rest
+	}
+	for _, marker := range []string{"-302", "-307", "_302", "_307", "-reject-200", "_reject-200", "-reject-dict", "_reject-dict", "-reject-array", "_reject-array", "-reject-img", "_reject-img", "-reject", "_reject"} {
+		idx := strings.LastIndex(strings.ToLower(line), marker)
+		if idx > 0 && isTightRewriteActionSuffix(line[idx+len(marker):], marker) {
+			return strings.TrimSpace(line[:idx]), strings.TrimSpace(line[idx+1:])
+		}
+	}
+	return pattern, rest
+}
+
+// isTightRewriteActionSuffix 判断紧贴动作后缀是否像真实动作参数，避免误切 pattern 中的 -reject / -302 字样。
+func isTightRewriteActionSuffix(suffix, marker string) bool {
+	action := strings.TrimLeft(marker, "-_")
+	suffix = strings.TrimSpace(suffix)
+	if strings.HasPrefix(action, "reject") {
+		return suffix == ""
+	}
+	if action == "302" || action == "307" {
+		return suffix != "" && (strings.HasPrefix(suffix, "$") || strings.HasPrefix(suffix, "http://") || strings.HasPrefix(suffix, "https://"))
+	}
+	return false
+}
+
+// prependTightRewriteTarget 保留紧贴 URL 与后续参数之间的分隔空格。
+func prependTightRewriteTarget(prefix, remain string) string {
+	remain = strings.TrimSpace(remain)
+	if remain == "" {
+		return prefix
+	}
+	return prefix + " " + remain
+}
+
 // parseSurgeURLRewriteAction 解析 Surge [URL Rewrite] 动作。
 func parseSurgeURLRewriteAction(rest string) (string, map[string]string, string) {
 	args := make(map[string]string)
 	action, remain := splitFirstWhitespace(rest)
 	action = strings.ToLower(strings.TrimSpace(action))
+
+	// 兼容紧贴写法：302$1$3 / 307https://... → 动作与目标 URL 之间补出空格语义
+	if strings.HasPrefix(action, "302") && len(action) > 3 {
+		remain = prependTightRewriteTarget(action[3:], remain)
+		action = "302"
+	} else if strings.HasPrefix(action, "307") && len(action) > 3 {
+		remain = prependTightRewriteTarget(action[3:], remain)
+		action = "307"
+	}
+
+	// 跳过 - / _ 占位符（部分模块写成 "pattern - reject" 或 "pattern _ reject"）
+	if action == "-" || action == "_" {
+		action, remain = splitFirstWhitespace(remain)
+		action = strings.ToLower(strings.TrimSpace(action))
+	}
 
 	switch action {
 	case "reject", "reject-200", "reject-dict", "reject-array", "reject-img":
@@ -229,6 +282,13 @@ func parseSurgeScriptLine(line string) (*ir.ScriptRule, error) {
 	params := strings.TrimSpace(line[idx+1:])
 	tokens := splitCSVFields(params)
 	args, _ := parseKeyValueList(tokens)
+	if args["script-path"] == "" {
+		// 兼容混合写法：type=http-response,pattern=... url script-response-header <script-url>
+		// 这类规则本质上是 QX/Loon 的 url script-* 语法混入 Surge 模块中，需归一化为 ScriptRule。
+		if p, ok := parseMixedURLScriptParams(args, line); ok {
+			return p, nil
+		}
+	}
 
 	s := &ir.ScriptRule{Raw: line}
 	s.ScriptPath = args["script-path"]
@@ -260,6 +320,75 @@ func parseSurgeScriptLine(line string) (*ir.ScriptRule, error) {
 		}
 	}
 	return s, nil
+}
+
+// parseMixedURLScriptParams 解析混入 Surge Script 段中的 url script-* 写法。
+func parseMixedURLScriptParams(args map[string]string, raw string) (*ir.ScriptRule, bool) {
+	patternValue := strings.TrimSpace(args["pattern"])
+	lower := strings.ToLower(patternValue)
+	marker := " url "
+	idx := strings.Index(lower, marker)
+	if idx < 0 {
+		return nil, false
+	}
+	pattern := strings.TrimSpace(patternValue[:idx])
+	right := strings.TrimSpace(patternValue[idx+len(marker):])
+	if strings.TrimSpace(args["type"]) == "" || strings.TrimSpace(args["pattern"]) == "" {
+		return nil, false
+	}
+	tokens := splitWhitespace(right)
+	if len(tokens) < 2 {
+		return nil, false
+	}
+	action := strings.ToLower(strings.TrimSpace(tokens[0]))
+	scriptPath, trailingArgs := splitScriptPathAndTrailingArgs(tokens[1])
+	for _, token := range tokens[2:] {
+		if strings.Contains(token, "=") {
+			trailingArgs = append(trailingArgs, token)
+		}
+	}
+	if len(trailingArgs) > 0 {
+		extraArgs, _ := parseKeyValueList(trailingArgs)
+		for k, v := range extraArgs {
+			args[k] = v
+		}
+	}
+	if scriptPath == "" {
+		return nil, false
+	}
+	s := &ir.ScriptRule{Raw: raw}
+	s.Pattern = pattern
+	s.ScriptPath = scriptPath
+	s.Tag = args["tag"]
+	s.Argument = args["argument"]
+	s.Engine = args["engine"]
+	s.RequiresBody = args["requires-body"] == "1" || strings.EqualFold(args["requires-body"], "true")
+	s.BinaryBody = args["binary-body-mode"] == "1" || strings.EqualFold(args["binary-body-mode"], "true")
+	if v, ok := args["max-size"]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			s.MaxSize = n
+		}
+	}
+	switch action {
+	case "script-request-body", "script-request-header":
+		s.Phase = 0
+		return s, true
+	case "script-response-body", "script-response-header", "script-analyze-echo-response":
+		s.Phase = 1
+		return s, true
+	default:
+		return nil, false
+	}
+}
+
+// splitScriptPathAndTrailingArgs 拆分混合脚本语法中 script URL 后方的逗号参数。
+func splitScriptPathAndTrailingArgs(raw string) (string, []string) {
+	raw = strings.TrimSpace(raw)
+	parts := splitCSVFields(raw)
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return strings.TrimSpace(parts[0]), parts[1:]
 }
 
 // parseSurgeMITM 解析 [MITM] 段。

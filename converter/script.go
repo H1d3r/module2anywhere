@@ -12,23 +12,34 @@ package converter
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/H1d3r/module2anywhere/fetcher"
 	"github.com/H1d3r/module2anywhere/ir"
 )
 
+var scriptCache sync.Map
+
 // FetchAndEncodeScript 下载脚本，改写 API，base64 编码。
 // scriptPath 可以是 URL 或本地路径。baseURL 用于解析相对路径。
 // 若 fetchScripts=false，返回占位符 base64。
 // 若 useStreamScript=true，将改写后的脚本再包装为 stream-script (op 101) 形式。
-func FetchAndEncodeScript(ctx context.Context, f *fetcher.Fetcher, scriptPath, baseURL string, fetchScripts bool, phase int, useStreamScript bool, wrapScript bool) (string, error) {
+func FetchAndEncodeScript(ctx context.Context, f *fetcher.Fetcher, scriptPath, baseURL string, fetchScripts bool, phase int, useStreamScript bool, wrapScript bool, argument string) (string, error) {
+	cacheKey := resolvedScriptCacheKey(scriptPath, baseURL, phase, useStreamScript, wrapScript, fetchScripts, argument)
+	if cached, ok := getScriptCache(cacheKey); ok {
+		return cached, nil
+	}
+
 	if !fetchScripts {
 		// 占位符：返回一个空 process 函数
 		placeholder := `function process(ctx){Anywhere.log.warning("script not fetched: ` + scriptPath + `");}`
-		return base64.StdEncoding.EncodeToString([]byte(placeholder)), nil
+		encoded := base64.StdEncoding.EncodeToString([]byte(placeholder))
+		setScriptCache(cacheKey, encoded)
+		return encoded, nil
 	}
 
 	resolved := scriptPath
@@ -45,21 +56,51 @@ func FetchAndEncodeScript(ctx context.Context, f *fetcher.Fetcher, scriptPath, b
 
 	// 包装执行模式：将上游脚本源码 base64 编码，生成包装器 process(ctx)
 	if wrapScript {
-		wrapped := BuildWrappedScript(src, phase)
-		return base64.StdEncoding.EncodeToString([]byte(wrapped)), nil
+		wrapped := BuildWrappedScript(src, phase, argument)
+		encoded := base64.StdEncoding.EncodeToString([]byte(wrapped))
+		setScriptCache(cacheKey, encoded)
+		return encoded, nil
 	}
 
-	rewritten := RewriteScriptAPI(src, phase)
+	rewritten := RewriteScriptAPI(src, phase, argument)
 	if useStreamScript {
 		rewritten = WrapAsStreamScript(rewritten, phase)
 	}
-	return base64.StdEncoding.EncodeToString([]byte(rewritten)), nil
+	encoded := base64.StdEncoding.EncodeToString([]byte(rewritten))
+	setScriptCache(cacheKey, encoded)
+	return encoded, nil
+}
+
+// resolvedScriptCacheKey 构造脚本缓存 key，避免同一脚本在同一转换中重复 fetch/转换。
+func resolvedScriptCacheKey(scriptPath, baseURL string, phase int, useStreamScript, wrapScript, fetchScripts bool, argument string) string {
+	return fmt.Sprintf("%s|%s|%d|%t|%t|%t|%s", scriptPath, baseURL, phase, useStreamScript, wrapScript, fetchScripts, argument)
+}
+
+// getScriptCache 读取脚本转换缓存。
+func getScriptCache(key string) (string, bool) {
+	if key == "" {
+		return "", false
+	}
+	if v, ok := scriptCache.Load(key); ok {
+		if s, ok := v.(string); ok {
+			return s, true
+		}
+	}
+	return "", false
+}
+
+// setScriptCache 写入脚本转换缓存。
+func setScriptCache(key, value string) {
+	if key == "" || value == "" {
+		return
+	}
+	scriptCache.Store(key, value)
 }
 
 // EncodeInlineScript 改写内联 JS 并 base64 编码。
 // 用于 Loon request-header/response-body 与 Surge _request-header/_response-body 等。
 func EncodeInlineScript(rawJS string, phase int) string {
-	rewritten := RewriteScriptAPI(rawJS, phase)
+	rewritten := RewriteScriptAPI(rawJS, phase, "")
 	return base64.StdEncoding.EncodeToString([]byte(rewritten))
 }
 
@@ -83,7 +124,7 @@ func EncodeInlineScript(rawJS string, phase int) string {
 //
 // 当检测到 $httpClient 调用时，自动将 process 函数声明为 async。
 // 注意：复杂脚本可能需要人工审核。本函数做尽力改写。
-func RewriteScriptAPI(src string, phase int) string {
+func RewriteScriptAPI(src string, phase int, argument string) string {
 	// 0. 检测是否需要 async（含 $httpClient / await / async / $done({response: 等）
 	// 注意：需与 BuildWrappedScript 的检测条件保持一致
 	needsAsync := strings.Contains(src, "$httpClient") || strings.Contains(src, "$.http") ||
@@ -158,7 +199,7 @@ func RewriteScriptAPI(src string, phase int) string {
 	out = injectBoxJSPolyfill(out)
 
 	// 8. 包装为 function process(ctx) {...}（按需 async）
-	out = wrapAsProcess(out, phase, needsAsync)
+	out = wrapAsProcess(out, phase, needsAsync, argument)
 
 	return out
 }
@@ -187,7 +228,7 @@ func rewriteHttpClientCalls(src string) string {
 			case 0:
 				varDecls += "var " + p + " = null;"
 			case 1:
-				varDecls += "var " + p + " = {status: res.status, headers: (function(h){var o={};if(h&&h.forEach){h.forEach(function(p){o[String(p[0]||\"\")]=String(p[1]||\"\")]});}return o;})(res.headers)};"
+				varDecls += "var " + p + " = {status: res.status, headers: (function(h){var o={};if(h&&h.forEach){h.forEach(function(p){o[String(p[0]||\"\")]=String(p[1]||\"\");});}return o;})(res.headers)};"
 			case 2:
 				varDecls += "var " + p + " = Anywhere.codec.utf8.decode(res.body || new Uint8Array());"
 			}
@@ -288,7 +329,7 @@ func rewriteHttpClientCalls(src string) string {
 }
 
 // boxjsEnvPattern 匹配脚本中使用了 BoxJS Env 类或 $.xxx API 或常见缺失 Web API 的特征。
-var boxjsEnvPattern = regexp.MustCompile(`new\s+Env\s*\(|\$\.((?i)getdata|setdata|getjson|setjson|msg|log|logErr|http|isQuanX|isSurge|isLoon|isNode|wait|done|name)|\$env\s*\.|URLSearchParams|new\s+URL\s*\(|console\.(log|warn|error|info|debug)`)
+var boxjsEnvPattern = regexp.MustCompile(`new\s+Env\s*\(|\$\.((?i)getdata|setdata|getjson|setjson|msg|log|logErr|http|fetch|request|notify|runScript|toURL|setvalue|getvalue|isQuanX|isSurge|isLoon|isNode|wait|done|name)|\$env\s*\.|URLSearchParams|new\s+URL\s*\(|\bfetch\s*\(|\bTextEncoder\b|\bTextDecoder\b|\bHeaders\b|\bRequest\b|\bResponse\b|\bsetTimeout\s*\(|\bsetInterval\s*\(|\bclearTimeout\s*\(|\bclearInterval\s*\(|console\.(log|warn|error|info|debug|assert|trace|table)`)
 
 // injectBoxJSPolyfill 为使用 BoxJS Env 类（$.getdata/$.setdata/$.msg 等）的脚本注入兼容层。
 // BoxJS 脚本通常使用 `const $ = new Env('name')` 创建 Env 实例，
@@ -390,6 +431,75 @@ if (typeof globalThis.atob === 'undefined') {
   globalThis.btoa = function(str) { return Anywhere.codec.base64.encode(Anywhere.codec.utf8.encode(str)); };
 }
 
+function _boxBytes(value) {
+  if (!value) return new Uint8Array();
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  if (typeof value === 'string') return Anywhere.codec.utf8.encode(value);
+  return Anywhere.codec.utf8.encode(JSON.stringify(value));
+}
+function _boxHeaderPairs(headers) {
+  if (!headers) return [];
+  if (Array.isArray(headers)) return headers;
+  if (headers && headers._items) return headers._items;
+  var out = [];
+  for (var name in headers) { if (headers.hasOwnProperty(name)) out.push([String(name), String(headers[name])]); }
+  return out;
+}
+function _boxRequest(input, init) {
+  var req = {};
+  if (typeof input === 'string') req.url = input;
+  else if (input && typeof input === 'object') { for (var k in input) if (input.hasOwnProperty(k)) req[k] = input[k]; }
+  if (init && typeof init === 'object') { for (var k2 in init) if (init.hasOwnProperty(k2)) req[k2] = init[k2]; }
+  req.method = String(req.method || (req.body ? 'POST' : 'GET')).toUpperCase();
+  req.headers = _boxHeaderPairs(req.headers);
+  if (req.body) req.body = _boxBytes(req.body);
+  return req;
+}
+if (typeof globalThis.TextEncoder === 'undefined') {
+  globalThis.TextEncoder = function() {};
+  globalThis.TextEncoder.prototype.encode = function(value) { return Anywhere.codec.utf8.encode(String(value)); };
+}
+if (typeof globalThis.TextDecoder === 'undefined') {
+  globalThis.TextDecoder = function() {};
+  globalThis.TextDecoder.prototype.decode = function(value) { return Anywhere.codec.utf8.decode(_boxBytes(value)); };
+}
+if (typeof globalThis.Headers === 'undefined') {
+  globalThis.Headers = function(init) { this._items = _boxHeaderPairs(init); };
+  globalThis.Headers.prototype.append = function(name, value) { this._items.push([String(name), String(value)]); };
+  globalThis.Headers.prototype.get = function(name) { name = String(name).toLowerCase(); for (var i = 0; i < this._items.length; i++) if (String(this._items[i][0]).toLowerCase() === name) return this._items[i][1]; return null; };
+  globalThis.Headers.prototype.has = function(name) { return this.get(name) !== null; };
+  globalThis.Headers.prototype.set = function(name, value) { this.delete(name); this.append(name, value); };
+  globalThis.Headers.prototype.delete = function(name) { name = String(name).toLowerCase(); this._items = this._items.filter(function(h) { return String(h[0]).toLowerCase() !== name; }); };
+  globalThis.Headers.prototype.forEach = function(cb, thisArg) { for (var i = 0; i < this._items.length; i++) cb.call(thisArg, this._items[i][1], this._items[i][0], this); };
+}
+if (typeof globalThis.Request === 'undefined') {
+  globalThis.Request = function(input, init) { var req = _boxRequest(input, init); this.url = req.url; this.method = req.method; this.headers = new globalThis.Headers(req.headers); this.body = req.body; };
+}
+if (typeof globalThis.Response === 'undefined') {
+  globalThis.Response = function(body, init) { init = init || {}; this.body = _boxBytes(body); this.status = init.status || 200; this.headers = new globalThis.Headers(init.headers); };
+  globalThis.Response.prototype.text = function() { var self = this; return Promise.resolve(Anywhere.codec.utf8.decode(self.body || new Uint8Array())); };
+  globalThis.Response.prototype.json = function() { return this.text().then(function(t) { return JSON.parse(t); }); };
+  globalThis.Response.prototype.arrayBuffer = function() { return Promise.resolve((this.body || new Uint8Array()).buffer); };
+}
+if (typeof globalThis.fetch === 'undefined') {
+  globalThis.fetch = function(input, init) {
+    var req = _boxRequest(input, init);
+    var opts = { method: req.method, headers: req.headers, body: req.body };
+    if (req.method === 'GET' || req.method === 'HEAD') delete opts.body;
+    var p = req.method === 'GET' ? Anywhere.http.get(req.url, opts) : req.method === 'POST' ? Anywhere.http.post(req.url, opts) : req.method === 'PUT' ? Anywhere.http.put(req.url, opts) : req.method === 'DELETE' ? Anywhere.http.delete(req.url, opts) : Anywhere.http.request(opts);
+    return p.then(function(res) { return new globalThis.Response(res.body || new Uint8Array(), { status: res.status || 200, headers: res.headers || [] }); });
+  };
+}
+if (typeof globalThis.setTimeout === 'undefined') globalThis.setTimeout = function(fn, ms) { return Anywhere.wait(ms || 0).then(fn); };
+if (typeof globalThis.clearTimeout === 'undefined') globalThis.clearTimeout = function() {};
+if (typeof globalThis.setInterval === 'undefined') globalThis.setInterval = function(fn, ms) { var h = { active: true }; (function tick(){ if (!h.active) return; Anywhere.wait(ms || 0).then(function(){ if (!h.active) return; fn(); tick(); }); })(); return h; };
+if (typeof globalThis.clearInterval === 'undefined') globalThis.clearInterval = function(h) { if (h) h.active = false; };
+if (typeof globalThis.console.assert === 'undefined') globalThis.console.assert = function(cond) { if (!cond) globalThis.console.warn('Assertion failed'); };
+if (typeof globalThis.console.trace === 'undefined') globalThis.console.trace = function() { globalThis.console.warn('trace'); };
+if (typeof globalThis.console.table === 'undefined') globalThis.console.table = function(obj) { globalThis.console.info(JSON.stringify(obj)); };
+
 // --- BoxJS Env 类 ---
 function Env(name) {
   this.name = name || 'BoxJS';
@@ -409,6 +519,20 @@ function _wrapBoxJSResponse(res) {
     bodyBytes: res.body,
     url: res.url
   };
+}
+function _wrapBoxJSRequest(opts) {
+  if (typeof opts === 'string') return opts;
+  if (!opts || typeof opts !== 'object') return opts;
+  var out = {};
+  for (var k in opts) { if (opts.hasOwnProperty(k)) out[k] = opts[k]; }
+  if (out.headers && !Array.isArray(out.headers)) {
+    var hs = [];
+    for (var name in out.headers) { if (out.headers.hasOwnProperty(name)) hs.push([String(name), String(out.headers[name])]); }
+    out.headers = hs;
+  }
+  if (typeof out.body === 'string') out.body = Anywhere.codec.utf8.encode(out.body);
+  else if (out.body && typeof out.body === 'object' && !(out.body instanceof Uint8Array) && !(out.body instanceof ArrayBuffer) && !ArrayBuffer.isView(out.body)) out.body = Anywhere.codec.utf8.encode(JSON.stringify(out.body));
+  return out;
 }
 Env.prototype.getdata = function(key) {
   return Anywhere.store.getString(key, true) || null;
@@ -436,27 +560,48 @@ Env.prototype.log = function(msg) {
 Env.prototype.logErr = function(msg) {
   Anywhere.log.warning(String(msg));
 };
+Env.prototype.notify = function(title, subtitle, body) {
+  Anywhere.log.info((title || '') + (subtitle ? ' ' + subtitle : '') + (body ? ' ' + body : ''));
+};
+Env.prototype.fetch = function(input, init) {
+  return Anywhere.http.request(_wrapBoxJSRequest(typeof input === 'string' ? { url: input } : input, init)).then(function(res) { return _wrapBoxJSResponse(res); });
+};
+Env.prototype.request = function(input, init) {
+  return this.fetch(input, init);
+};
+Env.prototype.runScript = function(script) {
+  return Promise.resolve().then(function() { return eval(script); });
+};
+Env.prototype.toURL = function(value, base) {
+  return new URL(String(value || ''), base);
+};
+Env.prototype.getvalue = function(key) { return this.getdata(key); };
+Env.prototype.setvalue = function(val, key) { return this.setdata(val, key); };
 Env.prototype.http = {
   // 包装响应：Anywhere.http 返回 headers: [[name, value], ...] + body: Uint8Array
   // BoxJS 脚本期望 headers: {name: value} + body: string
   get: function(opts) {
-    var url = typeof opts === 'string' ? opts : opts.url;
-    return Anywhere.http.get(url, opts).then(function(res) { return _wrapBoxJSResponse(res); });
+    var req = _wrapBoxJSRequest(opts);
+    var url = typeof req === 'string' ? req : req.url;
+    return Anywhere.http.get(url, req).then(function(res) { return _wrapBoxJSResponse(res); });
   },
   post: function(opts) {
-    var url = typeof opts === 'string' ? opts : opts.url;
-    return Anywhere.http.post(url, opts).then(function(res) { return _wrapBoxJSResponse(res); });
+    var req = _wrapBoxJSRequest(opts);
+    var url = typeof req === 'string' ? req : req.url;
+    return Anywhere.http.post(url, req).then(function(res) { return _wrapBoxJSResponse(res); });
   },
   put: function(opts) {
-    var url = typeof opts === 'string' ? opts : opts.url;
-    return Anywhere.http.put(url, opts).then(function(res) { return _wrapBoxJSResponse(res); });
+    var req = _wrapBoxJSRequest(opts);
+    var url = typeof req === 'string' ? req : req.url;
+    return Anywhere.http.put(url, req).then(function(res) { return _wrapBoxJSResponse(res); });
   },
   delete: function(opts) {
-    var url = typeof opts === 'string' ? opts : opts.url;
-    return Anywhere.http.delete(url, opts).then(function(res) { return _wrapBoxJSResponse(res); });
+    var req = _wrapBoxJSRequest(opts);
+    var url = typeof req === 'string' ? req : req.url;
+    return Anywhere.http.delete(url, req).then(function(res) { return _wrapBoxJSResponse(res); });
   },
   request: function(opts) {
-    return Anywhere.http.request(opts).then(function(res) { return _wrapBoxJSResponse(res); });
+    return Anywhere.http.request(_wrapBoxJSRequest(opts)).then(function(res) { return _wrapBoxJSResponse(res); });
   }
 };
 Env.prototype.isQuanX = function() { return false; };
@@ -570,7 +715,7 @@ func rewriteDoneCalls(src string) string {
 // needsAsync 为 true 时使用 async function 声明（用于含 await 的脚本）。
 // 当检测到上游脚本可能污染 globalThis 时（如使用了 $loon/$environment/$script 等），
 // 自动添加 _saveGlobals/_restoreGlobals 隔离。
-func wrapAsProcess(src string, phase int, needsAsync bool) string {
+func wrapAsProcess(src string, phase int, needsAsync bool, argument string) string {
 	trimmed := strings.TrimSpace(src)
 	asyncKw := ""
 	if needsAsync {
@@ -592,8 +737,9 @@ func wrapAsProcess(src string, phase int, needsAsync bool) string {
 	needsHeadersObj := strings.Contains(trimmed, "_headersObj")
 	headersInject := ""
 	if needsHeadersObj {
-		headersInject = "  var _headersObj = (function(h){var o={};if(h&&h.forEach){h.forEach(function(p){o[String(p[0]||\"\")]=String(p[1]||\"\")]});}return o;})(ctx.headers);\n"
+		headersInject = "  var _headersObj = (function(h){var o={};if(h&&h.forEach){h.forEach(function(p){o[String(p[0]||\"\")]=String(p[1]||\"\");});}return o;})(ctx.headers);\n"
 	}
+	argumentInject := buildArgumentInject(argument)
 
 	// 检测是否需要 globalThis 隔离（上游脚本可能往 globalThis 写 $loon/$environment 等）
 	needsIsolation := strings.Contains(trimmed, "$loon") ||
@@ -650,7 +796,10 @@ func wrapAsProcess(src string, phase int, needsAsync bool) string {
 		// 注入 headers 预转换变量（必须在最开头，polyfill 之前）
 		if headersInject != "" {
 			out = regexp.MustCompile(`(function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
-				ReplaceAllString(out, "${1}\n"+headersInject)
+				ReplaceAllString(out, "${1}\n"+headersInject+argumentInject)
+		} else if argumentInject != "" {
+			out = regexp.MustCompile(`(function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
+				ReplaceAllString(out, "${1}\n"+argumentInject)
 		}
 		// 将 polyfill 移入 process 函数体内部
 		out = injectPolyfillIntoProcess(out)
@@ -669,7 +818,10 @@ func wrapAsProcess(src string, phase int, needsAsync bool) string {
 		// 注入 headers 预转换变量（必须在最开头，polyfill 之前）
 		if headersInject != "" {
 			out = regexp.MustCompile(`(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
-				ReplaceAllString(out, "${1}\n"+headersInject)
+				ReplaceAllString(out, "${1}\n"+headersInject+argumentInject)
+		} else if argumentInject != "" {
+			out = regexp.MustCompile(`(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
+				ReplaceAllString(out, "${1}\n"+argumentInject)
 		}
 		out = injectPolyfillIntoProcess(out)
 		if needsIsolation && isolationPrefix != "" {
@@ -691,7 +843,7 @@ func wrapAsProcess(src string, phase int, needsAsync bool) string {
 		}
 		return fmt.Sprintf(`%sfunction process(ctx) {
   if (ctx.phase !== "%s") return;
-%s%s%s  try {
+%s%s%s%s  try {
     run();
   } catch (e) {
     Anywhere.log.warning("script error: " + e);
@@ -699,7 +851,7 @@ func wrapAsProcess(src string, phase int, needsAsync bool) string {
 }
 
 %s
-`, asyncKw, phaseCheck, headersInject, localVarMappings, isolationPrefix, isolationSuffix, trimmed)
+`, asyncKw, phaseCheck, headersInject, argumentInject, localVarMappings, isolationPrefix, isolationSuffix, trimmed)
 	}
 
 	// 否则整体包装
@@ -709,14 +861,24 @@ func wrapAsProcess(src string, phase int, needsAsync bool) string {
 	}
 	return fmt.Sprintf(`%sfunction process(ctx) {
   if (ctx.phase !== "%s") return;
-%s%s%s  try {
+%s%s%s%s  try {
 %s
   } catch (e) {
     Anywhere.log.warning("script error: " + e);
   }%s
   Anywhere.done();
 }
-`, asyncKw, phaseCheck, headersInject, localVarMappings, isolationPrefix, indent(trimmed, "    "), isolationSuffix)
+`, asyncKw, phaseCheck, headersInject, argumentInject, localVarMappings, isolationPrefix, indent(trimmed, "    "), isolationSuffix)
+}
+
+// buildArgumentInject 构造 $argument 兼容注入代码。
+func buildArgumentInject(argument string) string {
+	argument = strings.TrimSpace(argument)
+	if argument == "" {
+		return ""
+	}
+	b, _ := json.Marshal(argument)
+	return "  globalThis.$argument = " + string(b) + ";\n  var $argument = globalThis.$argument;\n"
 }
 
 // indent 给每行加缩进。
@@ -824,7 +986,7 @@ func jsCaptureReplace(url string) string {
 // Loon/Surge 兼容全局变量，然后用 new Function(source)() 执行上游脚本。
 // 这种方式不做字符串替换，能最大程度保持上游脚本的原始逻辑，
 // 适用于 wloc.js 等自包含跨平台脚本。
-func BuildWrappedScript(rawJS string, phase int) string {
+func BuildWrappedScript(rawJS string, phase int, argument string) string {
 	phaseCheck := "request"
 	if phase == 1 {
 		phaseCheck = "response"
@@ -834,6 +996,12 @@ func BuildWrappedScript(rawJS string, phase int) string {
 		strings.Contains(rawJS, "async ") || strings.Contains(rawJS, "$done({response:")
 
 	upstreamB64 := base64.StdEncoding.EncodeToString([]byte(rawJS))
+	argumentLiteral := "{}"
+	if strings.TrimSpace(argument) != "" {
+		if b, err := json.Marshal(argument); err == nil {
+			argumentLiteral = string(b)
+		}
+	}
 
 	asyncKw := ""
 	if needsAsync {
@@ -868,8 +1036,8 @@ func BuildWrappedScript(rawJS string, phase int) string {
       globalThis.$loon = {};
       globalThis.$environment = undefined;
       globalThis.$script = { startTime: new Date() };
-      // $argument 应为对象（上游脚本可能读取属性或做 Object.keys），空字符串会导致 TypeError
-      globalThis.$argument = {};
+		// $argument 先注入原始字符串，供脚本自行解析；空字符串会导致某些脚本读取失败
+      globalThis.$argument = %s;
       globalThis.$request = {
         url: ctx.url || '',
         method: ctx.method || 'GET',
@@ -1024,7 +1192,82 @@ function _wlocBytes(value) {
   if (typeof value === "string") return Anywhere.codec.utf8.encode(value);
   return new Uint8Array();
 }
-`, asyncKw, phaseCheck, upstreamB64)
+
+// === 顶层 Web API Polyfill（与 injectBoxJSPolyfill 保持一致）===
+// 注意：包装执行模式下，上游脚本通过 new Function(_polyfillVars + src)() 执行，
+// 只能访问 globalThis 上的属性。因此必须在此处安装顶层 polyfill，
+// 否则 wloc.js 等自包含脚本中的 fetch/setTimeout/TextEncoder/Headers 等会 ReferenceError。
+function _boxBytes(value) {
+  if (!value) return new Uint8Array();
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  if (typeof value === 'string') return Anywhere.codec.utf8.encode(value);
+  return Anywhere.codec.utf8.encode(JSON.stringify(value));
+}
+function _boxHeaderPairs(headers) {
+  if (!headers) return [];
+  if (Array.isArray(headers)) return headers;
+  if (headers && headers._items) return headers._items;
+  var out = [];
+  for (var name in headers) { if (headers.hasOwnProperty(name)) out.push([String(name), String(headers[name])]); }
+  return out;
+}
+function _boxRequest(input, init) {
+  var req = {};
+  if (typeof input === 'string') req.url = input;
+  else if (input && typeof input === 'object') { for (var k in input) if (input.hasOwnProperty(k)) req[k] = input[k]; }
+  if (init && typeof init === 'object') { for (var k2 in init) if (init.hasOwnProperty(k2)) req[k2] = init[k2]; }
+  req.method = String(req.method || (req.body ? 'POST' : 'GET')).toUpperCase();
+  req.headers = _boxHeaderPairs(req.headers);
+  if (req.body) req.body = _boxBytes(req.body);
+  return req;
+}
+if (typeof globalThis.TextEncoder === 'undefined') {
+  globalThis.TextEncoder = function() {};
+  globalThis.TextEncoder.prototype.encode = function(value) { return Anywhere.codec.utf8.encode(String(value)); };
+}
+if (typeof globalThis.TextDecoder === 'undefined') {
+  globalThis.TextDecoder = function() {};
+  globalThis.TextDecoder.prototype.decode = function(value) { return Anywhere.codec.utf8.decode(_boxBytes(value)); };
+}
+if (typeof globalThis.Headers === 'undefined') {
+  globalThis.Headers = function(init) { this._items = _boxHeaderPairs(init); };
+  globalThis.Headers.prototype.append = function(name, value) { this._items.push([String(name), String(value)]); };
+  globalThis.Headers.prototype.get = function(name) { name = String(name).toLowerCase(); for (var i = 0; i < this._items.length; i++) if (String(this._items[i][0]).toLowerCase() === name) return this._items[i][1]; return null; };
+  globalThis.Headers.prototype.has = function(name) { return this.get(name) !== null; };
+  globalThis.Headers.prototype.set = function(name, value) { this.delete(name); this.append(name, value); };
+  globalThis.Headers.prototype.delete = function(name) { name = String(name).toLowerCase(); this._items = this._items.filter(function(h) { return String(h[0]).toLowerCase() !== name; }); };
+  globalThis.Headers.prototype.forEach = function(cb, thisArg) { for (var i = 0; i < this._items.length; i++) cb.call(thisArg, this._items[i][1], this._items[i][0], this); };
+}
+if (typeof globalThis.Request === 'undefined') {
+  globalThis.Request = function(input, init) { var req = _boxRequest(input, init); this.url = req.url; this.method = req.method; this.headers = new globalThis.Headers(req.headers); this.body = req.body; };
+}
+if (typeof globalThis.Response === 'undefined') {
+  globalThis.Response = function(body, init) { init = init || {}; this.body = _boxBytes(body); this.status = init.status || 200; this.headers = new globalThis.Headers(init.headers); };
+  globalThis.Response.prototype.text = function() { var self = this; return Promise.resolve(Anywhere.codec.utf8.decode(self.body || new Uint8Array())); };
+  globalThis.Response.prototype.json = function() { return this.text().then(function(t) { return JSON.parse(t); }); };
+  globalThis.Response.prototype.arrayBuffer = function() { return Promise.resolve((this.body || new Uint8Array()).buffer); };
+}
+if (typeof globalThis.fetch === 'undefined') {
+  globalThis.fetch = function(input, init) {
+    var req = _boxRequest(input, init);
+    var opts = { method: req.method, headers: req.headers, body: req.body };
+    if (req.method === 'GET' || req.method === 'HEAD') delete opts.body;
+    var p = req.method === 'GET' ? Anywhere.http.get(req.url, opts) : req.method === 'POST' ? Anywhere.http.post(req.url, opts) : req.method === 'PUT' ? Anywhere.http.put(req.url, opts) : req.method === 'DELETE' ? Anywhere.http.delete(req.url, opts) : Anywhere.http.request(opts);
+    return p.then(function(res) { return new globalThis.Response(res.body || new Uint8Array(), { status: res.status || 200, headers: res.headers || [] }); });
+  };
+}
+if (typeof globalThis.setTimeout === 'undefined') globalThis.setTimeout = function(fn, ms) { return Anywhere.wait(ms || 0).then(fn); };
+if (typeof globalThis.clearTimeout === 'undefined') globalThis.clearTimeout = function() {};
+if (typeof globalThis.setInterval === 'undefined') globalThis.setInterval = function(fn, ms) { var h = { active: true }; (function tick(){ if (!h.active) return; Anywhere.wait(ms || 0).then(function(){ if (!h.active) return; fn(); tick(); }); })(); return h; };
+if (typeof globalThis.clearInterval === 'undefined') globalThis.clearInterval = function(h) { if (h) h.active = false; };
+if (typeof globalThis.console !== 'undefined') {
+  if (typeof globalThis.console.assert === 'undefined') globalThis.console.assert = function(cond) { if (!cond) globalThis.console.warn('Assertion failed'); };
+  if (typeof globalThis.console.trace === 'undefined') globalThis.console.trace = function() { globalThis.console.warn('trace'); };
+  if (typeof globalThis.console.table === 'undefined') globalThis.console.table = function(obj) { globalThis.console.info(JSON.stringify(obj)); };
+}
+`, asyncKw, phaseCheck, argumentLiteral, upstreamB64)
 
 	return wrapper
 }
