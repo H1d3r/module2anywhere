@@ -14,6 +14,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -54,6 +55,12 @@ func FetchAndEncodeScript(ctx context.Context, f *fetcher.Fetcher, scriptPath, b
 		return "", fmt.Errorf("下载脚本失败 %q: %w", resolved, err)
 	}
 
+	// 检测上游 script-path 误用 .conf/.plugin/.sgmodule 等非 JS 文件
+	// 这些文件是 QuantumultX/Loon/Surge 模块配置，不是 JS 脚本，直接执行会导致语法错误
+	if isLikelyNonJSScript(resolved, src) {
+		fmt.Fprintf(os.Stderr, "[警告] script-path %q 可能不是 JS 文件（含模块配置特征），转换后可能语法错误\n", resolved)
+	}
+
 	// 包装执行模式：将上游脚本源码 base64 编码，生成包装器 process(ctx)
 	if wrapScript {
 		wrapped := BuildWrappedScript(src, phase, argument)
@@ -69,6 +76,37 @@ func FetchAndEncodeScript(ctx context.Context, f *fetcher.Fetcher, scriptPath, b
 	encoded := base64.StdEncoding.EncodeToString([]byte(rewritten))
 	setScriptCache(cacheKey, encoded)
 	return encoded, nil
+}
+
+// isLikelyNonJSScript 检测下载的脚本内容是否实际上不是 JS 文件（而是模块配置文件）。
+// 上游模块的 script-path 可能误指向 .conf/.plugin/.sgmodule 等配置文件，
+// 直接执行这些文件会导致 JSCore 语法错误（如 "Unexpected token '*'"）。
+// 检测特征：
+//  1. 文件后缀为 .conf/.plugin/.sgmodule/.list
+//  2. 内容含 [General]/[Rule]/[Rewrite]/[MITM]/[Script] 等模块段头
+//  3. 内容含 hostname=/[general] 等 QuantumultX/Loon 配置特征
+func isLikelyNonJSScript(path, content string) bool {
+	// 1. 文件后缀检测
+	lower := strings.ToLower(path)
+	if strings.HasSuffix(lower, ".conf") || strings.HasSuffix(lower, ".plugin") ||
+		strings.HasSuffix(lower, ".sgmodule") || strings.HasSuffix(lower, ".list") {
+		return true
+	}
+	// 2. 内容特征检测：模块段头
+	if strings.Contains(content, "[General]") || strings.Contains(content, "[Rule]") ||
+		strings.Contains(content, "[Rewrite]") || strings.Contains(content, "[MITM]") ||
+		strings.Contains(content, "[Script]") || strings.Contains(content, "[Host]") ||
+		strings.Contains(content, "[URL Rewrite]") || strings.Contains(content, "[Header Rewrite]") {
+		return true
+	}
+	// 3. QuantumultX 配置特征：hostname= 开头的行
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "hostname=") || strings.HasPrefix(trimmed, "hostname =") {
+			return true
+		}
+	}
+	return false
 }
 
 // resolvedScriptCacheKey 构造脚本缓存 key，避免同一脚本在同一转换中重复 fetch/转换。
@@ -707,8 +745,89 @@ func rewriteDoneCalls(src string) string {
 		return match
 	})
 
+	// $done(variable) → _doneVar(variable)
+	// 处理剩余的 $done 调用：参数不是对象字面量（如 $done(r)、$done(result)、$done(null)）
+	// 这些无法静态分析，需要运行时适配函数 _doneVar 处理 body/headers/status/response 字段
+	// 注意：此正则不匹配 $done() 和 $done({...})（已在前面的步骤中处理完毕）
+	out = regexp.MustCompile(`\$done\(\s*([^){}\s][^)]*?)\s*\)`).ReplaceAllString(out, "_doneVar($1)")
+
 	return out
 }
+
+// doneVarAdapter 是注入到 rewrite 模式脚本中的 $done(variable) 运行时适配函数。
+// 当上游脚本使用 $done(r) 形式（r 是运行时变量）时，rewriteDoneCalls 会将其改写为 _doneVar(r)。
+// _doneVar 负责将 Loon/Surge 的 {body, headers, status, response} 对象语义映射到 Anywhere API。
+// 注意：headers 需要从 {name: value} 对象转换为 [[name, value], ...] 数组对格式。
+const doneVarAdapter = `  function _doneVar(r) {
+    if (!r || typeof r !== 'object') { Anywhere.done(); return; }
+    if (r.response) {
+      var resp = r.response;
+      var h = resp.headers;
+      if (h && typeof h === 'object' && !Array.isArray(h)) {
+        var arr = [];
+        for (var k in h) { if (h.hasOwnProperty(k)) arr.push([k, String(h[k])]); }
+        h = arr;
+      }
+      Anywhere.respond({
+        status: resp.status || resp.statusCode || 200,
+        headers: h,
+        body: resp.body != null ? Anywhere.codec.utf8.encode(String(resp.body)) : undefined
+      });
+      return;
+    }
+    if (r.body != null) { ctx.body = Anywhere.codec.utf8.encode(String(r.body)); }
+    if (r.headers && typeof r.headers === 'object' && !Array.isArray(r.headers)) {
+      var arr = [];
+      for (var k in r.headers) { if (r.headers.hasOwnProperty(k)) arr.push([k, String(r.headers[k])]); }
+      ctx.headers = arr;
+    }
+    if (r.status != null) { ctx.status = r.status; }
+    Anywhere.done();
+  }
+`
+
+// httpClientAdapter 是注入到 rewrite 模式脚本中的 $httpClient 运行时适配对象。
+// 当上游脚本使用 $httpClient.get(var, callback) 等回调变量形式（非内联函数）时，
+// rewriteHttpClientCalls 的正则无法匹配。此时注入 $httpClient 对象定义，
+// 让上游脚本直接使用兼容的 $httpClient API，而非改写调用形式。
+// 注意：headers 需要从 [[name, value], ...] 转换为 {name: value} 对象格式。
+const httpClientAdapter = `  function _httpClientHeadersToObj(h) {
+    var o = {};
+    if (h && h.forEach) { h.forEach(function(p) { o[String(p[0]||"")] = String(p[1]||""); }); }
+    return o;
+  }
+  var $httpClient = {
+    get: function(url, opts, cb) {
+      if (typeof opts === 'function') { cb = opts; opts = null; }
+      Anywhere.http.get(url, opts).then(function(res) {
+        if (cb) cb(null, { status: res.status || 200, headers: _httpClientHeadersToObj(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
+      }).catch(function(e) { if (cb) cb(e, null, null); });
+    },
+    post: function(url, opts, cb) {
+      if (typeof opts === 'function') { cb = opts; opts = null; }
+      Anywhere.http.post(url, opts).then(function(res) {
+        if (cb) cb(null, { status: res.status || 200, headers: _httpClientHeadersToObj(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
+      }).catch(function(e) { if (cb) cb(e, null, null); });
+    },
+    put: function(url, opts, cb) {
+      if (typeof opts === 'function') { cb = opts; opts = null; }
+      Anywhere.http.put(url, opts).then(function(res) {
+        if (cb) cb(null, { status: res.status || 200, headers: _httpClientHeadersToObj(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
+      }).catch(function(e) { if (cb) cb(e, null, null); });
+    },
+    delete: function(url, opts, cb) {
+      if (typeof opts === 'function') { cb = opts; opts = null; }
+      Anywhere.http.delete(url, opts).then(function(res) {
+        if (cb) cb(null, { status: res.status || 200, headers: _httpClientHeadersToObj(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
+      }).catch(function(e) { if (cb) cb(e, null, null); });
+    },
+    request: function(opts, cb) {
+      Anywhere.http.request(opts).then(function(res) {
+        if (cb) cb(null, { status: res.status || 200, headers: _httpClientHeadersToObj(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
+      }).catch(function(e) { if (cb) cb(e, null, null); });
+    }
+  };
+`
 
 // wrapAsProcess 将脚本包装为 function process(ctx) {...}。
 // 若源码已定义 process(ctx) 则不重复包装。
@@ -734,12 +853,58 @@ func wrapAsProcess(src string, phase int, needsAsync bool, argument string) stri
 	// headers 预转换：将 ctx.headers（[[name, value], ...] 数组对）转换为 {name: value} 对象
 	// Loon/Surge 的 $request.headers/$response.headers 是对象格式，RewriteScriptAPI 中替换为 _headersObj
 	// 注意：必须在 process 函数体最开头执行，确保上游脚本使用前已初始化
-	needsHeadersObj := strings.Contains(trimmed, "_headersObj")
+	// 如果需要注入 $request/$response 对象，也需要 _headersObj（因为 headers 字段要用转换后的对象）
+	needsHeadersObj := strings.Contains(trimmed, "_headersObj") || strings.Contains(trimmed, "$request") || strings.Contains(trimmed, "$response")
 	headersInject := ""
 	if needsHeadersObj {
 		headersInject = "  var _headersObj = (function(h){var o={};if(h&&h.forEach){h.forEach(function(p){o[String(p[0]||\"\")]=String(p[1]||\"\");});}return o;})(ctx.headers);\n"
 	}
 	argumentInject := buildArgumentInject(argument)
+
+	// 检测是否使用了 _doneVar（由 rewriteDoneCalls 将 $done(variable) 改写而来）
+	// 如果是，注入运行时适配函数，将 {body, headers, status, response} 映射到 Anywhere API
+	doneVarInject := ""
+	if strings.Contains(trimmed, "_doneVar(") {
+		doneVarInject = doneVarAdapter
+	}
+
+	// 检测是否需要注入 $httpClient 适配对象
+	// rewriteHttpClientCalls 的正则只能匹配内联 function/箭头函数形式，
+	// 上游脚本若使用 $httpClient.get(var, var) 等变量参数形式则无法改写。
+	// 此时注入兼容的 $httpClient 对象定义，让上游脚本直接调用。
+	// 检测条件：只要 $httpClient 标识符还存在（说明有未改写的调用），就注入 adapter。
+	// 注意：不能用 !contains("Anywhere.http") 判断，因为 BoxJS polyfill 中也会出现 Anywhere.http，
+	// 与上游 $httpClient 改写无关，会导致漏注入。
+	needsHttpClientVar := strings.Contains(trimmed, "$httpClient")
+	httpClientInject := ""
+	if needsHttpClientVar {
+		httpClientInject = httpClientAdapter
+	}
+
+	// 检测是否需要注入 $request/$response 对象定义
+	// 上游脚本可能使用 typeof $request、$response.hasOwnProperty(...) 等形式，
+	// 这些形式中 $request/$response 作为变量本身出现，无法通过属性替换处理。
+	// 需要 注入对象定义，使这些引用能正常工作。
+	// 注意：_headersObj 必须在此注入之前已定义（headersInject 已处理）。
+	needsReqRespVar := strings.Contains(trimmed, "$request") || strings.Contains(trimmed, "$response")
+	reqRespInject := ""
+	if needsReqRespVar {
+		reqRespInject = "  var $request = {\n" +
+			"    url: ctx.url || '',\n" +
+			"    method: ctx.method || 'GET',\n" +
+			"    headers: typeof _headersObj !== 'undefined' ? _headersObj : {},\n" +
+			"    body: Anywhere.codec.utf8.decode(ctx.body || new Uint8Array()),\n" +
+			"    bodyBytes: ctx.body\n" +
+			"  };\n" +
+			"  var $response = {\n" +
+			"    status: ctx.status || 200,\n" +
+			"    statusCode: ctx.status || 200,\n" +
+			"    headers: typeof _headersObj !== 'undefined' ? _headersObj : {},\n" +
+			"    body: Anywhere.codec.utf8.decode(ctx.body || new Uint8Array()),\n" +
+			"    bodyBytes: ctx.body,\n" +
+			"    rawBody: ctx.body\n" +
+			"  };\n"
+	}
 
 	// 检测是否需要 globalThis 隔离（上游脚本可能往 globalThis 写 $loon/$environment 等）
 	needsIsolation := strings.Contains(trimmed, "$loon") ||
@@ -793,13 +958,11 @@ func wrapAsProcess(src string, phase int, needsAsync bool, argument string) stri
 		if needsAsync && !strings.HasPrefix(out, "async ") {
 			out = "async " + out
 		}
-		// 注入 headers 预转换变量（必须在最开头，polyfill 之前）
-		if headersInject != "" {
+		// 注入 headers 预转换变量、$request/$response 对象、$argument、_doneVar 适配函数、$httpClient 适配对象（必须在最开头，polyfill 之前）
+		injectPrefix := headersInject + reqRespInject + argumentInject + doneVarInject + httpClientInject
+		if injectPrefix != "" {
 			out = regexp.MustCompile(`(function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
-				ReplaceAllString(out, "${1}\n"+headersInject+argumentInject)
-		} else if argumentInject != "" {
-			out = regexp.MustCompile(`(function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
-				ReplaceAllString(out, "${1}\n"+argumentInject)
+				ReplaceAllString(out, "${1}\n"+injectPrefix)
 		}
 		// 将 polyfill 移入 process 函数体内部
 		out = injectPolyfillIntoProcess(out)
@@ -815,13 +978,11 @@ func wrapAsProcess(src string, phase int, needsAsync bool, argument string) stri
 	}
 	if regexp.MustCompile(`(?m)^async\s+function\s+process\s*\(\s*ctx\s*\)`).MatchString(trimmed) {
 		out := trimmed
-		// 注入 headers 预转换变量（必须在最开头，polyfill 之前）
-		if headersInject != "" {
+		// 注入 headers 预转换变量、$request/$response 对象、$argument、_doneVar 适配函数、$httpClient 适配对象
+		injectPrefix := headersInject + reqRespInject + argumentInject + doneVarInject + httpClientInject
+		if injectPrefix != "" {
 			out = regexp.MustCompile(`(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
-				ReplaceAllString(out, "${1}\n"+headersInject+argumentInject)
-		} else if argumentInject != "" {
-			out = regexp.MustCompile(`(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
-				ReplaceAllString(out, "${1}\n"+argumentInject)
+				ReplaceAllString(out, "${1}\n"+injectPrefix)
 		}
 		out = injectPolyfillIntoProcess(out)
 		if needsIsolation && isolationPrefix != "" {
@@ -843,7 +1004,7 @@ func wrapAsProcess(src string, phase int, needsAsync bool, argument string) stri
 		}
 		return fmt.Sprintf(`%sfunction process(ctx) {
   if (ctx.phase !== "%s") return;
-%s%s%s%s  try {
+%s%s%s%s%s%s%s  try {
     run();
   } catch (e) {
     Anywhere.log.warning("script error: " + e);
@@ -851,7 +1012,7 @@ func wrapAsProcess(src string, phase int, needsAsync bool, argument string) stri
 }
 
 %s
-`, asyncKw, phaseCheck, headersInject, argumentInject, localVarMappings, isolationPrefix, isolationSuffix, trimmed)
+`, asyncKw, phaseCheck, headersInject, reqRespInject, argumentInject, doneVarInject, httpClientInject, localVarMappings, isolationPrefix, isolationSuffix, trimmed)
 	}
 
 	// 否则整体包装
@@ -861,14 +1022,14 @@ func wrapAsProcess(src string, phase int, needsAsync bool, argument string) stri
 	}
 	return fmt.Sprintf(`%sfunction process(ctx) {
   if (ctx.phase !== "%s") return;
-%s%s%s%s  try {
+%s%s%s%s%s%s%s  try {
 %s
   } catch (e) {
     Anywhere.log.warning("script error: " + e);
   }%s
   Anywhere.done();
 }
-`, asyncKw, phaseCheck, headersInject, argumentInject, localVarMappings, isolationPrefix, indent(trimmed, "    "), isolationSuffix)
+`, asyncKw, phaseCheck, headersInject, reqRespInject, argumentInject, doneVarInject, httpClientInject, localVarMappings, isolationPrefix, indent(trimmed, "    "), isolationSuffix)
 }
 
 // buildArgumentInject 构造 $argument 兼容注入代码。

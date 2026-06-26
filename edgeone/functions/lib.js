@@ -399,6 +399,38 @@ function scriptCacheKey(
   ].join("|");
 }
 
+// isLikelyNonJSScript 检测下载的脚本内容是否实际上不是 JS 文件（而是模块配置文件）。
+// 上游模块的 script-path 可能误指向 .conf/.plugin/.sgmodule 等配置文件，
+// 直接执行这些文件会导致 JSCore 语法错误（如 "Unexpected token '*'"）。
+// 检测特征：
+//   1. 文件后缀为 .conf/.plugin/.sgmodule/.list
+//   2. 内容含 [General]/[Rule]/[Rewrite]/[MITM]/[Script] 等模块段头
+//   3. 内容含 hostname= 开头的行（QuantumultX/Loon 配置特征）
+function isLikelyNonJSScript(path, content) {
+  // 1. 文件后缀检测
+  var lower = String(path || "").toLowerCase();
+  if (lower.endsWith(".conf") || lower.endsWith(".plugin") ||
+      lower.endsWith(".sgmodule") || lower.endsWith(".list")) {
+    return true;
+  }
+  // 2. 内容特征检测：模块段头
+  if (content.indexOf("[General]") >= 0 || content.indexOf("[Rule]") >= 0 ||
+      content.indexOf("[Rewrite]") >= 0 || content.indexOf("[MITM]") >= 0 ||
+      content.indexOf("[Script]") >= 0 || content.indexOf("[Host]") >= 0 ||
+      content.indexOf("[URL Rewrite]") >= 0 || content.indexOf("[Header Rewrite]") >= 0) {
+    return true;
+  }
+  // 3. QuantumultX 配置特征：hostname= 开头的行
+  var lines = content.split("\n");
+  for (var i = 0; i < lines.length; i++) {
+    var trimmed = lines[i].trim();
+    if (trimmed.startsWith("hostname=") || trimmed.startsWith("hostname =")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 async function fetchAndEncodeScript(
   scriptPath,
   fetchScripts,
@@ -425,6 +457,11 @@ async function fetchAndEncodeScript(
   }
   try {
     const src = await fetchRemoteWithProxy(scriptPath, userAgent);
+    // 检测上游 script-path 误用 .conf/.plugin/.sgmodule 等非 JS 文件
+    // 这些文件是 QuantumultX/Loon/Surge 模块配置，不是 JS 脚本，直接执行会导致语法错误
+    if (isLikelyNonJSScript(scriptPath, src)) {
+      console.warn(`[警告] script-path "${scriptPath}" 可能不是 JS 文件（含模块配置特征），转换后可能语法错误`);
+    }
     // 包装执行模式：不做字符串替换，直接 base64 编码上游脚本
     if (wrap) {
       const encoded = encodeWrappedScript(src, phase, argument || "");
@@ -1338,8 +1375,89 @@ function rewriteDoneCalls(src) {
     },
   );
 
+  // $done(variable) → _doneVar(variable)
+  // 处理剩余的 $done 调用：参数不是对象字面量（如 $done(r)、$done(result)、$done(null)）
+  // 这些无法静态分析，需要运行时适配函数 _doneVar 处理 body/headers/status/response 字段
+  // 注意：此正则不匹配 $done() 和 $done({...})（已在前面的步骤中处理完毕）
+  out = out.replace(/\$done\(\s*([^){}\s][^)]*?)\s*\)/g, "_doneVar($1)");
+
   return out;
 }
+
+// doneVarAdapter 是注入到 rewrite 模式脚本中的 $done(variable) 运行时适配函数。
+// 当上游脚本使用 $done(r) 形式（r 是运行时变量）时，rewriteDoneCalls 会将其改写为 _doneVar(r)。
+// _doneVar 负责将 Loon/Surge 的 {body, headers, status, response} 对象语义映射到 Anywhere API。
+// 注意：headers 需要从 {name: value} 对象转换为 [[name, value], ...] 数组对格式。
+const doneVarAdapter = `  function _doneVar(r) {
+    if (!r || typeof r !== 'object') { Anywhere.done(); return; }
+    if (r.response) {
+      var resp = r.response;
+      var h = resp.headers;
+      if (h && typeof h === 'object' && !Array.isArray(h)) {
+        var arr = [];
+        for (var k in h) { if (h.hasOwnProperty(k)) arr.push([k, String(h[k])]); }
+        h = arr;
+      }
+      Anywhere.respond({
+        status: resp.status || resp.statusCode || 200,
+        headers: h,
+        body: resp.body != null ? Anywhere.codec.utf8.encode(String(resp.body)) : undefined
+      });
+      return;
+    }
+    if (r.body != null) { ctx.body = Anywhere.codec.utf8.encode(String(r.body)); }
+    if (r.headers && typeof r.headers === 'object' && !Array.isArray(r.headers)) {
+      var arr = [];
+      for (var k in r.headers) { if (r.headers.hasOwnProperty(k)) arr.push([k, String(r.headers[k])]); }
+      ctx.headers = arr;
+    }
+    if (r.status != null) { ctx.status = r.status; }
+    Anywhere.done();
+  }
+`;
+
+// httpClientAdapter 是注入到 rewrite 模式脚本中的 $httpClient 运行时适配对象。
+// 当上游脚本使用 $httpClient.get(var, callback) 等回调变量形式（非内联函数）时，
+// rewriteHttpClientCalls 的正则无法匹配。此时注入 $httpClient 对象定义，
+// 让上游脚本直接使用兼容的 $httpClient API，而非改写调用形式。
+// 注意：headers 需要从 [[name, value], ...] 转换为 {name: value} 对象格式。
+const httpClientAdapter = `  function _httpClientHeadersToObj(h) {
+    var o = {};
+    if (h && h.forEach) { h.forEach(function(p) { o[String(p[0]||"")] = String(p[1]||""); }); }
+    return o;
+  }
+  var $httpClient = {
+    get: function(url, opts, cb) {
+      if (typeof opts === 'function') { cb = opts; opts = null; }
+      Anywhere.http.get(url, opts).then(function(res) {
+        if (cb) cb(null, { status: res.status || 200, headers: _httpClientHeadersToObj(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
+      }).catch(function(e) { if (cb) cb(e, null, null); });
+    },
+    post: function(url, opts, cb) {
+      if (typeof opts === 'function') { cb = opts; opts = null; }
+      Anywhere.http.post(url, opts).then(function(res) {
+        if (cb) cb(null, { status: res.status || 200, headers: _httpClientHeadersToObj(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
+      }).catch(function(e) { if (cb) cb(e, null, null); });
+    },
+    put: function(url, opts, cb) {
+      if (typeof opts === 'function') { cb = opts; opts = null; }
+      Anywhere.http.put(url, opts).then(function(res) {
+        if (cb) cb(null, { status: res.status || 200, headers: _httpClientHeadersToObj(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
+      }).catch(function(e) { if (cb) cb(e, null, null); });
+    },
+    delete: function(url, opts, cb) {
+      if (typeof opts === 'function') { cb = opts; opts = null; }
+      Anywhere.http.delete(url, opts).then(function(res) {
+        if (cb) cb(null, { status: res.status || 200, headers: _httpClientHeadersToObj(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
+      }).catch(function(e) { if (cb) cb(e, null, null); });
+    },
+    request: function(opts, cb) {
+      Anywhere.http.request(opts).then(function(res) {
+        if (cb) cb(null, { status: res.status || 200, headers: _httpClientHeadersToObj(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
+      }).catch(function(e) { if (cb) cb(e, null, null); });
+    }
+  };
+`;
 
 function wrapAsProcess(src, phase, needsAsync, argument) {
   const trimmed = src.trim();
@@ -1358,12 +1476,52 @@ function wrapAsProcess(src, phase, needsAsync, argument) {
   // headers 预转换：将 ctx.headers（[[name, value], ...] 数组对）转换为 {name: value} 对象
   // Loon/Surge 的 $request.headers/$response.headers 是对象格式，rewriteScriptAPI 中替换为 _headersObj
   // 注意：必须在 process 函数体最开头执行，确保上游脚本使用前已初始化
-  const needsHeadersObj = trimmed.includes("_headersObj");
+  // 如果需要注入 $request/$response 对象，也需要 _headersObj（因为 headers 字段要用转换后的对象）
+  const needsHeadersObj = trimmed.includes("_headersObj") || trimmed.includes("$request") || trimmed.includes("$response");
   const headersInject = needsHeadersObj
     ? '  var _headersObj = (function(h){var o={};if(h&&h.forEach){h.forEach(function(p){o[String(p[0]||"")]=String(p[1]||"");});}return o;})(ctx.headers);\n'
     : "";
   const argumentInject = String(argument || "").trim()
     ? `  globalThis.$argument = ${JSON.stringify(String(argument || ""))};\n  var $argument = globalThis.$argument;\n`
+    : "";
+
+  // 检测是否使用了 _doneVar（由 rewriteDoneCalls 将 $done(variable) 改写而来）
+  // 如果是，注入运行时适配函数，将 {body, headers, status, response} 映射到 Anywhere API
+  const doneVarInject = trimmed.includes("_doneVar(") ? doneVarAdapter : "";
+
+  // 检测是否需要注入 $httpClient 适配对象
+  // rewriteHttpClientCalls 的正则只能匹配内联 function/箭头函数形式，
+  // 上游脚本若使用 $httpClient.get(var, var) 等变量参数形式则无法改写。
+  // 此时注入兼容的 $httpClient 对象定义，让上游脚本直接调用。
+  // 检测条件：只要 $httpClient 标识符还存在（说明有未改写的调用），就注入 adapter。
+  // 注意：不能用 !includes("Anywhere.http") 判断，因为 BoxJS polyfill 中也会出现 Anywhere.http，
+  // 与上游 $httpClient 改写无关，会导致漏注入。
+  const needsHttpClientVar = trimmed.includes("$httpClient");
+  const httpClientInject = needsHttpClientVar ? httpClientAdapter : "";
+
+  // 检测是否需要注入 $request/$response 对象定义
+  // 上游脚本可能使用 typeof $request、$response.hasOwnProperty(...) 等形式，
+  // 这些形式中 $request/$response 作为变量本身出现，无法通过属性替换处理。
+  // 需要 注入对象定义，使这些引用能正常工作。
+  // 注意：_headersObj 必须在此注入之前已定义（headersInject 已处理）。
+  const needsReqRespVar = trimmed.includes("$request") || trimmed.includes("$response");
+  const reqRespInject = needsReqRespVar
+    ? `  var $request = {
+    url: ctx.url || '',
+    method: ctx.method || 'GET',
+    headers: typeof _headersObj !== 'undefined' ? _headersObj : {},
+    body: Anywhere.codec.utf8.decode(ctx.body || new Uint8Array()),
+    bodyBytes: ctx.body
+  };
+  var $response = {
+    status: ctx.status || 200,
+    statusCode: ctx.status || 200,
+    headers: typeof _headersObj !== 'undefined' ? _headersObj : {},
+    body: Anywhere.codec.utf8.decode(ctx.body || new Uint8Array()),
+    bodyBytes: ctx.body,
+    rawBody: ctx.body
+  };
+`
     : "";
 
   // 检测是否需要 globalThis 隔离（上游脚本可能往 globalThis 写 $loon/$environment 等）
@@ -1393,16 +1551,12 @@ function wrapAsProcess(src, phase, needsAsync, argument) {
   if (/^function\s+process\s*\(\s*ctx\s*\)/m.test(trimmed)) {
     let out = trimmed;
     if (needsAsync && !out.startsWith("async ")) out = "async " + out;
-    // 注入 headers 预转换变量（必须在最开头，polyfill 之前）
-    if (headersInject) {
+    // 注入 headers 预转换变量、$request/$response 对象、$argument、_doneVar 适配函数、$httpClient 适配对象（必须在最开头，polyfill 之前）
+    const injectPrefix = headersInject + reqRespInject + argumentInject + doneVarInject + httpClientInject;
+    if (injectPrefix) {
       out = out.replace(
         /(function\s+process\s*\(\s*ctx\s*\)\s*\{)/,
-        "$1\n" + headersInject + argumentInject,
-      );
-    } else if (argumentInject) {
-      out = out.replace(
-        /(function\s+process\s*\(\s*ctx\s*\)\s*\{)/,
-        "$1\n" + argumentInject,
+        "$1\n" + injectPrefix,
       );
     }
     // 将 polyfill 代码（process 函数外部）移到 process 函数体内部
@@ -1436,16 +1590,12 @@ function wrapAsProcess(src, phase, needsAsync, argument) {
   }
   if (/^async\s+function\s+process\s*\(\s*ctx\s*\)/m.test(trimmed)) {
     let out = trimmed;
-    // 注入 headers 预转换变量（必须在最开头，polyfill 之前）
-    if (headersInject) {
+    // 注入 headers 预转换变量、$request/$response 对象、$argument、_doneVar 适配函数、$httpClient 适配对象
+    const injectPrefix = headersInject + reqRespInject + argumentInject + doneVarInject + httpClientInject;
+    if (injectPrefix) {
       out = out.replace(
         /(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)/,
-        "$1\n" + headersInject + argumentInject,
-      );
-    } else if (argumentInject) {
-      out = out.replace(
-        /(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)/,
-        "$1\n" + argumentInject,
+        "$1\n" + injectPrefix,
       );
     }
     if (hasPolyfill) {
@@ -1476,20 +1626,16 @@ function wrapAsProcess(src, phase, needsAsync, argument) {
   if (/^function\s+run\s*\(\s*\)/m.test(trimmed)) {
     return `${asyncKw}function process(ctx) {
   if (ctx.phase !== "${phaseCheck}") return;
-${headersInject}${argumentInject}${localVarMappings}${isoPrefix}  try { run(); } catch (e) { Anywhere.log.warning("script error: " + e); }${isoSuffix}
+${headersInject}${reqRespInject}${argumentInject}${doneVarInject}${httpClientInject}${localVarMappings}${isoPrefix}  try { run(); } catch (e) { Anywhere.log.warning("script error: " + e); }${isoSuffix}
 }
 ${trimmed}`;
   }
-  return `${asyncKw}
-  function process(ctx) {
-  if (ctx.phase !== "${phaseCheck}") 
-  return;
-  ${headersInject}${argumentInject}${localVarMappings}${isoPrefix}  
-  try {
-    ${indent(trimmed, "    ")}
-  } 
-  catch (e) { 
-    Anywhere.log.warning("script error: " + e); 
+  return `${asyncKw}function process(ctx) {
+  if (ctx.phase !== "${phaseCheck}") return;
+${headersInject}${reqRespInject}${argumentInject}${doneVarInject}${httpClientInject}${localVarMappings}${isoPrefix}  try {
+${indent(trimmed, "    ")}
+  } catch (e) {
+    Anywhere.log.warning("script error: " + e);
   }${isoSuffix}
   Anywhere.done();
 }`;
