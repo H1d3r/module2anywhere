@@ -277,6 +277,20 @@ func trimQuotes(s string) string {
 	return s
 }
 
+// stripInlineComment 去掉值末尾的行内注释（# / ;），保留正文中的字符。
+func stripInlineComment(s string) string {
+	s = strings.TrimSpace(s)
+	for i := 0; i < len(s); i++ {
+		if s[i] != '#' && s[i] != ';' {
+			continue
+		}
+		if i == 0 || s[i-1] == ' ' || s[i-1] == '\t' {
+			return strings.TrimSpace(s[:i])
+		}
+	}
+	return s
+}
+
 // normalizeHostnames 规范化 hostname 列表：
 //   - 去除 %APPEND% / %APPEND% 前缀（Surge）
 //   - 去除 *. / * 前缀（Anywhere 用后缀匹配，无需通配符）

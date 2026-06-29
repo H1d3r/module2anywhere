@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -24,6 +25,22 @@ import (
 )
 
 var scriptCache sync.Map
+
+// jsStringLiteral 将任意字符串转为安全的 JS 字符串字面量（含双引号）。
+// 用于将外部输入（如 script-path）安全嵌入生成的 JS 代码，防止引号/反斜杠注入。
+// Go 的 strconv.Quote 生成双引号转义，与 JS 字符串字面量语法兼容。
+func jsStringLiteral(s string) string {
+	return strconv.Quote(s)
+}
+
+// notFetchedPlaceholder 生成"脚本未下载"占位 process 函数的 base64 编码。
+// 使用 jsStringLiteral 转义 scriptPath，防止恶意 script-path 注入 JS。
+// 拼接形式：Anywhere.log.warning("script not fetched: " + "<escaped>");
+func notFetchedPlaceholder(scriptPath string) string {
+	placeholder := "function process(ctx){Anywhere.log.warning(\"script not fetched: \" + " +
+		jsStringLiteral(scriptPath) + ");}"
+	return base64.StdEncoding.EncodeToString([]byte(placeholder))
+}
 
 // FetchAndEncodeScript 下载脚本，改写 API，base64 编码。
 // scriptPath 可以是 URL 或本地路径。baseURL 用于解析相对路径。
@@ -36,9 +53,8 @@ func FetchAndEncodeScript(ctx context.Context, f *fetcher.Fetcher, scriptPath, b
 	}
 
 	if !fetchScripts {
-		// 占位符：返回一个空 process 函数
-		placeholder := `function process(ctx){Anywhere.log.warning("script not fetched: ` + scriptPath + `");}`
-		encoded := base64.StdEncoding.EncodeToString([]byte(placeholder))
+		// 占位符：返回一个空 process 函数（scriptPath 已转义防注入）
+		encoded := notFetchedPlaceholder(scriptPath)
 		setScriptCache(cacheKey, encoded)
 		return encoded, nil
 	}
@@ -83,16 +99,23 @@ func FetchAndEncodeScript(ctx context.Context, f *fetcher.Fetcher, scriptPath, b
 // 直接执行这些文件会导致 JSCore 语法错误（如 "Unexpected token '*'"）。
 // 检测特征：
 //  1. 文件后缀为 .conf/.plugin/.sgmodule/.list
-//  2. 内容含 [General]/[Rule]/[Rewrite]/[MITM]/[Script] 等模块段头
-//  3. 内容含 hostname=/[general] 等 QuantumultX/Loon 配置特征
+//  2. 非 .js 文件：内容含 [General]/[Rule]/[Rewrite]/[MITM]/[Script] 等模块段头
+//  3. 非 .js 文件：内容含 hostname= 等 QuantumultX/Loon 配置特征
+//
+// 注意：.js 文件跳过内容检测，因为部分上游 .js 文件是混合格式（开头有 [rewrite_local] 配置 + JS 代码），
+// 内容检测会误报。.js 文件只靠后缀判断。
 func isLikelyNonJSScript(path, content string) bool {
-	// 1. 文件后缀检测
+	// 1. 文件后缀检测（总是生效）
 	lower := strings.ToLower(path)
 	if strings.HasSuffix(lower, ".conf") || strings.HasSuffix(lower, ".plugin") ||
 		strings.HasSuffix(lower, ".sgmodule") || strings.HasSuffix(lower, ".list") {
 		return true
 	}
-	// 2. 内容特征检测：模块段头
+	// .js 文件跳过内容检测，避免混合格式文件误报
+	if strings.HasSuffix(lower, ".js") {
+		return false
+	}
+	// 2. 内容特征检测：模块段头（仅对无后缀或未知后缀文件）
 	if strings.Contains(content, "[General]") || strings.Contains(content, "[Rule]") ||
 		strings.Contains(content, "[Rewrite]") || strings.Contains(content, "[MITM]") ||
 		strings.Contains(content, "[Script]") || strings.Contains(content, "[Host]") ||
@@ -199,14 +222,13 @@ func RewriteScriptAPI(src string, phase int, argument string) string {
 	out = rewriteDoneCalls(out)
 
 	// 3. $persistentStore
-	out = regexp.MustCompile(`\$persistentStore\.read\(\s*([^)]+?)\s*\)`).
+	out = rePersistentStoreRead.
 		ReplaceAllString(out, "Anywhere.store.getString($1, true)")
 	// $persistentStore.write(val, key) — 需要处理 null/undefined 的删除语义
 	// 当 val 为 null 或 undefined 时，应调用 Anywhere.store.delete(key, true) 而非 set
-	out = regexp.MustCompile(`\$persistentStore\.write\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)`).
+	out = rePersistentStoreWrite.
 		ReplaceAllStringFunc(out, func(match string) string {
-			sub := regexp.MustCompile(`\$persistentStore\.write\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)`)
-			parts := sub.FindStringSubmatch(match)
+			parts := rePersistentStoreWrite.FindStringSubmatch(match)
 			if len(parts) < 3 {
 				return match
 			}
@@ -221,7 +243,7 @@ func RewriteScriptAPI(src string, phase int, argument string) string {
 		})
 
 	// 4. $notification.post(title, sub, body) → Anywhere.log.info(title + " " + sub + " " + body)
-	out = regexp.MustCompile(`\$notification\.post\(\s*([^,]+?)\s*,\s*([^,]*?)\s*,\s*([^)]+?)\s*\)`).
+	out = reNotificationPost.
 		ReplaceAllString(out, "Anywhere.log.info($1 + \" \" + $2 + \" \" + $3)")
 
 	// 5. $httpClient 回调式 → async/await Promise 式
@@ -276,9 +298,8 @@ func rewriteHttpClientCalls(src string) string {
 
 	// $httpClient.get/put/delete(url, function(err, resp, body) { ... })
 	// → await Anywhere.http.get(url).then(function(res) { var err=null; var resp={...}; var body=...;
-	re1 := regexp.MustCompile(`\$httpClient\.(get|put|delete)\(\s*([^,]+?)\s*,\s*function\s*\(([^)]*)\)\s*\{`)
-	out = re1.ReplaceAllStringFunc(out, func(match string) string {
-		sub := re1.FindStringSubmatch(match)
+	out = reHttpCliGetFn.ReplaceAllStringFunc(out, func(match string) string {
+		sub := reHttpCliGetFn.FindStringSubmatch(match)
 		if len(sub) < 4 {
 			return match
 		}
@@ -287,9 +308,8 @@ func rewriteHttpClientCalls(src string) string {
 	})
 
 	// 箭头函数形式: $httpClient.get/put/delete(url, (err, resp, body) => {
-	re2 := regexp.MustCompile(`\$httpClient\.(get|put|delete)\(\s*([^,]+?)\s*,\s*\(([^)]*)\)\s*=>\s*\{`)
-	out = re2.ReplaceAllStringFunc(out, func(match string) string {
-		sub := re2.FindStringSubmatch(match)
+	out = reHttpCliGetArrow.ReplaceAllStringFunc(out, func(match string) string {
+		sub := reHttpCliGetArrow.FindStringSubmatch(match)
 		if len(sub) < 4 {
 			return match
 		}
@@ -298,9 +318,8 @@ func rewriteHttpClientCalls(src string) string {
 	})
 
 	// 单参数箭头函数: $httpClient.get/put/delete(url, err => {
-	re3 := regexp.MustCompile(`\$httpClient\.(get|put|delete)\(\s*([^,]+?)\s*,\s*(\w+)\s*=>\s*\{`)
-	out = re3.ReplaceAllStringFunc(out, func(match string) string {
-		sub := re3.FindStringSubmatch(match)
+	out = reHttpCliGet1Arg.ReplaceAllStringFunc(out, func(match string) string {
+		sub := reHttpCliGet1Arg.FindStringSubmatch(match)
 		if len(sub) < 4 {
 			return match
 		}
@@ -309,9 +328,8 @@ func rewriteHttpClientCalls(src string) string {
 	})
 
 	// $httpClient.post(url, opts, function(err, resp, body) { ... })
-	re4 := regexp.MustCompile(`\$httpClient\.post\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,\s*function\s*\(([^)]*)\)\s*\{`)
-	out = re4.ReplaceAllStringFunc(out, func(match string) string {
-		sub := re4.FindStringSubmatch(match)
+	out = reHttpCliPostFn.ReplaceAllStringFunc(out, func(match string) string {
+		sub := reHttpCliPostFn.FindStringSubmatch(match)
 		if len(sub) < 5 {
 			return match
 		}
@@ -320,9 +338,8 @@ func rewriteHttpClientCalls(src string) string {
 	})
 
 	// $httpClient.post 箭头函数形式
-	re5 := regexp.MustCompile(`\$httpClient\.post\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,\s*\(([^)]*)\)\s*=>\s*\{`)
-	out = re5.ReplaceAllStringFunc(out, func(match string) string {
-		sub := re5.FindStringSubmatch(match)
+	out = reHttpCliPostArr.ReplaceAllStringFunc(out, func(match string) string {
+		sub := reHttpCliPostArr.FindStringSubmatch(match)
 		if len(sub) < 5 {
 			return match
 		}
@@ -331,9 +348,8 @@ func rewriteHttpClientCalls(src string) string {
 	})
 
 	// $httpClient.post 单参数箭头函数
-	re6 := regexp.MustCompile(`\$httpClient\.post\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,\s*(\w+)\s*=>\s*\{`)
-	out = re6.ReplaceAllStringFunc(out, func(match string) string {
-		sub := re6.FindStringSubmatch(match)
+	out = reHttpCliPost1Arg.ReplaceAllStringFunc(out, func(match string) string {
+		sub := reHttpCliPost1Arg.FindStringSubmatch(match)
 		if len(sub) < 5 {
 			return match
 		}
@@ -342,9 +358,8 @@ func rewriteHttpClientCalls(src string) string {
 	})
 
 	// $httpClient.request(opts, function(err, resp, body) { ... })
-	re7 := regexp.MustCompile(`\$httpClient\.request\(\s*([^,]+?)\s*,\s*function\s*\(([^)]*)\)\s*\{`)
-	out = re7.ReplaceAllStringFunc(out, func(match string) string {
-		sub := re7.FindStringSubmatch(match)
+	out = reHttpCliReqFn.ReplaceAllStringFunc(out, func(match string) string {
+		sub := reHttpCliReqFn.FindStringSubmatch(match)
 		if len(sub) < 4 {
 			return match
 		}
@@ -353,9 +368,8 @@ func rewriteHttpClientCalls(src string) string {
 	})
 
 	// $httpClient.request 箭头函数形式
-	re8 := regexp.MustCompile(`\$httpClient\.request\(\s*([^,]+?)\s*,\s*\(([^)]*)\)\s*=>\s*\{`)
-	out = re8.ReplaceAllStringFunc(out, func(match string) string {
-		sub := re8.FindStringSubmatch(match)
+	out = reHttpCliReqArr.ReplaceAllStringFunc(out, func(match string) string {
+		sub := reHttpCliReqArr.FindStringSubmatch(match)
 		if len(sub) < 4 {
 			return match
 		}
@@ -369,19 +383,49 @@ func rewriteHttpClientCalls(src string) string {
 // boxjsEnvPattern 匹配脚本中使用了 BoxJS Env 类或 $.xxx API 或常见缺失 Web API 的特征。
 var boxjsEnvPattern = regexp.MustCompile(`new\s+Env\s*\(|\$\.((?i)getdata|setdata|getjson|setjson|msg|log|logErr|http|fetch|request|notify|runScript|toURL|setvalue|getvalue|isQuanX|isSurge|isLoon|isNode|wait|done|name)|\$env\s*\.|URLSearchParams|new\s+URL\s*\(|\bfetch\s*\(|\bTextEncoder\b|\bTextDecoder\b|\bHeaders\b|\bRequest\b|\bResponse\b|\bsetTimeout\s*\(|\bsetInterval\s*\(|\bclearTimeout\s*\(|\bclearInterval\s*\(|console\.(log|warn|error|info|debug|assert|trace|table)`)
 
-// injectBoxJSPolyfill 为使用 BoxJS Env 类（$.getdata/$.setdata/$.msg 等）的脚本注入兼容层。
-// BoxJS 脚本通常使用 `const $ = new Env('name')` 创建 Env 实例，
-// 然后通过 $.getdata/$.setdata/$.msg/$.http/$.log 等方法与 BoxJS 交互。
-// Anywhere 没有内置 Env 类，因此需要在脚本头部注入一个轻量 polyfill，
-// 将这些调用映射到 Anywhere 的 Anywhere.store/Anywhere.log/Anywhere.http 等 API。
-// 同时注入常用 Web API polyfill（URLSearchParams/URL/console/atob/btoa 等），
-// 因为 Anywhere 的 JavaScriptCore 运行时不提供这些浏览器 API。
-func injectBoxJSPolyfill(src string) string {
-	if !boxjsEnvPattern.MatchString(src) {
-		return src
-	}
+// boxjsOnlyPattern 只匹配 BoxJS Env 特征（不包含 Web API 模式），用于细粒度 polyfill 注入检测。
+var boxjsOnlyPattern = regexp.MustCompile(`new\s+Env\s*\(|\$\.((?i)getdata|setdata|getjson|setjson|msg|log|logErr|http|fetch|request|notify|runScript|toURL|setvalue|getvalue|isQuanX|isSurge|isLoon|isNode|wait|done|name)|\$env\s*\.`)
 
-	polyfill := `// === BoxJS Env 兼容层 + Web API Polyfill (由 module2anywhere 自动注入) ===
+// 以下包级正则在脚本改写 hot path 中频繁使用，提升为包级 var 避免每次调用重新编译。
+// 对应 RewriteScriptAPI / rewriteDoneCalls / rewriteHttpClientCalls / wrapAsProcess 中的局部 MustCompile。
+var (
+	// RewriteScriptAPI: $persistentStore / $notification
+	rePersistentStoreRead  = regexp.MustCompile(`\$persistentStore\.read\(\s*([^)]+?)\s*\)`)
+	rePersistentStoreWrite = regexp.MustCompile(`\$persistentStore\.write\(\s*([^,]+?)\s*,\s*([^)]+?)\s*\)`)
+	reNotificationPost     = regexp.MustCompile(`\$notification\.post\(\s*([^,]+?)\s*,\s*([^,]*?)\s*,\s*([^)]+?)\s*\)`)
+
+	// rewriteDoneCalls: $done 各种形式
+	reDoneEmpty     = regexp.MustCompile(`\$done\(\s*\{\s*\}\s*\)`)
+	reDoneNoArg     = regexp.MustCompile(`\$done\(\s*\)`)
+	reDoneBody      = regexp.MustCompile(`\$done\(\s*\{\s*body\s*:\s*([^}]+?)\s*\}\s*\)`)
+	reDoneBodyShort = regexp.MustCompile(`\$done\(\s*\{\s*body\s*\}\s*\)`)
+	reDoneRespStart = regexp.MustCompile(`\$done\(\s*\{\s*response\s*:\s*`)
+	reDoneRespBody  = regexp.MustCompile(`__DONE_RESPONSE_START__(\{[\s\S]*?\}\s*\})\s*\)`)
+	reDoneObjStart  = regexp.MustCompile(`\$done\(\s*\{`)
+	reDoneObjBody   = regexp.MustCompile(`__DONE_OBJECT_START__\{[\s\S]*?\}\s*\)`)
+	reDoneVar       = regexp.MustCompile(`\$done\(\s*([^){}\s][^)]*?)\s*\)`)
+
+	// rewriteHttpClientCalls: $httpClient.get/put/delete/post/request 回调式与箭头函数
+	reHttpCliGetFn    = regexp.MustCompile(`\$httpClient\.(get|put|delete)\(\s*([^,]+?)\s*,\s*function\s*\(([^)]*)\)\s*\{`)
+	reHttpCliGetArrow = regexp.MustCompile(`\$httpClient\.(get|put|delete)\(\s*([^,]+?)\s*,\s*\(([^)]*)\)\s*=>\s*\{`)
+	reHttpCliGet1Arg  = regexp.MustCompile(`\$httpClient\.(get|put|delete)\(\s*([^,]+?)\s*,\s*(\w+)\s*=>\s*\{`)
+	reHttpCliPostFn   = regexp.MustCompile(`\$httpClient\.post\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,\s*function\s*\(([^)]*)\)\s*\{`)
+	reHttpCliPostArr  = regexp.MustCompile(`\$httpClient\.post\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,\s*\(([^)]*)\)\s*=>\s*\{`)
+	reHttpCliPost1Arg = regexp.MustCompile(`\$httpClient\.post\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,\s*(\w+)\s*=>\s*\{`)
+	reHttpCliReqFn    = regexp.MustCompile(`\$httpClient\.request\(\s*([^,]+?)\s*,\s*function\s*\(([^)]*)\)\s*\{`)
+	reHttpCliReqArr   = regexp.MustCompile(`\$httpClient\.request\(\s*([^,]+?)\s*,\s*\(([^)]*)\)\s*=>\s*\{`)
+
+	// wrapAsProcess: process / run 函数检测与注入
+	rePolyfillBlock    = regexp.MustCompile(`(?s)// === BoxJS Env 兼容层.*?// === BoxJS Env 兼容层 \+ Web API Polyfill 结束 ===\n`)
+	reProcessSyncDecl  = regexp.MustCompile(`(function\s+process\s*\(\s*ctx\s*\)\s*\{)`)
+	reProcessAsyncDecl = regexp.MustCompile(`(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)`)
+	reHasProcessSync   = regexp.MustCompile(`(?m)^function\s+process\s*\(\s*ctx\s*\)`)
+	reHasProcessAsync  = regexp.MustCompile(`(?m)^async\s+function\s+process\s*\(\s*ctx\s*\)`)
+	reHasRunDecl       = regexp.MustCompile(`(?m)^function\s+run\s*\(\s*\)`)
+)
+
+// polyfillBase 总是注入的基础模块：开始标记、_BoxJS_Env_injected 标志、Array.isArray、console、atob/btoa。
+const polyfillBase = `// === BoxJS Env 兼容层 + Web API Polyfill (由 module2anywhere 自动注入) ===
 var _BoxJS_Env_injected = true;
 
 // --- Web API Polyfill: Array.isArray ---
@@ -389,7 +433,27 @@ if (typeof Array.isArray === 'undefined') {
   Array.isArray = function(arg) { return Object.prototype.toString.call(arg) === '[object Array]'; };
 }
 
-// --- Web API Polyfill: URLSearchParams ---
+// --- Web API Polyfill: console ---
+if (typeof globalThis.console === 'undefined') {
+  globalThis.console = {
+    log: function() { Anywhere.log.info([].slice.call(arguments).map(String).join(' ')); },
+    warn: function() { Anywhere.log.warning([].slice.call(arguments).map(String).join(' ')); },
+    error: function() { Anywhere.log.error([].slice.call(arguments).map(String).join(' ')); },
+    info: function() { Anywhere.log.info([].slice.call(arguments).map(String).join(' ')); },
+    debug: function() { Anywhere.log.debug([].slice.call(arguments).map(String).join(' ')); }
+  };
+}
+
+// --- Web API Polyfill: atob / btoa ---
+if (typeof globalThis.atob === 'undefined') {
+  globalThis.atob = function(str) { return Anywhere.codec.utf8.decode(Anywhere.codec.base64.decode(str)); };
+  globalThis.btoa = function(str) { return Anywhere.codec.base64.encode(Anywhere.codec.utf8.encode(str)); };
+}
+
+`
+
+// polyfillURL 在 needURL 时注入：URLSearchParams 和 URL polyfill。
+const polyfillURL = `// --- Web API Polyfill: URLSearchParams ---
 // 使用 globalThis 赋值而非 var 声明，确保 new Function() 内可访问
 if (typeof globalThis.URLSearchParams === 'undefined') {
   globalThis.URLSearchParams = function(init) {
@@ -452,24 +516,10 @@ if (typeof globalThis.URL === 'undefined') {
   globalThis.URL.prototype.toJSON = function() { return this.href; };
 }
 
-// --- Web API Polyfill: console ---
-if (typeof globalThis.console === 'undefined') {
-  globalThis.console = {
-    log: function() { Anywhere.log.info([].slice.call(arguments).map(String).join(' ')); },
-    warn: function() { Anywhere.log.warning([].slice.call(arguments).map(String).join(' ')); },
-    error: function() { Anywhere.log.error([].slice.call(arguments).map(String).join(' ')); },
-    info: function() { Anywhere.log.info([].slice.call(arguments).map(String).join(' ')); },
-    debug: function() { Anywhere.log.debug([].slice.call(arguments).map(String).join(' ')); }
-  };
-}
+`
 
-// --- Web API Polyfill: atob / btoa ---
-if (typeof globalThis.atob === 'undefined') {
-  globalThis.atob = function(str) { return Anywhere.codec.utf8.decode(Anywhere.codec.base64.decode(str)); };
-  globalThis.btoa = function(str) { return Anywhere.codec.base64.encode(Anywhere.codec.utf8.encode(str)); };
-}
-
-function _boxBytes(value) {
+// polyfillHelpers 在 needFetch || needBoxJS 时注入：_boxBytes/_boxHeaderPairs/_boxRequest 辅助函数。
+const polyfillHelpers = `function _boxBytes(value) {
   if (!value) return new Uint8Array();
   if (value instanceof Uint8Array) return value;
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
@@ -495,7 +545,11 @@ function _boxRequest(input, init) {
   if (req.body) req.body = _boxBytes(req.body);
   return req;
 }
-if (typeof globalThis.TextEncoder === 'undefined') {
+
+`
+
+// polyfillFetch 在 needFetch 时注入：TextEncoder/TextDecoder/Headers/Request/Response/fetch polyfill。
+const polyfillFetch = `if (typeof globalThis.TextEncoder === 'undefined') {
   globalThis.TextEncoder = function() {};
   globalThis.TextEncoder.prototype.encode = function(value) { return Anywhere.codec.utf8.encode(String(value)); };
 }
@@ -530,15 +584,25 @@ if (typeof globalThis.fetch === 'undefined') {
     return p.then(function(res) { return new globalThis.Response(res.body || new Uint8Array(), { status: res.status || 200, headers: res.headers || [] }); });
   };
 }
-if (typeof globalThis.setTimeout === 'undefined') globalThis.setTimeout = function(fn, ms) { return Anywhere.wait(ms || 0).then(fn); };
-if (typeof globalThis.clearTimeout === 'undefined') globalThis.clearTimeout = function() {};
-if (typeof globalThis.setInterval === 'undefined') globalThis.setInterval = function(fn, ms) { var h = { active: true }; (function tick(){ if (!h.active) return; Anywhere.wait(ms || 0).then(function(){ if (!h.active) return; fn(); tick(); }); })(); return h; };
+
+`
+
+// polyfillTimer 在 needTimer 时注入：setTimeout/clearTimeout/setInterval/clearInterval + console.assert/trace/table。
+// 所有 timer 句柄注册到 globalThis._requestTimersStack 栈顶（由 wrapAsProcess/BuildWrappedScript 在 process 开头压栈），
+// process() 返回后 finally 块自动标记所有未清除的 timer 为 inactive 并出栈，防止 setInterval 递归 Promise 链无限延续。
+// 栈式隔离确保多个规则并发执行时，各自定时器互不干扰。
+const polyfillTimer = `if (typeof globalThis.setTimeout === 'undefined') globalThis.setTimeout = function(fn, ms) { var h = { active: true }; var _s = globalThis._requestTimersStack; if (_s && _s.length) _s[_s.length - 1].push(h); Anywhere.wait(ms || 0).then(function() { if (h.active) fn(); }); return h; };
+if (typeof globalThis.clearTimeout === 'undefined') globalThis.clearTimeout = function(h) { if (h) h.active = false; };
+if (typeof globalThis.setInterval === 'undefined') globalThis.setInterval = function(fn, ms) { var h = { active: true }; var _s = globalThis._requestTimersStack; if (_s && _s.length) _s[_s.length - 1].push(h); (function tick(){ if (!h.active) return; Anywhere.wait(ms || 0).then(function(){ if (!h.active) return; fn(); tick(); }); })(); return h; };
 if (typeof globalThis.clearInterval === 'undefined') globalThis.clearInterval = function(h) { if (h) h.active = false; };
 if (typeof globalThis.console.assert === 'undefined') globalThis.console.assert = function(cond) { if (!cond) globalThis.console.warn('Assertion failed'); };
 if (typeof globalThis.console.trace === 'undefined') globalThis.console.trace = function() { globalThis.console.warn('trace'); };
 if (typeof globalThis.console.table === 'undefined') globalThis.console.table = function(obj) { globalThis.console.info(JSON.stringify(obj)); };
 
-// --- BoxJS Env 类 ---
+`
+
+// polyfillBoxJS 在 needBoxJS 时注入：Env 类 + _wrapBoxJSResponse/_wrapBoxJSRequest + $env 兼容。
+const polyfillBoxJS = `// --- BoxJS Env 类 ---
 function Env(name) {
   this.name = name || 'BoxJS';
 }
@@ -655,44 +719,96 @@ Env.prototype.done = function() { Anywhere.done(); };
 // $env 兼容（Quantumult X 的 $env 对象）
 var $env = globalThis.$env || { isBoxJS: false, isAnywhere: true };
 
-// 局部变量映射：将 globalThis 上的 polyfill 映射为局部标识符
+`
+
+// polyfillLocalVarsBase 总是注入：console/atob/btoa 的局部变量映射（必须在所有 polyfill 安装之后）。
+const polyfillLocalVarsBase = `// 局部变量映射：将 globalThis 上的 polyfill 映射为局部标识符
 // 注意：必须在所有 globalThis.XXX 赋值之后执行，否则读到的是 undefined
 // （JSCore 中 var 声明会提升，但赋值在原位置执行）
-var URLSearchParams = globalThis.URLSearchParams;
-var URL = globalThis.URL;
 var console = globalThis.console;
 var atob = globalThis.atob;
 var btoa = globalThis.btoa;
+`
 
+// polyfillLocalVarsURL 在 needURL 时注入：URLSearchParams/URL 的局部变量映射。
+const polyfillLocalVarsURL = `var URLSearchParams = globalThis.URLSearchParams;
+var URL = globalThis.URL;
+`
+
+// polyfillFooter 总是注入：结束标记（wrapAsProcess 用正则匹配此标记提取 polyfill 代码块）。
+const polyfillFooter = `
 // === BoxJS Env 兼容层 + Web API Polyfill 结束 ===
 `
-	return polyfill + "\n" + src
+
+// injectBoxJSPolyfill 为使用 BoxJS Env 类（$.getdata/$.setdata/$.msg 等）的脚本注入兼容层。
+// BoxJS 脚本通常使用 `const $ = new Env('name')` 创建 Env 实例，
+// 然后通过 $.getdata/$.setdata/$.msg/$.http/$.log 等方法与 BoxJS 交互。
+// Anywhere 没有内置 Env 类，因此需要在脚本头部注入一个轻量 polyfill，
+// 将这些调用映射到 Anywhere 的 Anywhere.store/Anywhere.log/Anywhere.http 等 API。
+// 同时注入常用 Web API polyfill（URLSearchParams/URL/console/atob/btoa 等），
+// 因为 Anywhere 的 JavaScriptCore 运行时不提供这些浏览器 API。
+func injectBoxJSPolyfill(src string) string {
+	if !boxjsEnvPattern.MatchString(src) {
+		return src
+	}
+
+	// 细粒度检测：根据脚本使用的 API 特征决定注入哪些 polyfill 模块，减少不必要的体积
+	needURL := strings.Contains(src, "URLSearchParams") || strings.Contains(src, "new URL(") || strings.Contains(src, ".searchParams")
+	needFetch := strings.Contains(src, "fetch(") || strings.Contains(src, "TextEncoder") || strings.Contains(src, "TextDecoder") || strings.Contains(src, "Headers") || strings.Contains(src, "Request") || strings.Contains(src, "Response")
+	needTimer := strings.Contains(src, "setTimeout") || strings.Contains(src, "setInterval") || strings.Contains(src, "clearTimeout") || strings.Contains(src, "clearInterval")
+	needBoxJS := boxjsOnlyPattern.MatchString(src)
+
+	// 按需拼接 polyfill 模块（顺序确保依赖关系正确）
+	var b strings.Builder
+	b.WriteString(polyfillBase)
+	if needURL {
+		b.WriteString(polyfillURL)
+	}
+	if needFetch || needBoxJS {
+		b.WriteString(polyfillHelpers)
+	}
+	if needFetch {
+		b.WriteString(polyfillFetch)
+	}
+	if needTimer {
+		b.WriteString(polyfillTimer)
+	}
+	if needBoxJS {
+		b.WriteString(polyfillBoxJS)
+	}
+	// 局部变量映射：必须在所有 polyfill 安装之后（JSCore var 声明提升但赋值不提升）
+	b.WriteString(polyfillLocalVarsBase)
+	if needURL {
+		b.WriteString(polyfillLocalVarsURL)
+	}
+	b.WriteString(polyfillFooter)
+
+	return src + "\n" + b.String()
 }
 
 // rewriteDoneCalls 改写 $done 调用。
 func rewriteDoneCalls(src string) string {
 	// $done({}) → Anywhere.done()
-	out := regexp.MustCompile(`\$done\(\s*\{\s*\}\s*\)`).ReplaceAllString(src, "Anywhere.done()")
+	out := reDoneEmpty.ReplaceAllString(src, "Anywhere.done()")
 
 	// $done() → Anywhere.done()
-	out = regexp.MustCompile(`\$done\(\s*\)`).ReplaceAllString(out, "Anywhere.done()")
+	out = reDoneNoArg.ReplaceAllString(out, "Anywhere.done()")
 
 	// $done({body: x}) → ctx.body = Anywhere.codec.utf8.encode(x); Anywhere.done()
-	out = regexp.MustCompile(`\$done\(\s*\{\s*body\s*:\s*([^}]+?)\s*\}\s*\)`).
+	out = reDoneBody.
 		ReplaceAllString(out, "ctx.body = Anywhere.codec.utf8.encode($1); Anywhere.done()")
 
 	// $done({ body }) ES6 shorthand
-	out = regexp.MustCompile(`\$done\(\s*\{\s*body\s*\}\s*\)`).
+	out = reDoneBodyShort.
 		ReplaceAllString(out, "ctx.body = Anywhere.codec.utf8.encode(body); Anywhere.done()")
 
 	// $done({response: {...}}) → Anywhere.respond({...})
 	// 使用标记替换法处理嵌套大括号
-	out = regexp.MustCompile(`\$done\(\s*\{\s*response\s*:\s*`).ReplaceAllString(out, "__DONE_RESPONSE_START__")
+	out = reDoneRespStart.ReplaceAllString(out, "__DONE_RESPONSE_START__")
 	// 匹配标记后的内容，使用函数式替换验证大括号平衡
-	doneRespRe := regexp.MustCompile(`__DONE_RESPONSE_START__(\{[\s\S]*?\}\s*\})\s*\)`)
-	out = doneRespRe.ReplaceAllStringFunc(out, func(match string) string {
+	out = reDoneRespBody.ReplaceAllStringFunc(out, func(match string) string {
 		// 提取 responseObj 部分
-		sub := doneRespRe.FindStringSubmatch(match)
+		sub := reDoneRespBody.FindStringSubmatch(match)
 		if len(sub) < 2 {
 			return match
 		}
@@ -720,9 +836,8 @@ func rewriteDoneCalls(src string) string {
 
 	// $done({...}) 其他形式 → Anywhere.done()
 	// 使用标记替换法处理嵌套大括号
-	out = regexp.MustCompile(`\$done\(\s*\{`).ReplaceAllString(out, "__DONE_OBJECT_START__{")
-	doneObjRe := regexp.MustCompile(`__DONE_OBJECT_START__\{[\s\S]*?\}\s*\)`)
-	out = doneObjRe.ReplaceAllStringFunc(out, func(match string) string {
+	out = reDoneObjStart.ReplaceAllString(out, "__DONE_OBJECT_START__{")
+	out = reDoneObjBody.ReplaceAllStringFunc(out, func(match string) string {
 		inner := strings.TrimSuffix(strings.TrimSuffix(match, ")"), "}")
 		inner = strings.TrimPrefix(inner, "__DONE_OBJECT_START__{")
 		// 验证大括号平衡
@@ -749,10 +864,29 @@ func rewriteDoneCalls(src string) string {
 	// 处理剩余的 $done 调用：参数不是对象字面量（如 $done(r)、$done(result)、$done(null)）
 	// 这些无法静态分析，需要运行时适配函数 _doneVar 处理 body/headers/status/response 字段
 	// 注意：此正则不匹配 $done() 和 $done({...})（已在前面的步骤中处理完毕）
-	out = regexp.MustCompile(`\$done\(\s*([^){}\s][^)]*?)\s*\)`).ReplaceAllString(out, "_doneVar($1)")
+	out = reDoneVar.ReplaceAllString(out, "_doneVar($1)")
 
 	return out
 }
+
+// headersHelpers 是注入到 rewrite 模式脚本中的 headers 格式转换共享 helper。
+// - _headersToObj: [[name, value], ...] 数组对 → {name: value} 对象
+// - _headersToPairs: {name: value} 对象 → [[name, value], ...] 数组对
+// 抽取自原 doneVarAdapter / httpClientAdapter / wrapAsProcess 中重复的内联 IIFE，
+// 减少双端同步点（Go/EdgeOne 各只需维护一份）。
+const headersHelpers = `  function _headersToObj(h) {
+    var o = {};
+    if (h && h.forEach) { h.forEach(function(p) { o[String(p[0]||"")] = String(p[1]||""); }); }
+    return o;
+  }
+  function _headersToPairs(h) {
+    var arr = [];
+    if (h && typeof h === 'object' && !Array.isArray(h)) {
+      for (var k in h) { if (h.hasOwnProperty(k)) arr.push([k, String(h[k])]); }
+    }
+    return arr;
+  }
+`
 
 // doneVarAdapter 是注入到 rewrite 模式脚本中的 $done(variable) 运行时适配函数。
 // 当上游脚本使用 $done(r) 形式（r 是运行时变量）时，rewriteDoneCalls 会将其改写为 _doneVar(r)。
@@ -764,9 +898,7 @@ const doneVarAdapter = `  function _doneVar(r) {
       var resp = r.response;
       var h = resp.headers;
       if (h && typeof h === 'object' && !Array.isArray(h)) {
-        var arr = [];
-        for (var k in h) { if (h.hasOwnProperty(k)) arr.push([k, String(h[k])]); }
-        h = arr;
+        h = _headersToPairs(h);
       }
       Anywhere.respond({
         status: resp.status || resp.statusCode || 200,
@@ -777,9 +909,7 @@ const doneVarAdapter = `  function _doneVar(r) {
     }
     if (r.body != null) { ctx.body = Anywhere.codec.utf8.encode(String(r.body)); }
     if (r.headers && typeof r.headers === 'object' && !Array.isArray(r.headers)) {
-      var arr = [];
-      for (var k in r.headers) { if (r.headers.hasOwnProperty(k)) arr.push([k, String(r.headers[k])]); }
-      ctx.headers = arr;
+      ctx.headers = _headersToPairs(r.headers);
     }
     if (r.status != null) { ctx.status = r.status; }
     Anywhere.done();
@@ -790,40 +920,35 @@ const doneVarAdapter = `  function _doneVar(r) {
 // 当上游脚本使用 $httpClient.get(var, callback) 等回调变量形式（非内联函数）时，
 // rewriteHttpClientCalls 的正则无法匹配。此时注入 $httpClient 对象定义，
 // 让上游脚本直接使用兼容的 $httpClient API，而非改写调用形式。
-// 注意：headers 需要从 [[name, value], ...] 转换为 {name: value} 对象格式。
-const httpClientAdapter = `  function _httpClientHeadersToObj(h) {
-    var o = {};
-    if (h && h.forEach) { h.forEach(function(p) { o[String(p[0]||"")] = String(p[1]||""); }); }
-    return o;
-  }
-  var $httpClient = {
+// 注意：headers 需要从 [[name, value], ...] 转换为 {name: value} 对象格式，复用 _headersToObj。
+const httpClientAdapter = `  var $httpClient = {
     get: function(url, opts, cb) {
       if (typeof opts === 'function') { cb = opts; opts = null; }
       Anywhere.http.get(url, opts).then(function(res) {
-        if (cb) cb(null, { status: res.status || 200, headers: _httpClientHeadersToObj(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
+        if (cb) cb(null, { status: res.status || 200, headers: _headersToObj(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
       }).catch(function(e) { if (cb) cb(e, null, null); });
     },
     post: function(url, opts, cb) {
       if (typeof opts === 'function') { cb = opts; opts = null; }
       Anywhere.http.post(url, opts).then(function(res) {
-        if (cb) cb(null, { status: res.status || 200, headers: _httpClientHeadersToObj(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
+        if (cb) cb(null, { status: res.status || 200, headers: _headersToObj(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
       }).catch(function(e) { if (cb) cb(e, null, null); });
     },
     put: function(url, opts, cb) {
       if (typeof opts === 'function') { cb = opts; opts = null; }
       Anywhere.http.put(url, opts).then(function(res) {
-        if (cb) cb(null, { status: res.status || 200, headers: _httpClientHeadersToObj(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
+        if (cb) cb(null, { status: res.status || 200, headers: _headersToObj(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
       }).catch(function(e) { if (cb) cb(e, null, null); });
     },
     delete: function(url, opts, cb) {
       if (typeof opts === 'function') { cb = opts; opts = null; }
       Anywhere.http.delete(url, opts).then(function(res) {
-        if (cb) cb(null, { status: res.status || 200, headers: _httpClientHeadersToObj(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
+        if (cb) cb(null, { status: res.status || 200, headers: _headersToObj(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
       }).catch(function(e) { if (cb) cb(e, null, null); });
     },
     request: function(opts, cb) {
       Anywhere.http.request(opts).then(function(res) {
-        if (cb) cb(null, { status: res.status || 200, headers: _httpClientHeadersToObj(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
+        if (cb) cb(null, { status: res.status || 200, headers: _headersToObj(res.headers || []) }, Anywhere.codec.utf8.decode(res.body || new Uint8Array()));
       }).catch(function(e) { if (cb) cb(e, null, null); });
     }
   };
@@ -881,6 +1006,13 @@ func wrapAsProcess(src string, phase int, needsAsync bool, argument string) stri
 		httpClientInject = httpClientAdapter
 	}
 
+	// headersHelpersInject：doneVarAdapter 和 httpClientAdapter 共享 _headersToObj/_headersToPairs。
+	// 只要其中任一被注入，就必须先注入共享 helper（顺序：helpers 在 adapter 之前）。
+	headersHelpersInject := ""
+	if doneVarInject != "" || httpClientInject != "" {
+		headersHelpersInject = headersHelpers
+	}
+
 	// 检测是否需要注入 $request/$response 对象定义
 	// 上游脚本可能使用 typeof $request、$response.hasOwnProperty(...) 等形式，
 	// 这些形式中 $request/$response 作为变量本身出现，无法通过属性替换处理。
@@ -913,18 +1045,48 @@ func wrapAsProcess(src string, phase int, needsAsync bool, argument string) stri
 		strings.Contains(trimmed, "$argument") ||
 		strings.Contains(trimmed, "globalThis.$")
 
-	// 隔离代码：将 _saveGlobals/_restoreGlobals 定义内联，确保在 try 块之前就可用
-	// （JSCore 不会将 try 块内的 function 声明提升到外层函数作用域）
+	// 检测是否需要 timer 清理（setInterval 递归 Promise 链在 process 返回后可能无限延续）
+	needsTimerCleanup := strings.Contains(trimmed, "setTimeout") || strings.Contains(trimmed, "setInterval")
+
+	// 注意：原 GC nudge（finally 中分配 1MB randomBytes 触发 JSGarbageCollect）已移除，
+	// 因为在接近 50MB 内存临界值时，1MB 分配会加剧峰值压力，反而触发 VPN 进程重启。
+
+	// 清理代码：globalThis 动态快照 + request-scoped timer 清理
+	// 当 needsIsolation/needsTimerCleanup 时，添加 try/finally 块
+	// 关键改进：
+	//   1. 动态快照 Object.getOwnPropertyNames 替代固定 10 个名称，捕获上游脚本所有 globalThis 写入
+	//   2. _POLYFILL_NAMES 排除列表保护 polyfill 安装的属性，避免每次请求重新安装
+	//   3. _requestTimers 注册表在 finally 中批量清理，防止 setInterval 泄漏
+	//   4. GC nudge 加速 TypedArray 计数器达到 16MB 软上限，触发全量 JSGarbageCollect 回收 JSCore 堆
+	// 注意：_saveGlobals/_restoreGlobals 定义内联在 try 块之前，确保 JSCore function 声明可用
 	isolationPrefix := ""
 	isolationSuffix := ""
-	if needsIsolation {
-		isolationPrefix = "  var _globalsSnapshot = {};\n" +
-			"  var _GLOBAL_POLLUTABLE_NAMES = [\"$request\", \"$response\", \"$argument\", \"$persistentStore\", \"$done\", \"$loon\", \"$environment\", \"$script\", \"$httpClient\", \"$notification\"];\n" +
-			"  function _saveGlobals(snapshot) { for (var i = 0; i < _GLOBAL_POLLUTABLE_NAMES.length; i++) { var name = _GLOBAL_POLLUTABLE_NAMES[i]; snapshot[name] = globalThis[name]; } }\n" +
-			"  function _restoreGlobals(snapshot) { var keys = Object.keys(snapshot); for (var i = 0; i < keys.length; i++) { var name = keys[i]; if (typeof snapshot[name] === \"undefined\") delete globalThis[name]; else globalThis[name] = snapshot[name]; } }\n" +
-			"  _saveGlobals(_globalsSnapshot);\n" +
-			"  try {\n"
-		isolationSuffix = "\n  } finally { _restoreGlobals(_globalsSnapshot); }\n"
+	if needsIsolation || needsTimerCleanup {
+		var b strings.Builder
+		b.WriteString("  var _requestTimers = [];\n")
+		b.WriteString("  globalThis._requestTimersStack = globalThis._requestTimersStack || [];\n")
+		b.WriteString("  globalThis._requestTimersStack.push(_requestTimers);\n")
+		if needsIsolation {
+			b.WriteString("  var _globalsSnapshot = {};\n")
+			b.WriteString("  var _POLYFILL_NAMES = [\"console\", \"URLSearchParams\", \"URL\", \"TextEncoder\", \"TextDecoder\", \"Headers\", \"Request\", \"Response\", \"fetch\", \"setTimeout\", \"clearTimeout\", \"setInterval\", \"clearInterval\", \"atob\", \"btoa\", \"Env\", \"_wrapBoxJSResponse\", \"_wrapBoxJSRequest\", \"_boxBytes\", \"_boxHeaderPairs\", \"_boxRequest\", \"$env\", \"_requestTimersStack\"];\n")
+			b.WriteString("  function _saveGlobals(snapshot) { var names = Object.getOwnPropertyNames(globalThis); for (var i = 0; i < names.length; i++) { var name = names[i]; if (_POLYFILL_NAMES.indexOf(name) >= 0) continue; snapshot[name] = globalThis[name]; } }\n")
+			b.WriteString("  function _restoreGlobals(snapshot) { var names = Object.getOwnPropertyNames(globalThis); for (var i = 0; i < names.length; i++) { var name = names[i]; if (_POLYFILL_NAMES.indexOf(name) >= 0) continue; if (!snapshot.hasOwnProperty(name)) delete globalThis[name]; else globalThis[name] = snapshot[name]; } }\n")
+			b.WriteString("  _saveGlobals(_globalsSnapshot);\n")
+		}
+		b.WriteString("  try {\n")
+		isolationPrefix = b.String()
+
+		var sb strings.Builder
+		sb.WriteString("\n  } finally {\n")
+		if needsTimerCleanup {
+			sb.WriteString("    for (var _ti = 0; _ti < _requestTimers.length; _ti++) { if (_requestTimers[_ti]) _requestTimers[_ti].active = false; }\n")
+			sb.WriteString("    var _tsIdx = globalThis._requestTimersStack ? globalThis._requestTimersStack.indexOf(_requestTimers) : -1; if (_tsIdx >= 0) globalThis._requestTimersStack.splice(_tsIdx, 1);\n")
+		}
+		if needsIsolation {
+			sb.WriteString("    _restoreGlobals(_globalsSnapshot);\n")
+		}
+		sb.WriteString("  }\n")
+		isolationSuffix = sb.String()
 	}
 
 	// polyfill 注入到 process 函数体内部的辅助函数
@@ -933,11 +1095,10 @@ func wrapAsProcess(src string, phase int, needsAsync bool, argument string) stri
 			return out
 		}
 		// 提取 polyfill 部分（从 _BoxJS_Env_injected 到 === 结束标记）
-		polyfillRe := regexp.MustCompile(`(?s)// === BoxJS Env 兼容层.*?// === BoxJS Env 兼容层 \+ Web API Polyfill 结束 ===\n`)
-		polyfillCode := polyfillRe.FindString(out)
+		polyfillCode := rePolyfillBlock.FindString(out)
 		if polyfillCode == "" {
 			// 没有找到 polyfill 代码，只注入局部变量映射
-			out = regexp.MustCompile(`(function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
+			out = reProcessSyncDecl.
 				ReplaceAllString(out, "${1}\n"+localVarMappings)
 			return out
 		}
@@ -947,27 +1108,28 @@ func wrapAsProcess(src string, phase int, needsAsync bool, argument string) stri
 		indentedPolyfill := strings.ReplaceAll(polyfillCode, "\n", "\n  ")
 		// 注入到 process 函数体开头
 		injectCode := localVarMappings + indentedPolyfill
-		out = regexp.MustCompile(`(function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
+		out = reProcessSyncDecl.
 			ReplaceAllString(out, "${1}\n"+injectCode)
 		return out
 	}
 
 	// 已有 process 函数定义（同步或异步）
-	if regexp.MustCompile(`(?m)^function\s+process\s*\(\s*ctx\s*\)`).MatchString(trimmed) {
+	if reHasProcessSync.MatchString(trimmed) {
 		out := trimmed
 		if needsAsync && !strings.HasPrefix(out, "async ") {
 			out = "async " + out
 		}
-		// 注入 headers 预转换变量、$request/$response 对象、$argument、_doneVar 适配函数、$httpClient 适配对象（必须在最开头，polyfill 之前）
-		injectPrefix := headersInject + reqRespInject + argumentInject + doneVarInject + httpClientInject
+		// 注入 headers 预转换变量、headers 共享 helper、$request/$response 对象、$argument、_doneVar 适配函数、$httpClient 适配对象（必须在最开头，polyfill 之前）
+		// 顺序：headersHelpers 必须在 doneVarInject/httpClientInject 之前（adapter 引用 helper）
+		injectPrefix := headersInject + headersHelpersInject + reqRespInject + argumentInject + doneVarInject + httpClientInject
 		if injectPrefix != "" {
-			out = regexp.MustCompile(`(function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
+			out = reProcessSyncDecl.
 				ReplaceAllString(out, "${1}\n"+injectPrefix)
 		}
 		// 将 polyfill 移入 process 函数体内部
 		out = injectPolyfillIntoProcess(out)
-		if needsIsolation && isolationPrefix != "" {
-			out = regexp.MustCompile(`(function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
+		if (needsIsolation || needsTimerCleanup) && isolationPrefix != "" {
+			out = reProcessSyncDecl.
 				ReplaceAllString(out, "${1}\n"+isolationPrefix)
 			lastBrace := strings.LastIndex(out, "}")
 			if lastBrace > 0 {
@@ -976,17 +1138,18 @@ func wrapAsProcess(src string, phase int, needsAsync bool, argument string) stri
 		}
 		return out
 	}
-	if regexp.MustCompile(`(?m)^async\s+function\s+process\s*\(\s*ctx\s*\)`).MatchString(trimmed) {
+	if reHasProcessAsync.MatchString(trimmed) {
 		out := trimmed
-		// 注入 headers 预转换变量、$request/$response 对象、$argument、_doneVar 适配函数、$httpClient 适配对象
-		injectPrefix := headersInject + reqRespInject + argumentInject + doneVarInject + httpClientInject
+		// 注入 headers 预转换变量、headers 共享 helper、$request/$response 对象、$argument、_doneVar 适配函数、$httpClient 适配对象
+		// 顺序：headersHelpers 必须在 doneVarInject/httpClientInject 之前（adapter 引用 helper）
+		injectPrefix := headersInject + headersHelpersInject + reqRespInject + argumentInject + doneVarInject + httpClientInject
 		if injectPrefix != "" {
-			out = regexp.MustCompile(`(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
+			out = reProcessAsyncDecl.
 				ReplaceAllString(out, "${1}\n"+injectPrefix)
 		}
 		out = injectPolyfillIntoProcess(out)
-		if needsIsolation && isolationPrefix != "" {
-			out = regexp.MustCompile(`(async\s+function\s+process\s*\(\s*ctx\s*\)\s*\{)`).
+		if (needsIsolation || needsTimerCleanup) && isolationPrefix != "" {
+			out = reProcessAsyncDecl.
 				ReplaceAllString(out, "${1}\n"+isolationPrefix)
 			lastBrace := strings.LastIndex(out, "}")
 			if lastBrace > 0 {
@@ -997,14 +1160,14 @@ func wrapAsProcess(src string, phase int, needsAsync bool, argument string) stri
 	}
 
 	// 若源码定义了 function run()，则包装为 process 并调用 run
-	if regexp.MustCompile(`(?m)^function\s+run\s*\(\s*\)`).MatchString(trimmed) {
+	if reHasRunDecl.MatchString(trimmed) {
 		phaseCheck := "request"
 		if phase == 1 {
 			phaseCheck = "response"
 		}
 		return fmt.Sprintf(`%sfunction process(ctx) {
   if (ctx.phase !== "%s") return;
-%s%s%s%s%s%s%s  try {
+%s%s%s%s%s%s%s%s  try {
     run();
   } catch (e) {
     Anywhere.log.warning("script error: " + e);
@@ -1012,7 +1175,7 @@ func wrapAsProcess(src string, phase int, needsAsync bool, argument string) stri
 }
 
 %s
-`, asyncKw, phaseCheck, headersInject, reqRespInject, argumentInject, doneVarInject, httpClientInject, localVarMappings, isolationPrefix, isolationSuffix, trimmed)
+`, asyncKw, phaseCheck, headersInject, headersHelpersInject, reqRespInject, argumentInject, doneVarInject, httpClientInject, localVarMappings, isolationPrefix, isolationSuffix, trimmed)
 	}
 
 	// 否则整体包装
@@ -1022,14 +1185,14 @@ func wrapAsProcess(src string, phase int, needsAsync bool, argument string) stri
 	}
 	return fmt.Sprintf(`%sfunction process(ctx) {
   if (ctx.phase !== "%s") return;
-%s%s%s%s%s%s%s  try {
+%s%s%s%s%s%s%s%s  try {
 %s
   } catch (e) {
     Anywhere.log.warning("script error: " + e);
   }%s
   Anywhere.done();
 }
-`, asyncKw, phaseCheck, headersInject, reqRespInject, argumentInject, doneVarInject, httpClientInject, localVarMappings, isolationPrefix, indent(trimmed, "    "), isolationSuffix)
+`, asyncKw, phaseCheck, headersInject, headersHelpersInject, reqRespInject, argumentInject, doneVarInject, httpClientInject, localVarMappings, isolationPrefix, indent(trimmed, "    "), isolationSuffix)
 }
 
 // buildArgumentInject 构造 $argument 兼容注入代码。
@@ -1171,10 +1334,13 @@ func BuildWrappedScript(rawJS string, phase int, argument string) string {
 
 	wrapper := fmt.Sprintf(`%sfunction process(ctx) {
   if (ctx.phase !== "%s") return;
+  var _requestTimers = [];
+  globalThis._requestTimersStack = globalThis._requestTimersStack || [];
+  globalThis._requestTimersStack.push(_requestTimers);
   var _globalsSnapshot = {};
-  var _GLOBAL_POLLUTABLE_NAMES = ["$request", "$response", "$argument", "$persistentStore", "$done", "$loon", "$environment", "$script", "$httpClient", "$notification"];
-  function _saveGlobals(snapshot) { for (var i = 0; i < _GLOBAL_POLLUTABLE_NAMES.length; i++) { var name = _GLOBAL_POLLUTABLE_NAMES[i]; snapshot[name] = globalThis[name]; } }
-  function _restoreGlobals(snapshot) { var keys = Object.keys(snapshot); for (var i = 0; i < keys.length; i++) { var name = keys[i]; if (typeof snapshot[name] === "undefined") delete globalThis[name]; else globalThis[name] = snapshot[name]; } }
+  var _POLYFILL_NAMES = ["console", "URLSearchParams", "URL", "TextEncoder", "TextDecoder", "Headers", "Request", "Response", "fetch", "setTimeout", "clearTimeout", "setInterval", "clearInterval", "atob", "btoa", "Env", "_wrapBoxJSResponse", "_wrapBoxJSRequest", "_boxBytes", "_boxHeaderPairs", "_boxRequest", "$env", "_requestTimersStack"];
+  function _saveGlobals(snapshot) { var names = Object.getOwnPropertyNames(globalThis); for (var i = 0; i < names.length; i++) { var name = names[i]; if (_POLYFILL_NAMES.indexOf(name) >= 0) continue; snapshot[name] = globalThis[name]; } }
+  function _restoreGlobals(snapshot) { var names = Object.getOwnPropertyNames(globalThis); for (var i = 0; i < names.length; i++) { var name = names[i]; if (_POLYFILL_NAMES.indexOf(name) >= 0) continue; if (!snapshot.hasOwnProperty(name)) delete globalThis[name]; else globalThis[name] = snapshot[name]; } }
   _saveGlobals(_globalsSnapshot);
   try {
     return await new Promise(function(resolve) {
@@ -1341,6 +1507,8 @@ func BuildWrappedScript(rawJS string, phase int, argument string) string {
       if (body.length > 0) ctx.body = body;
     });
   } finally {
+    for (var _ti = 0; _ti < _requestTimers.length; _ti++) { if (_requestTimers[_ti]) _requestTimers[_ti].active = false; }
+    var _tsIdx = globalThis._requestTimersStack ? globalThis._requestTimersStack.indexOf(_requestTimers) : -1; if (_tsIdx >= 0) globalThis._requestTimersStack.splice(_tsIdx, 1);
     _restoreGlobals(_globalsSnapshot);
   }
 }
@@ -1419,9 +1587,9 @@ if (typeof globalThis.fetch === 'undefined') {
     return p.then(function(res) { return new globalThis.Response(res.body || new Uint8Array(), { status: res.status || 200, headers: res.headers || [] }); });
   };
 }
-if (typeof globalThis.setTimeout === 'undefined') globalThis.setTimeout = function(fn, ms) { return Anywhere.wait(ms || 0).then(fn); };
-if (typeof globalThis.clearTimeout === 'undefined') globalThis.clearTimeout = function() {};
-if (typeof globalThis.setInterval === 'undefined') globalThis.setInterval = function(fn, ms) { var h = { active: true }; (function tick(){ if (!h.active) return; Anywhere.wait(ms || 0).then(function(){ if (!h.active) return; fn(); tick(); }); })(); return h; };
+if (typeof globalThis.setTimeout === 'undefined') globalThis.setTimeout = function(fn, ms) { var h = { active: true }; var _s = globalThis._requestTimersStack; if (_s && _s.length) _s[_s.length - 1].push(h); Anywhere.wait(ms || 0).then(function() { if (h.active) fn(); }); return h; };
+if (typeof globalThis.clearTimeout === 'undefined') globalThis.clearTimeout = function(h) { if (h) h.active = false; };
+if (typeof globalThis.setInterval === 'undefined') globalThis.setInterval = function(fn, ms) { var h = { active: true }; var _s = globalThis._requestTimersStack; if (_s && _s.length) _s[_s.length - 1].push(h); (function tick(){ if (!h.active) return; Anywhere.wait(ms || 0).then(function(){ if (!h.active) return; fn(); tick(); }); })(); return h; };
 if (typeof globalThis.clearInterval === 'undefined') globalThis.clearInterval = function(h) { if (h) h.active = false; };
 if (typeof globalThis.console !== 'undefined') {
   if (typeof globalThis.console.assert === 'undefined') globalThis.console.assert = function(cond) { if (!cond) globalThis.console.warn('Assertion failed'); };

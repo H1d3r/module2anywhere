@@ -16,6 +16,9 @@ func TestParseQuantumultX_Sample(t *testing.T) {
 
 hostname = app-api.example.com, %APPEND%homepage.example.com, *.wildcard.example.com
 
+[hostname]
+hostname = extra.example.com ; trailing comment
+
 # reject 系列
 ^https?://a\.example\.com/api/v1/ad url reject
 ^https?://b\.example\.com/api/v1/ad url reject-200
@@ -32,6 +35,8 @@ hostname = app-api.example.com, %APPEND%homepage.example.com, *.wildcard.example
 
 # echo-response（双 url 标记）
 ^https?://echo\.example\.com/api url echo-response application/json url echo-response body {"code":0,"data":[]}
+^https?://echo\.example\.com/api url echo-response application/json url echo-response body {"code":0,"data":[]} format=json
+^https?://echo\.example\.com/api url echo-response application/json url echo-response body {"code":1,"data":"a=b"} format=json
 
 # jsonjq
 ^https?://jq\.example\.com/api url jsonjq-response-body '.feeds | map(select(.isAd != true))'
@@ -39,6 +44,7 @@ hostname = app-api.example.com, %APPEND%homepage.example.com, *.wildcard.example
 # scripts
 ^https?://script\.example\.com/api url script-response-body https://example.com/response.js
 ^https?://echo-script\.example\.com/api url script-analyze-echo-response https://example.com/echo.js
+^https?://script\.example\.com/api url script-request-header https://example.com/request.js,requires-body=1,binary-body-mode=1,tag=foo,argument=bar,max-size=2048,engine=jsc
 `
 	m, err := ParseQuantumultX(content)
 	if err != nil {
@@ -54,6 +60,7 @@ hostname = app-api.example.com, %APPEND%homepage.example.com, *.wildcard.example
 
 	// hostname 规范化：应去除 %APPEND% 和 *.
 	wantHosts := map[string]bool{"app-api.example.com": true, "homepage.example.com": true, "wildcard.example.com": true}
+	wantHosts["extra.example.com"] = true
 	gotHosts := map[string]bool{}
 	for _, h := range m.Hostnames {
 		gotHosts[h] = true
@@ -71,8 +78,15 @@ hostname = app-api.example.com, %APPEND%homepage.example.com, *.wildcard.example
 		t.Errorf("Rewrites: got %d, want >=8", len(m.Rewrites))
 	}
 
-	if len(m.Scripts) != 2 {
-		t.Errorf("Scripts: got %d, want 2", len(m.Scripts))
+	if len(m.Scripts) != 3 {
+		t.Errorf("Scripts: got %d, want 3", len(m.Scripts))
+	}
+	for _, s := range m.Scripts {
+		if s.ScriptPath == "https://example.com/request.js" {
+			if !s.RequiresBody || !s.BinaryBody || s.Tag != "foo" || s.Argument != "bar" || s.MaxSize != 2048 || s.Engine != "jsc" || s.Phase != 0 {
+				t.Errorf("script params not parsed: %+v", s)
+			}
+		}
 	}
 
 	foundRejectDict := false
@@ -117,8 +131,11 @@ hostname = app-api.example.com, %APPEND%homepage.example.com, *.wildcard.example
 			if !strings.HasPrefix(r.Args["content-type"], "application/json") {
 				t.Errorf("echo-response content-type: got %q", r.Args["content-type"])
 			}
-			if !strings.Contains(r.Args["body"], `"code":0`) {
+			if r.Args["format"] == "json" && !strings.Contains(r.Args["body"], `"code":0`) && !strings.Contains(r.Args["body"], `"code":1`) {
 				t.Errorf("echo-response body: got %q", r.Args["body"])
+			}
+			if r.Args["format"] == "json" && r.Args["format"] != "json" {
+				t.Errorf("echo-response format: got %q", r.Args["format"])
 			}
 		}
 	}

@@ -3,7 +3,6 @@ package converter
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -554,6 +553,26 @@ func (c *Converter) convertScriptRules(ctx context.Context, m *ir.Module, report
 	scripts := m.Scripts
 	lines := make([]string, 0, len(scripts))
 
+	// 统计相同 ScriptPath 的引用次数，提示输出文件被放大的程度
+	// （FetchAndEncodeScript 有进程内缓存避免重复下载，但 .amrs 格式要求每行独立包含完整 base64，
+	//   运行时每条规则会创建独立脚本上下文，N 条相同 script-path = N 份内存副本）
+	pathCounts := make(map[string]int)
+	for _, s := range scripts {
+		if s.ScriptPath != "" {
+			pathCounts[s.ScriptPath]++
+		}
+	}
+	dupTotal := 0
+	for path, count := range pathCounts {
+		if count > 1 {
+			dupTotal += count
+			report.AddWarning(fmt.Sprintf("脚本 %s 被 %d 条规则引用（运行时将创建 %d 个独立脚本上下文，建议审查模块是否可精简）", path, count, count))
+		}
+	}
+	if dupTotal > 0 {
+		report.AddWarning(fmt.Sprintf("共 %d 条规则引用了重复的 script-path，输出文件大小和运行时内存均被放大", dupTotal))
+	}
+
 	// 预计算每条脚本的行模板
 	type result struct {
 		index int
@@ -596,9 +615,8 @@ func (c *Converter) convertScriptRules(ctx context.Context, m *ir.Module, report
 			b64, err := FetchAndEncodeScript(sctx, c.Fetcher, s.ScriptPath, c.BaseURL, c.Opts.FetchScripts, s.Phase, c.Opts.UseStreamScript, c.Opts.WrapScripts, s.Argument)
 			if err != nil {
 				report.AddScriptErr(fmt.Sprintf("脚本下载失败 %s: %v", s.ScriptPath, err))
-				// 降级为占位符，保证输出文件完整
-				placeholder := fmt.Sprintf(`function process(ctx){Anywhere.log.warning("script not fetched: %s");}`, s.ScriptPath)
-				b64 = base64.StdEncoding.EncodeToString([]byte(placeholder))
+				// 降级为占位符，保证输出文件完整（scriptPath 已转义防注入）
+				b64 = notFetchedPlaceholder(s.ScriptPath)
 			}
 			// op 100 = script，op 101 = stream-script（流式响应处理）
 			op := "100"

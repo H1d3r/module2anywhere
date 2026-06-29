@@ -130,6 +130,12 @@ func parseSurgeURLRewriteAction(rest string) (string, map[string]string, string)
 	action, remain := splitFirstWhitespace(rest)
 	action = strings.ToLower(strings.TrimSpace(action))
 
+	// Loon/QX 混入 Surge 时常带 url 前缀：url reject-dict / url 302 ...
+	if action == "url" {
+		action, remain = splitFirstWhitespace(remain)
+		action = strings.ToLower(strings.TrimSpace(action))
+	}
+
 	// 兼容紧贴写法：302$1$3 / 307https://... → 动作与目标 URL 之间补出空格语义
 	if strings.HasPrefix(action, "302") && len(action) > 3 {
 		remain = prependTightRewriteTarget(action[3:], remain)
@@ -153,9 +159,16 @@ func parseSurgeURLRewriteAction(rest string) (string, map[string]string, string)
 		args["url"] = strings.TrimSpace(remain)
 		return action, args, ""
 
-	case "_request-header", "_request-body", "_response-body":
-		// 内联 JS
+	case "request-header", "request-body", "response-body":
 		return action, args, strings.TrimSpace(remain)
+
+	case "_request-header", "_request-body", "_response-body":
+		// 内联 JS（兼容 Surge/QX 的下划线写法）
+		return strings.TrimPrefix(action, "_"), args, strings.TrimSpace(remain)
+
+	case "header-del":
+		args["header"] = strings.TrimSpace(remain)
+		return action, args, ""
 
 	case "_header-del":
 		// Surge _header-del <name>：删除请求头（与 Loon header-del 等价）
@@ -167,9 +180,41 @@ func parseSurgeURLRewriteAction(rest string) (string, map[string]string, string)
 		// Surge [URL Rewrite] 中无动作前缀的纯 URL 替换是 transparent rewrite
 		// 格式：<pattern> <new-url>，其中 new-url 以 http:// 或 https:// 开头
 		trimmedRemain := strings.TrimSpace(remain)
-		if strings.HasPrefix(trimmedRemain, "http://") || strings.HasPrefix(trimmedRemain, "https://") {
-			args["url"] = trimmedRemain
-			return "transparent", args, ""
+		if strings.Contains(action, "$") {
+			switch strings.ToLower(trimmedRemain) {
+			case "302", "307":
+				args["url"] = action
+				return strings.ToLower(trimmedRemain), args, ""
+			}
+		}
+		if first, tail := splitFirstWhitespace(trimmedRemain); first != "" {
+			switch strings.ToLower(strings.TrimSpace(tail)) {
+			case "302", "307":
+				args["url"] = first
+				return strings.ToLower(strings.TrimSpace(tail)), args, ""
+			}
+		}
+		if strings.HasPrefix(action, "http://") || strings.HasPrefix(action, "https://") {
+			switch strings.ToLower(trimmedRemain) {
+			case "302", "307":
+				args["url"] = action
+				return strings.ToLower(trimmedRemain), args, ""
+			}
+		}
+			if strings.HasPrefix(trimmedRemain, "http://") || strings.HasPrefix(trimmedRemain, "https://") {
+				args["url"] = trimmedRemain
+				return "transparent", args, ""
+			}
+			if strings.HasPrefix(trimmedRemain, "request-header ") ||
+				strings.HasPrefix(trimmedRemain, "request-body ") ||
+				strings.HasPrefix(trimmedRemain, "response-body ") {
+				jsAction, jsRemain := splitFirstWhitespace(trimmedRemain)
+				args["_raw"] = strings.TrimSpace(jsRemain)
+				return jsAction, args, strings.TrimSpace(jsRemain)
+			}
+		if strings.HasPrefix(strings.ToLower(trimmedRemain), "header-del ") {
+			args["header"] = strings.TrimSpace(trimmedRemain[len("header-del "):])
+			return "header-del", args, ""
 		}
 		// 未知动作：保留原始 remain 以便日志
 		args["_raw"] = strings.TrimSpace(remain)
@@ -200,21 +245,24 @@ func parseSurgeHeaderRewrites(body string) []ir.HeaderRule {
 		target = strings.ToLower(strings.TrimSpace(target))
 		switch target {
 		case "request-header":
+		case "request":
 			r.Phase = 0
 		case "response-header":
+		case "response":
 			r.Phase = 1
 		default:
 			continue
 		}
 		op, rest3 := splitFirstWhitespace(rest2)
 		r.Op = strings.ToLower(strings.TrimSpace(op))
-		// 剩余：name [value]
-		tokens := splitWhitespace(rest3)
-		if len(tokens) >= 1 {
-			r.Name = tokens[0]
+		// 剩余：name [value]，保留引号中的空格
+		tokens := tokenizeKV(rest3)
+		if len(tokens) == 0 {
+			continue
 		}
+		r.Name = trimQuotes(strings.TrimSpace(tokens[0]))
 		if len(tokens) >= 2 {
-			r.Value = strings.Join(tokens[1:], " ")
+			r.Value = trimQuotes(strings.TrimSpace(strings.Join(tokens[1:], " ")))
 		}
 		rules = append(rules, r)
 	}
@@ -242,10 +290,14 @@ func parseSurgeMapLocals(body string) []ir.MapLocalRule {
 			}
 			key := strings.ToLower(strings.TrimSpace(t[:idx]))
 			val := trimQuotes(strings.TrimSpace(t[idx+1:]))
+			val = stripInlineComment(val)
 			switch key {
 			case "data":
 				r.DataURL = val
+			case "url", "file", "body", "uri", "data-url":
+				r.DataURL = val
 			case "header":
+			case "headers":
 				r.Header = val
 			}
 		}
@@ -396,6 +448,7 @@ func splitScriptPathAndTrailingArgs(raw string) (string, []string) {
 //
 //	hostname = a.com, b.com
 func parseSurgeMITM(body string) []string {
+	var hostnames []string
 	for _, line := range strings.Split(body, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -407,8 +460,8 @@ func parseSurgeMITM(body string) []string {
 		}
 		key := strings.ToLower(strings.TrimSpace(line[:idx]))
 		if key == "hostname" {
-			return normalizeHostnames(line[idx+1:])
+			hostnames = append(hostnames, normalizeHostnames(stripInlineComment(line[idx+1:]))...)
 		}
 	}
-	return nil
+	return dedupStrings(hostnames)
 }

@@ -137,29 +137,125 @@ func (f *Fetcher) resolveUserAgent(filename string) string {
 }
 
 // ScriptCache 缓存已下载的脚本内容，避免重复请求。
+// 带 TTL 与容量上限，防止长期运行时内存单调增长（与 server.Cache 语义对齐）。
 type ScriptCache struct {
-	mu    sync.RWMutex
-	items map[string]string
+	mu      sync.RWMutex
+	items   map[string]*scriptEntry
+	ttl     time.Duration
+	maxSize int
+	stop    chan struct{}
 }
 
-// NewScriptCache 创建空缓存。
+// scriptEntry 脚本缓存条目。
+type scriptEntry struct {
+	value     string
+	expiresAt time.Time
+}
+
+// expired 判断条目是否已过期。
+func (e *scriptEntry) expired() bool {
+	return time.Now().After(e.expiresAt)
+}
+
+// NewScriptCache 创建带 TTL 与容量上限的脚本缓存。
+// 默认 TTL 10 分钟（脚本相对静态），maxSize 512（脚本数量通常多于转换结果）。
 func NewScriptCache() *ScriptCache {
-	return &ScriptCache{items: make(map[string]string)}
+	return NewScriptCacheWith(10*time.Minute, 512)
 }
 
-// Get 读取缓存。
+// NewScriptCacheWith 自定义 TTL 与 maxSize 创建缓存。
+func NewScriptCacheWith(ttl time.Duration, maxSize int) *ScriptCache {
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+	if maxSize <= 0 {
+		maxSize = 512
+	}
+	c := &ScriptCache{
+		items:   make(map[string]*scriptEntry, 64),
+		ttl:     ttl,
+		maxSize: maxSize,
+		stop:    make(chan struct{}),
+	}
+	go c.evictLoop()
+	return c
+}
+
+// Get 读取缓存，未命中或已过期返回空字符串和 false。
 func (c *ScriptCache) Get(key string) (string, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	v, ok := c.items[key]
-	return v, ok
+	e, ok := c.items[key]
+	if !ok || e.expired() {
+		return "", false
+	}
+	return e.value, true
 }
 
 // Put 写入缓存。
 func (c *ScriptCache) Put(key, value string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.items[key] = value
+	if len(c.items) >= c.maxSize {
+		c.evictLocked()
+	}
+	c.items[key] = &scriptEntry{
+		value:     value,
+		expiresAt: time.Now().Add(c.ttl),
+	}
+}
+
+// Close 停止后台淘汰协程。允许重复调用。
+func (c *ScriptCache) Close() {
+	select {
+	case <-c.stop:
+		// 已关闭
+	default:
+		close(c.stop)
+	}
+}
+
+// evictLoop 定期清理过期条目，直到缓存被关闭。
+func (c *ScriptCache) evictLoop() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.stop:
+			return
+		case <-ticker.C:
+			c.mu.Lock()
+			c.evictLocked()
+			c.mu.Unlock()
+		}
+	}
+}
+
+// evictLocked 在已持锁状态下淘汰过期和最旧条目。
+func (c *ScriptCache) evictLocked() {
+	// 先删过期
+	for k, e := range c.items {
+		if e.expired() {
+			delete(c.items, k)
+		}
+	}
+	// 仍超容量则按过期时间排序淘汰最旧的
+	for len(c.items) > c.maxSize {
+		var oldestKey string
+		var oldestTime time.Time
+		first := true
+		for k, e := range c.items {
+			if first || e.expiresAt.Before(oldestTime) {
+				oldestKey = k
+				oldestTime = e.expiresAt
+				first = false
+			}
+		}
+		if oldestKey == "" {
+			break
+		}
+		delete(c.items, oldestKey)
+	}
 }
 
 // IsRemote 判断路径是否为远程 URL。
@@ -168,16 +264,29 @@ func IsRemote(path string) bool {
 	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
 }
 
+// githubHosts 已知的 GitHub 原始内容域名集合。
+// 使用 map + 后缀匹配避免 strings.Contains 误匹配（如 example.com/redirect/github.com/foo）。
+var githubHosts = map[string]bool{
+	"raw.githubusercontent.com":  true,
+	"github.com":                 true,
+	"gist.githubusercontent.com": true,
+	"codeload.github.com":        true,
+}
+
 // isGitHubURL 检测 URL 是否为 GitHub 原始内容域名。
+// 通过解析 URL 的 host 字段精确匹配，避免路径中含 github.com 子串导致误判。
 func isGitHubURL(rawURL string) bool {
-	githubHosts := []string{
-		"raw.githubusercontent.com",
-		"github.com",
-		"gist.githubusercontent.com",
-		"codeload.github.com",
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return false
 	}
-	for _, host := range githubHosts {
-		if strings.Contains(rawURL, host) {
+	host := strings.ToLower(u.Hostname())
+	if githubHosts[host] {
+		return true
+	}
+	// 支持子域：xxx.githubusercontent.com / gist.xxx.github.com 等
+	for h := range githubHosts {
+		if strings.HasSuffix(host, "."+h) {
 			return true
 		}
 	}

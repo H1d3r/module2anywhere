@@ -88,7 +88,7 @@ func ParseQuantumultX(content string) (*ir.Module, error) {
 		}
 		// 非注释行中的 hostname = ... 声明
 		if hs := extractHostnameValue(line); hs != "" {
-			hostnames = append(hostnames, normalizeHostnames(hs)...)
+			hostnames = append(hostnames, normalizeHostnames(stripInlineComment(hs))...)
 			continue
 		}
 		// 段头（含 hostname = ... 的 [hostname] 段体已通过行内容捕获）
@@ -100,7 +100,7 @@ func ParseQuantumultX(content string) (*ir.Module, error) {
 					break
 				}
 				if hs := extractHostnameValue(inner); hs != "" {
-					hostnames = append(hostnames, normalizeHostnames(hs)...)
+					hostnames = append(hostnames, normalizeHostnames(stripInlineComment(hs))...)
 				}
 			}
 			continue
@@ -321,6 +321,7 @@ func parseQuantumultXLine(line string) (*ir.RewriteRule, qxRuleKind) {
 		if len(parts) >= 7 {
 			r.Args["replacement"] = parts[6]
 		}
+		parseQXTrailingKeyValueArgs(r.Args, parts[7:])
 		return r, qxRuleRewrite
 
 	case "echo-response":
@@ -329,11 +330,14 @@ func parseQuantumultXLine(line string) (*ir.RewriteRule, qxRuleKind) {
 		if len(parts) >= 4 {
 			r.Args["content-type"] = parts[3]
 		}
-		if len(parts) >= 7 {
-			body := strings.Join(parts[6:], " ")
+		bodyParts := parts[6:]
+		bodyParts, trailingArgs := splitQXTrailingKeyValueTokens(bodyParts)
+		if len(bodyParts) > 0 {
+			body := strings.Join(bodyParts, " ")
 			body = strings.TrimPrefix(body, "body ")
 			r.Args["body"] = body
 		}
+		parseQXTrailingKeyValueArgs(r.Args, trailingArgs)
 		return r, qxRuleRewrite
 
 	case "jsonjq-response-body":
@@ -354,6 +358,7 @@ func parseQuantumultXLine(line string) (*ir.RewriteRule, qxRuleKind) {
 		if len(parts) >= 4 {
 			r.Args["url"] = parts[3]
 		}
+		parseQXTrailingKeyValueArgs(r.Args, parts[4:])
 		// 转为 ScriptRule
 		return r, qxRuleScript
 
@@ -463,6 +468,44 @@ func extractBetween(parts []string, start int, stopAt string) string {
 		collected = append(collected, parts[i])
 	}
 	return strings.Join(collected, " ")
+}
+
+// splitQXTrailingKeyValueTokens 从尾部拆出连续的 key=value token，避免把 body 误当尾参。
+func splitQXTrailingKeyValueTokens(tokens []string) (bodyTokens []string, trailingTokens []string) {
+	cut := len(tokens)
+	for cut > 0 {
+		token := tokens[cut-1]
+		if isQXTrailingKey(token) {
+			cut--
+			trailingTokens = append([]string{token}, trailingTokens...)
+			continue
+		}
+		break
+	}
+	return tokens[:cut], trailingTokens
+}
+
+// parseQXTrailingKeyValueArgs 将尾部 key=value tokens 写入 args。
+func parseQXTrailingKeyValueArgs(args map[string]string, tokens []string) {
+	for _, token := range tokens {
+		if idx := strings.Index(token, "="); idx > 0 && isQXTrailingKey(token) {
+			args[strings.ToLower(strings.TrimSpace(token[:idx]))] = strings.TrimSpace(token[idx+1:])
+		}
+	}
+}
+
+// isQXTrailingKey 仅把常见的尾参键视为可剥离参数，避免正文中意外的 `=` 被误切。
+func isQXTrailingKey(token string) bool {
+	idx := strings.Index(token, "=")
+	if idx <= 0 {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(token[:idx])) {
+	case "format", "body", "content-type", "contenttype", "requires-body", "binary-body-mode", "tag", "argument", "max-size", "engine":
+		return true
+	default:
+		return false
+	}
 }
 
 // ruleToScript 将 QX 脚本类 RewriteRule 转为 ScriptRule。

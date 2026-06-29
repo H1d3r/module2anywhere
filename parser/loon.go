@@ -243,10 +243,19 @@ func parseLoonRewriteAction(rest string) (string, map[string]string, string) {
 		// remain 即 JS 源码（可能含空格、花括号）
 		return action, args, strings.TrimSpace(remain)
 
+	case "_request-header", "_request-body", "_response-body":
+		// 兼容 Surge 风格的下划线内联 JS 别名
+		return strings.TrimPrefix(action, "_"), args, strings.TrimSpace(remain)
+
 	case "header-del":
 		// header-del <header-name>（仅请求阶段）
 		args["header"] = strings.TrimSpace(remain)
 		return action, args, ""
+
+	case "_header-del":
+		// 兼容 Surge 风格的 _header-del 别名
+		args["header"] = strings.TrimSpace(remain)
+		return "header-del", args, ""
 
 	case "response-body-replace-regex":
 		// response-body-replace-regex <search> <replacement>
@@ -258,7 +267,29 @@ func parseLoonRewriteAction(rest string) (string, map[string]string, string) {
 
 	default:
 		// 未知动作：保留原始 remain 以便日志
-		args["_raw"] = strings.TrimSpace(remain)
+		trimmedRemain := strings.TrimSpace(remain)
+		if strings.Contains(action, "$") {
+			switch strings.ToLower(trimmedRemain) {
+			case "302", "307":
+				args["url"] = action
+				return strings.TrimSpace(trimmedRemain), args, ""
+			}
+		}
+		if first, tail := splitFirstWhitespace(trimmedRemain); first != "" {
+			switch strings.ToLower(strings.TrimSpace(tail)) {
+			case "302", "307":
+				args["url"] = first
+				return strings.TrimSpace(tail), args, ""
+			}
+		}
+		if strings.HasPrefix(action, "http://") || strings.HasPrefix(action, "https://") {
+			switch strings.ToLower(trimmedRemain) {
+			case "302", "307":
+				args["url"] = action
+				return strings.TrimSpace(trimmedRemain), args, ""
+			}
+		}
+		args["_raw"] = trimmedRemain
 		return action, args, ""
 	}
 }
@@ -364,6 +395,12 @@ func parseLoonScriptLine(line string) (*ir.ScriptRule, error) {
 
 	tokens := splitCSVFields(params)
 	args, _ := parseKeyValueList(tokens)
+	if args["script-path"] == "" {
+		// 兼容混入的 QX/Loon url script-* 语法
+		if p, ok := parseMixedURLScriptParams(args, line); ok {
+			return p, nil
+		}
+	}
 	s.ScriptPath = args["script-path"]
 	s.Tag = args["tag"]
 	s.Argument = args["argument"]
@@ -406,6 +443,7 @@ func parseLoonArguments(body string) []ir.Argument {
 // parseLoonMitM 解析 [MitM] 段。
 // 格式：hostname = a.com, *.b.com
 func parseLoonMitM(body string) []string {
+	var hostnames []string
 	for _, line := range strings.Split(body, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -417,8 +455,8 @@ func parseLoonMitM(body string) []string {
 		}
 		key := strings.ToLower(strings.TrimSpace(line[:idx]))
 		if key == "hostname" {
-			return normalizeHostnames(line[idx+1:])
+			hostnames = append(hostnames, normalizeHostnames(stripInlineComment(line[idx+1:]))...)
 		}
 	}
-	return nil
+	return dedupStrings(hostnames)
 }
