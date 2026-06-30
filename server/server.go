@@ -311,11 +311,11 @@ func (s *Server) convertAll(r *http.Request) (*converter.Result, error) {
 			IncludeMetadata:    s.cfg.IncludeMetadata,
 			UseStreamScript:    s.cfg.UseStreamScript,
 			AutoContentType:    s.cfg.AutoContentType,
-				Concurrency:        s.cfg.Concurrency,
-				ScriptTimeoutSec:   s.cfg.ScriptTimeoutSec,
-				PreserveParameters: preserveParameters,
-				Arguments:          arguments,
-			}
+			Concurrency:        s.cfg.Concurrency,
+			ScriptTimeoutSec:   s.cfg.ScriptTimeoutSec,
+			PreserveParameters: preserveParameters,
+			Arguments:          arguments,
+		}
 		conv := converter.New(f, opts)
 		conv.BaseURL = in
 		// 记录来源 URL 与本服务 URL（用于在 .amrs/.arrs 头部添加注释）

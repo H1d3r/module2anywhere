@@ -47,10 +47,12 @@ export async function onRequest(context) {
   const fetchScripts = query.fetch !== 'false';
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
+  const preserveParameters = lib.truthyInput(query.preserveParameters || query.preserveArguments);
+  const argumentsMap = lib.queryArguments(query);
   const initialUA = lib.getUserAgent(sourceHint);
 
   // 检查缓存
-  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize);
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap);
   var cached = lib.cacheGet(ck + ':amrs');
   if (cached.hit) {
     return new Response(cached.value, {
@@ -103,6 +105,8 @@ export async function onRequest(context) {
       sourceURL: inputURL,
       serviceURL: serviceURL,
       addResourceURL: addResourceURL,
+      arguments: argumentsMap,
+      preserveParameters: preserveParameters,
     };
 
     try {

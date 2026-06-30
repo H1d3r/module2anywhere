@@ -50,6 +50,8 @@ export async function onRequest(context) {
   var wrapScripts = query.wrap === 'true';
   var sourceHint = query.source || '';
   var format = (query.format || '').toLowerCase().trim();
+  var preserveParameters = lib.truthyInput(query.preserveParameters || query.preserveArguments);
+  var argumentsMap = lib.queryArguments(query);
   var initialUA = lib.getUserAgent(sourceHint);
 
   // 解析 quantumult.app 一键订阅协议
@@ -99,6 +101,8 @@ export async function onRequest(context) {
       sourceURL: inputURL,
       serviceURL: serviceURL,
       addResourceURL: addResourceURL,
+      arguments: argumentsMap,
+      preserveParameters: preserveParameters,
     };
 
     try {
@@ -125,6 +129,12 @@ export async function onRequest(context) {
   // 构造本服务的子链接 URL
   var origin = url.origin;
   var linkParams = 'url=' + encodeURIComponent(decodedURL) + '&fetch=' + fetchScripts + '&generalize=' + generalize;
+  if (preserveParameters) linkParams += '&preserveParameters=true';
+  for (var ak in argumentsMap) {
+    if (Object.prototype.hasOwnProperty.call(argumentsMap, ak)) {
+      linkParams += '&argument.' + encodeURIComponent(ak) + '=' + encodeURIComponent(argumentsMap[ak]);
+    }
+  }
   if (wrapScripts) linkParams += '&wrap=true';
   if (sourceHint) linkParams += '&source=' + encodeURIComponent(sourceHint);
   if (name) linkParams += '&name=' + encodeURIComponent(name);

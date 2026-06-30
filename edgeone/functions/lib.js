@@ -4045,6 +4045,23 @@ function cacheKey(url, name, fetchScripts, generalize, preserveParameters, args)
   return url + "|" + name + "|" + fetchScripts + "|" + generalize + "|" + !!preserveParameters + "|" + parts.join("&");
 }
 
+function truthyInput(value) {
+  return /^(?:1|true|yes|on)$/i.test(String(value || "").trim());
+}
+
+function queryArguments(query) {
+  const out = {};
+  query = query || {};
+  for (const key of Object.keys(query)) {
+    let name = "";
+    if (key.indexOf("argument.") === 0) name = key.slice("argument.".length);
+    else if (key.indexOf("arg.") === 0) name = key.slice("arg.".length);
+    if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name)) continue;
+    out[name] = String(query[key]);
+  }
+  return out;
+}
+
 const lib = {
   detectSource,
   parse,
@@ -4059,6 +4076,8 @@ const lib = {
   cacheGet,
   cachePut,
   cacheKey,
+  truthyInput,
+  queryArguments,
 };
 
 // 将所有函数通过命名导出暴露
