@@ -81,12 +81,14 @@ export async function onRequest(context) {
   const fetchScripts = query.fetch !== 'false';
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
+  const wrapScripts = query.wrap === 'true';
   const preserveParameters = lib.truthyInput(query.preserveParameters || query.preserveArguments);
+  const scriptMode = lib.normalizeScriptMode(query.scriptMode);
   const argumentsMap = lib.queryArguments(query);
   const initialUA = lib.getUserAgent(sourceHint);
 
   // 检查缓存
-  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap);
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts);
   var cached = lib.cacheGet(ck + ':amrs');
   if (cached.hit) {
     return new Response(cached.value, {
@@ -138,11 +140,14 @@ export async function onRequest(context) {
       ...lib.defaultConvertOptions(),
       generalizeHost: generalize,
       fetchScripts,
+      wrapScripts: wrapScripts,
       sourceURL: inputURL,
       serviceURL: serviceURL,
       addResourceURL: addResourceURL,
       arguments: argumentsMap,
       preserveParameters: preserveParameters,
+      scriptMode: scriptMode,
+      scriptBaseURL: url.origin + '/script.js',
     };
 
     try {
@@ -220,12 +225,14 @@ export async function onRequest(context) {
   const fetchScripts = query.fetch !== 'false';
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
+  const wrapScripts = query.wrap === 'true';
   const preserveParameters = lib.truthyInput(query.preserveParameters || query.preserveArguments);
+  const scriptMode = lib.normalizeScriptMode(query.scriptMode);
   const argumentsMap = lib.queryArguments(query);
   const initialUA = lib.getUserAgent(sourceHint);
 
   // 检查缓存
-  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap);
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts);
   var cached = lib.cacheGet(ck + ':arrs');
   if (cached.hit) {
     return new Response(cached.value, {
@@ -277,11 +284,14 @@ export async function onRequest(context) {
       ...lib.defaultConvertOptions(),
       generalizeHost: generalize,
       fetchScripts,
+      wrapScripts: wrapScripts,
       sourceURL: inputURL,
       serviceURL: serviceURL,
       addResourceURL: addResourceURL,
       arguments: argumentsMap,
       preserveParameters: preserveParameters,
+      scriptMode: scriptMode,
+      scriptBaseURL: url.origin + '/script.js',
     };
 
     try {
@@ -359,12 +369,14 @@ export async function onRequest(context) {
   const fetchScripts = query.fetch !== 'false';
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
+  const wrapScripts = query.wrap === 'true';
   const preserveParameters = lib.truthyInput(query.preserveParameters || query.preserveArguments);
+  const scriptMode = lib.normalizeScriptMode(query.scriptMode);
   const argumentsMap = lib.queryArguments(query);
   const initialUA = lib.getUserAgent(sourceHint);
 
   // 检查缓存
-  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap);
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts);
   var cached = lib.cacheGet(ck + ':amrs');
   if (cached.hit) {
     return new Response(cached.value, {
@@ -414,11 +426,14 @@ export async function onRequest(context) {
       ...lib.defaultConvertOptions(),
       generalizeHost: generalize,
       fetchScripts,
+      wrapScripts: wrapScripts,
       sourceURL: inputURL,
       serviceURL: serviceURL,
       addResourceURL: addResourceURL,
       arguments: argumentsMap,
       preserveParameters: preserveParameters,
+      scriptMode: scriptMode,
+      scriptBaseURL: url.origin + '/script.js',
     };
 
     try {
@@ -496,12 +511,14 @@ export async function onRequest(context) {
   const fetchScripts = query.fetch !== 'false';
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
+  const wrapScripts = query.wrap === 'true';
   const preserveParameters = lib.truthyInput(query.preserveParameters || query.preserveArguments);
+  const scriptMode = lib.normalizeScriptMode(query.scriptMode);
   const argumentsMap = lib.queryArguments(query);
   const initialUA = lib.getUserAgent(sourceHint);
 
   // 检查缓存
-  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap);
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts);
   var cached = lib.cacheGet(ck + ':rule');
   if (cached.hit) {
     return new Response(cached.value, {
@@ -550,11 +567,14 @@ export async function onRequest(context) {
       ...lib.defaultConvertOptions(),
       generalizeHost: generalize,
       fetchScripts,
+      wrapScripts: wrapScripts,
       sourceURL: inputURL,
       serviceURL: serviceURL,
       addResourceURL: addResourceURL,
       arguments: argumentsMap,
       preserveParameters: preserveParameters,
+      scriptMode: scriptMode,
+      scriptBaseURL: url.origin + '/script.js',
     };
 
     try {
@@ -642,12 +662,14 @@ export async function onRequest(context) {
   const fetchScripts = query.fetch !== 'false';
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
+  const wrapScripts = query.wrap === 'true';
   const preserveParameters = lib.truthyInput(query.preserveParameters || query.preserveArguments);
+  const scriptMode = lib.normalizeScriptMode(query.scriptMode);
   const argumentsMap = lib.queryArguments(query);
   const initialUA = lib.getUserAgent(sourceHint);
 
   // 检查缓存
-  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap);
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts);
   var cached = lib.cacheGet(ck + ':direct');
   if (cached.hit) {
     return new Response(cached.value, {
@@ -696,11 +718,14 @@ export async function onRequest(context) {
       ...lib.defaultConvertOptions(),
       generalizeHost: generalize,
       fetchScripts,
+      wrapScripts: wrapScripts,
       sourceURL: inputURL,
       serviceURL: serviceURL,
       addResourceURL: addResourceURL,
       arguments: argumentsMap,
       preserveParameters: preserveParameters,
+      scriptMode: scriptMode,
+      scriptBaseURL: url.origin + '/script.js',
     };
 
     try {
@@ -786,12 +811,14 @@ export async function onRequest(context) {
   const fetchScripts = query.fetch !== 'false';
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
+  const wrapScripts = query.wrap === 'true';
   const preserveParameters = lib.truthyInput(query.preserveParameters || query.preserveArguments);
+  const scriptMode = lib.normalizeScriptMode(query.scriptMode);
   const argumentsMap = lib.queryArguments(query);
   const initialUA = lib.getUserAgent(sourceHint);
 
   // 检查缓存
-  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap);
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts);
   var cached = lib.cacheGet(ck + ':reject');
   if (cached.hit) {
     return new Response(cached.value, {
@@ -840,11 +867,14 @@ export async function onRequest(context) {
       ...lib.defaultConvertOptions(),
       generalizeHost: generalize,
       fetchScripts,
+      wrapScripts: wrapScripts,
       sourceURL: inputURL,
       serviceURL: serviceURL,
       addResourceURL: addResourceURL,
       arguments: argumentsMap,
       preserveParameters: preserveParameters,
+      scriptMode: scriptMode,
+      scriptBaseURL: url.origin + '/script.js',
     };
 
     try {
@@ -948,12 +978,14 @@ export async function onRequest(context) {
   const fetchScripts = query.fetch !== 'false';
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
+  const wrapScripts = query.wrap === 'true';
   const preserveParameters = lib.truthyInput(query.preserveParameters || query.preserveArguments);
+  const scriptMode = lib.normalizeScriptMode(query.scriptMode);
   const argumentsMap = lib.queryArguments(query);
   const initialUA = lib.getUserAgent(sourceHint);
 
   // 检查缓存
-  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap);
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts);
   var cached = lib.cacheGet(ck + ':' + format);
   if (cached.hit) {
     return new Response(cached.value, {
@@ -1005,11 +1037,14 @@ export async function onRequest(context) {
       ...lib.defaultConvertOptions(),
       generalizeHost: generalize,
       fetchScripts,
+      wrapScripts: wrapScripts,
       sourceURL: inputURL,
       serviceURL: serviceURL,
       addResourceURL: addResourceURL,
       arguments: argumentsMap,
       preserveParameters: preserveParameters,
+      scriptMode: scriptMode,
+      scriptBaseURL: url.origin + '/script.js',
     };
 
     try {
@@ -1041,6 +1076,61 @@ export async function onRequest(context) {
       'Content-Disposition': \`inline; filename=\${filename}\`,
     },
   });
+}
+`,
+  },
+  {
+    file: 'script.js',
+    code: `function buildCorsHeaders() {
+  return {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': '*',
+  };
+}
+
+function corsPreflight() {
+  return new Response(null, { status: 204, headers: buildCorsHeaders() });
+}
+
+export async function onRequest(context) {
+  if (context.request.method === 'OPTIONS') return corsPreflight();
+
+  const url = new URL(context.request.url);
+  const query = {};
+  url.searchParams.forEach((v, k) => { query[k] = v; });
+
+  const rawScript = query.script || '';
+  if (!rawScript) {
+    return new Response('Error: script parameter is required', {
+      status: 400,
+      headers: buildCorsHeaders(),
+    });
+  }
+
+  const phase = query.phase === '1' ? 1 : 0;
+  const wrap = query.wrap === 'true';
+  const argument = query.argument || '';
+  const baseURL = query.base || '';
+  const resolved = lib.resolveScriptPath(rawScript, baseURL);
+  const userAgent = lib.getUserAgent(baseURL);
+
+  try {
+    const source = await lib.fetchAndRewriteScript(resolved, true, phase, false, userAgent, wrap, argument);
+    return new Response(source, {
+      status: 200,
+      headers: {
+        ...buildCorsHeaders(),
+        'Content-Type': 'application/javascript; charset=utf-8',
+        'Cache-Control': 'public, max-age=3600',
+      },
+    });
+  } catch (e) {
+    return new Response('Error: ' + (e.message || e), {
+      status: 400,
+      headers: buildCorsHeaders(),
+    });
+  }
 }
 `,
   },
@@ -1091,6 +1181,7 @@ export async function onRequest(context) {
   var sourceHint = query.source || '';
   var format = (query.format || '').toLowerCase().trim();
   var preserveParameters = lib.truthyInput(query.preserveParameters || query.preserveArguments);
+  var scriptMode = lib.normalizeScriptMode(query.scriptMode);
   var argumentsMap = lib.queryArguments(query);
   var initialUA = lib.getUserAgent(sourceHint);
 
@@ -1143,6 +1234,8 @@ export async function onRequest(context) {
       addResourceURL: addResourceURL,
       arguments: argumentsMap,
       preserveParameters: preserveParameters,
+      scriptMode: scriptMode,
+      scriptBaseURL: url.origin + '/script.js',
     };
 
     try {
@@ -1170,6 +1263,7 @@ export async function onRequest(context) {
   var origin = url.origin;
   var linkParams = 'url=' + encodeURIComponent(decodedURL) + '&fetch=' + fetchScripts + '&generalize=' + generalize;
   if (preserveParameters) linkParams += '&preserveParameters=true';
+  if (scriptMode === 'loader') linkParams += '&scriptMode=loader';
   for (var ak in argumentsMap) {
     if (Object.prototype.hasOwnProperty.call(argumentsMap, ak)) {
       linkParams += '&argument.' + encodeURIComponent(ak) + '=' + encodeURIComponent(argumentsMap[ak]);

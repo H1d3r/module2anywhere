@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -208,6 +209,7 @@ func (c *Converter) Convert(ctx context.Context, m *ir.Module) (*Result, error) 
 	if len(m.Scripts) > 20 {
 		res.Report.AddWarning(fmt.Sprintf("脚本规则数量较多（%d），建议检查是否存在重复 script-path 或可合并规则", len(m.Scripts)))
 	}
+	c.addMemoryRiskWarnings(amrsLines, &res.Report)
 
 	// 3. accept-encoding 预处理对（可选）
 	if c.Opts.EncodingPreprocess {
@@ -220,6 +222,50 @@ func (c *Converter) Convert(ctx context.Context, m *ir.Module) (*Result, error) 
 	res.Amrs = c.generateAmrs(baseName, m.Hostnames, amrsLines, m, argState.parameters)
 
 	return res, nil
+}
+
+func (c *Converter) addMemoryRiskWarnings(lines []string, report *Report) {
+	bufferedBodyRules := 0
+	streamRules := 0
+	for _, line := range lines {
+		fields := splitAmrsFields(line)
+		if len(fields) < 2 || fields[0] != "1" {
+			continue
+		}
+		switch fields[1] {
+		case "4", "5", "100":
+			bufferedBodyRules++
+		case "101":
+			streamRules++
+		}
+	}
+	if bufferedBodyRules > 0 {
+		report.AddWarning(fmt.Sprintf("响应阶段存在 %d 条缓冲 body 规则（op 4/5/100），Anywhere 会持有完整响应体并可能解压，iOS VPN 扩展内存峰值会升高", bufferedBodyRules))
+	}
+	if streamRules > 0 && c.Opts.UseStreamScript {
+		report.AddWarning("已启用 stream-script (op 101)：转换器不再默认累积跨帧 body；如脚本自行把 ctx.body 存入 ctx.state，长连接仍可能涨内存")
+	}
+}
+
+func buildScriptLoaderURL(base, scriptPath, moduleBaseURL string, phase int, wrap bool, argument string) string {
+	u, err := url.Parse(base)
+	if err != nil {
+		return base
+	}
+	q := u.Query()
+	q.Set("script", scriptPath)
+	if moduleBaseURL != "" {
+		q.Set("base", moduleBaseURL)
+	}
+	q.Set("phase", strconv.Itoa(phase))
+	if wrap {
+		q.Set("wrap", "true")
+	}
+	if strings.TrimSpace(argument) != "" {
+		q.Set("argument", argument)
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // convertRoutingRules 转换路由规则，按 action 拆分为三组。
@@ -743,11 +789,17 @@ func (c *Converter) convertScriptRules(ctx context.Context, m *ir.Module, report
 				return
 			}
 
-			// 单个脚本下载独立超时
-			sctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
-			defer cancel()
-
-			b64, err := FetchAndEncodeScript(sctx, c.Fetcher, s.ScriptPath, c.BaseURL, c.Opts.FetchScripts, s.Phase, c.Opts.UseStreamScript, c.Opts.WrapScripts, s.Argument)
+			var b64 string
+			var err error
+			if strings.EqualFold(c.Opts.ScriptMode, "loader") && strings.TrimSpace(c.Opts.ScriptBaseURL) != "" && !c.Opts.UseStreamScript {
+				loaderURL := buildScriptLoaderURL(c.Opts.ScriptBaseURL, s.ScriptPath, c.BaseURL, s.Phase, c.Opts.WrapScripts, s.Argument)
+				b64 = EncodeLoaderScript(loaderURL)
+			} else {
+				// 单个脚本下载独立超时
+				sctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+				defer cancel()
+				b64, err = FetchAndEncodeScript(sctx, c.Fetcher, s.ScriptPath, c.BaseURL, c.Opts.FetchScripts, s.Phase, c.Opts.UseStreamScript, c.Opts.WrapScripts, s.Argument)
+			}
 			if err != nil {
 				report.AddScriptErr(fmt.Sprintf("脚本下载失败 %s: %v", s.ScriptPath, err))
 				// 降级为占位符，保证输出文件完整（scriptPath 已转义防注入）
@@ -772,13 +824,14 @@ func (c *Converter) convertScriptRules(ctx context.Context, m *ir.Module, report
 	return lines
 }
 
-// addEncodingPreprocess 为含 body 处理的 URL 添加 accept-encoding 预处理对。
+// addEncodingPreprocess 为含缓冲 body 处理的 URL 添加 accept-encoding 预处理对。
 // 策略：扫描所有 phase=1 的 body-json/script 规则，提取其 pattern，添加：
 //
 //	0, 2, <pattern>, accept-encoding
 //	0, 1, <pattern>, accept-encoding, identity
 func (c *Converter) addEncodingPreprocess(lines []string) []string {
-	// 收集需要预处理的 pattern（phase=1 且 op ∈ {5, 100, 101, 4}）
+	// 收集需要预处理的 pattern（phase=1 且 op ∈ {4, 5, 100}）。
+	// stream-script (101) 应保持上游压缩和分帧语义，避免把流式路径放大成未压缩大流量。
 	patterns := make(map[string]bool)
 	for _, line := range lines {
 		fields := splitAmrsFields(line)
@@ -791,7 +844,7 @@ func (c *Converter) addEncodingPreprocess(lines []string) []string {
 			continue
 		}
 		switch op {
-		case "4", "5", "100", "101":
+		case "4", "5", "100":
 			if len(fields) >= 3 {
 				patterns[fields[2]] = true
 			}

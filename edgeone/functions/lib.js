@@ -449,6 +449,33 @@ function scriptCacheKey(
   ].join("|");
 }
 
+function scriptLoaderURL(baseURL, scriptPath, moduleBaseURL, phase, wrap, argument) {
+  const u = new URL(baseURL);
+  u.searchParams.set("script", scriptPath || "");
+  if (moduleBaseURL) u.searchParams.set("base", moduleBaseURL);
+  u.searchParams.set("phase", String(phase || 0));
+  if (wrap) u.searchParams.set("wrap", "true");
+  if (String(argument || "").trim()) u.searchParams.set("argument", String(argument || ""));
+  return u.toString();
+}
+
+function encodeLoaderScript(scriptURL) {
+  const js = `async function process(ctx) {
+  var key = ${JSON.stringify(String(scriptURL || ""))};
+  globalThis.__m2aLoaderCache = globalThis.__m2aLoaderCache || {};
+  var fn = globalThis.__m2aLoaderCache[key];
+  if (!fn) {
+    var res = await Anywhere.http.get(key);
+    var source = Anywhere.codec.utf8.decode(res.body || new Uint8Array());
+    fn = new Function(source + "\\n; return process;")();
+    globalThis.__m2aLoaderCache[key] = fn;
+  }
+  return await fn(ctx);
+}
+`;
+  return btoa(unescape(encodeURIComponent(js)));
+}
+
 // isLikelyNonJSScript 检测下载的脚本内容是否实际上不是 JS 文件（而是模块配置文件）。
 // 上游模块的 script-path 可能误指向 .conf/.plugin/.sgmodule 等配置文件，
 // 直接执行这些文件会导致 JSCore 语法错误（如 "Unexpected token '*'"）。
@@ -496,6 +523,27 @@ async function fetchAndEncodeScript(
   wrap,
   argument,
 ) {
+  const finalSrc = await fetchAndRewriteScript(
+    scriptPath,
+    fetchScripts,
+    phase,
+    useStreamScript,
+    userAgent,
+    wrap,
+    argument,
+  );
+  return btoa(unescape(encodeURIComponent(finalSrc)));
+}
+
+async function fetchAndRewriteScript(
+  scriptPath,
+  fetchScripts,
+  phase,
+  useStreamScript,
+  userAgent,
+  wrap,
+  argument,
+) {
   const cacheKey = scriptCacheKey(
     scriptPath,
     fetchScripts,
@@ -511,9 +559,8 @@ async function fetchAndEncodeScript(
       'function process(ctx){Anywhere.log.warning("script not fetched: " + ' +
       JSON.stringify(String(scriptPath)) +
       ");}";
-    const encoded = btoa(unescape(encodeURIComponent(placeholder)));
-    scriptCache.set(cacheKey, encoded);
-    return encoded;
+    scriptCache.set(cacheKey, placeholder);
+    return placeholder;
   }
   try {
     const src = await fetchRemoteWithProxy(scriptPath, userAgent);
@@ -524,17 +571,16 @@ async function fetchAndEncodeScript(
     }
     // 包装执行模式：不做字符串替换，直接 base64 编码上游脚本
     if (wrap) {
-      const encoded = encodeWrappedScript(src, phase, argument || "");
-      scriptCache.set(cacheKey, encoded);
-      return encoded;
+      const wrapped = buildWrappedScript(src, phase, argument || "");
+      scriptCache.set(cacheKey, wrapped);
+      return wrapped;
     }
     const rewritten = rewriteScriptAPI(src, phase, argument || "");
     const finalSrc = useStreamScript
       ? wrapAsStreamScript(rewritten, phase)
       : rewritten;
-    const encoded = btoa(unescape(encodeURIComponent(finalSrc)));
-    scriptCache.set(cacheKey, encoded);
-    return encoded;
+    scriptCache.set(cacheKey, finalSrc);
+    return finalSrc;
   } catch (e) {
     throw new Error(`下载脚本失败 "${scriptPath}": ${e}`);
   }
@@ -543,7 +589,7 @@ async function fetchAndEncodeScript(
 function encodeInlineScript(rawJS, phase, wrap) {
   // 包装执行模式：将上游脚本源码 base64 编码，在 process(ctx) 中用 new Function()() 执行
   if (wrap) {
-    return encodeWrappedScript(rawJS, phase, "");
+    return btoa(unescape(encodeURIComponent(buildWrappedScript(rawJS, phase, ""))));
   }
   const rewritten = rewriteScriptAPI(rawJS, phase, "");
   return btoa(unescape(encodeURIComponent(rewritten)));
@@ -556,7 +602,7 @@ function encodeInlineScript(rawJS, phase, wrap) {
  * 这种方式不做字符串替换，能最大程度保持上游脚本的原始逻辑，
  * 适用于 wloc.js 等自包含跨平台脚本。
  */
-function encodeWrappedScript(rawJS, phase, argument) {
+function buildWrappedScript(rawJS, phase, argument) {
   const phaseCheck = phase === 1 ? "response" : "request";
   // 检测是否需要 async（与 rewriteScriptAPI 保持一致）
   const needsAsync =
@@ -828,7 +874,11 @@ if (typeof globalThis.JSON !== 'undefined') {
   if (typeof globalThis.JSON.parse !== 'function') {}
 }
 `;
-  return btoa(unescape(encodeURIComponent(wrapper)));
+  return wrapper;
+}
+
+function encodeWrappedScript(rawJS, phase, argument) {
+  return btoa(unescape(encodeURIComponent(buildWrappedScript(rawJS, phase, argument))));
 }
 
 function encodeInlineRewriteJS(rawJS, phase) {
@@ -1835,16 +1885,9 @@ function wrapAsStreamScript(rewrittenSrc, phase) {
   const inner = extractProcessBody(rewrittenSrc) || rewrittenSrc;
   return `async function process(ctx) {
   if (ctx.phase !== "${phaseCheck}" || !ctx.body) return;
-  if (!ctx.state.buf) ctx.state.buf = [];
-  if (!ctx.state.text) ctx.state.text = "";
-  ctx.state.buf.push(ctx.body);
-  try { ctx.state.text += Anywhere.codec.utf8.decode(ctx.body); } catch (e) { Anywhere.log.warning("decode frame failed: " + e); }
-  if (!ctx.frame || !ctx.frame.end) return;
   try {
-    ctx.body = Anywhere.codec.utf8.encode(ctx.state.text);
 ${indent(inner, "    ")}
   } catch (e) { Anywhere.log.warning("stream process failed: " + e); }
-  Anywhere.done();
 }`;
 }
 
@@ -3326,6 +3369,8 @@ function defaultConvertOptions() {
     wrapScripts: false,
     arguments: {},
     preserveParameters: false,
+    scriptMode: "inline",
+    scriptBaseURL: "",
   };
 }
 
@@ -3386,6 +3431,7 @@ async function convert(m, opts) {
     ...(await convertMapLocals(m.mapLocals, options, report, m.source)),
     ...(await convertScriptRules(m, options, report, m.source)),
   ];
+  addMemoryRiskWarnings(amrsLines, options, report);
 
   let finalAmrsLines = amrsLines;
   if (options.encodingPreprocess)
@@ -3777,16 +3823,29 @@ async function convertScriptRules(m, opts, report, source) {
     while (queue.length > 0) {
       const t = queue.shift();
       try {
-        const resolved = resolveScriptPath(t.s.scriptPath, m.name);
-        const b64 = await fetchAndEncodeScript(
-          resolved,
-          opts.fetchScripts,
-          t.s.phase,
-          opts.useStreamScript,
-          userAgent,
-          opts.wrapScripts,
-          t.s.argument || "",
-        );
+        let b64;
+        if (String(opts.scriptMode || "").toLowerCase() === "loader" && opts.scriptBaseURL && !opts.useStreamScript) {
+          const loaderURL = scriptLoaderURL(
+            opts.scriptBaseURL,
+            t.s.scriptPath,
+            opts.sourceURL || "",
+            t.s.phase,
+            opts.wrapScripts,
+            t.s.argument || "",
+          );
+          b64 = encodeLoaderScript(loaderURL);
+        } else {
+          const resolved = resolveScriptPath(t.s.scriptPath, opts.sourceURL || m.name);
+          b64 = await fetchAndEncodeScript(
+            resolved,
+            opts.fetchScripts,
+            t.s.phase,
+            opts.useStreamScript,
+            userAgent,
+            opts.wrapScripts,
+            t.s.argument || "",
+          );
+        }
         const op = opts.useStreamScript ? "101" : "100";
         results[t.index] = `${t.s.phase}, ${op}, ${t.pattern}, ${b64}`;
       } catch (e) {
@@ -3817,7 +3876,7 @@ function addEncodingPreprocess(lines) {
     const fields = splitAmrsFields(line);
     if (fields.length < 2) continue;
     if (fields[0] !== "1") continue;
-    if (["4", "5", "100", "101"].includes(fields[1]) && fields.length >= 3)
+    if (["4", "5", "100"].includes(fields[1]) && fields.length >= 3)
       patterns.add(fields[2]);
   }
   if (patterns.size === 0) return lines;
@@ -3827,6 +3886,23 @@ function addEncodingPreprocess(lines) {
     pre.push(`0, 1, ${p}, accept-encoding, identity`);
   }
   return [...pre, ...lines];
+}
+
+function addMemoryRiskWarnings(lines, opts, report) {
+  let bufferedBodyRules = 0;
+  let streamRules = 0;
+  for (const line of lines) {
+    const fields = splitAmrsFields(line);
+    if (fields.length < 2 || fields[0] !== "1") continue;
+    if (["4", "5", "100"].includes(fields[1])) bufferedBodyRules++;
+    else if (fields[1] === "101") streamRules++;
+  }
+  if (bufferedBodyRules > 0) {
+    report.warnings.push(`响应阶段存在 ${bufferedBodyRules} 条缓冲 body 规则（op 4/5/100），Anywhere 会持有完整响应体并可能解压，iOS VPN 扩展内存峰值会升高`);
+  }
+  if (streamRules > 0 && opts && opts.useStreamScript) {
+    report.warnings.push("已启用 stream-script (op 101)：转换器不再默认累积跨帧 body；如脚本自行把 ctx.body 存入 ctx.state，长连接仍可能涨内存");
+  }
 }
 
 function splitAmrsFields(line) {
@@ -4036,13 +4112,17 @@ function cachePut(key, value) {
 }
 
 // cacheKey 生成缓存键。
-function cacheKey(url, name, fetchScripts, generalize, preserveParameters, args) {
+function normalizeScriptMode(value) {
+  return String(value || "").toLowerCase().trim() === "loader" ? "loader" : "inline";
+}
+
+function cacheKey(url, name, fetchScripts, generalize, preserveParameters, args, scriptMode, wrapScripts) {
   const parts = [];
   const source = args || {};
   for (const key of Object.keys(source).sort()) {
     parts.push(key + "=" + source[key]);
   }
-  return url + "|" + name + "|" + fetchScripts + "|" + generalize + "|" + !!preserveParameters + "|" + parts.join("&");
+  return url + "|" + name + "|" + fetchScripts + "|" + generalize + "|" + !!preserveParameters + "|" + !!wrapScripts + "|" + normalizeScriptMode(scriptMode) + "|" + parts.join("&");
 }
 
 function truthyInput(value) {
@@ -4077,7 +4157,9 @@ const lib = {
   cachePut,
   cacheKey,
   truthyInput,
+  normalizeScriptMode,
   queryArguments,
+  fetchAndRewriteScript,
 };
 
 // 将所有函数通过命名导出暴露
@@ -4110,8 +4192,14 @@ export {
   fetchRemoteWithProxy,
   isRemote,
   resolveScriptPath,
+  scriptLoaderURL,
+  encodeLoaderScript,
+  fetchAndEncodeScript,
+  fetchAndRewriteScript,
   encodeInlineScript,
   encodeInlineRewriteJS,
+  buildWrappedScript,
+  encodeWrappedScript,
   rewriteScriptAPI,
   rewriteHttpClientCalls,
   rewriteDoneCalls,
@@ -4169,6 +4257,9 @@ export {
   cacheGet,
   cachePut,
   cacheKey,
+  normalizeScriptMode,
+  truthyInput,
+  queryArguments,
   // 也导出 lib 对象本身，方便端点文件使用 lib.xxx 形式
   lib,
 };

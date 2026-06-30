@@ -787,7 +787,7 @@ function process(ctx) {
 
 ### 7.5 stream-script 映射 → op 101
 
-`stream-script` 用于处理流式响应（分块传输），通过 `ctx.frame` 控制帧边界，`ctx.state` 累积数据。
+`stream-script` 用于处理流式响应（分块传输），通过 `ctx.frame` 控制帧边界，逐帧处理 body。它的价值是避免 `script (100)` 缓冲完整响应体。
 
 | 源类型 | Anywhere op | phase | 说明 |
 |--------|------------|-------|------|
@@ -801,44 +801,23 @@ ctx.frame      // {index: number, end: boolean}
 // end: 当前帧是否为最后一帧
 
 ctx.state      // {}，跨帧共享状态对象
-// 用于在多帧间累积数据
+// 可保存少量状态；不要默认把每帧 body 存进去，否则会抵消 stream-script 的低内存收益
 ```
 
-**stream-script 改写模板（以京东价格比对为例）**：
+**stream-script 改写模板（逐帧文本替换示例）**：
 
 ```javascript
 async function process(ctx) {
   if (ctx.phase !== "response" || !ctx.body) return;
-  // 初始化累积状态
-  if (!ctx.state.buf) ctx.state.buf = [];
-  if (!ctx.state.cb) ctx.state.cb = "";
-
-  // 拼接 body
-  ctx.state.cb += Anywhere.codec.utf8.decode(ctx.body);
-
-  // 非最后一帧：保存状态后继续
-  if (!ctx.frame.end) {
-    ctx.state.buf.push(ctx.body);
-    return; // 不调用 done，等待后续帧
-  }
-
-  // 最后一帧：查找 JSON 中的价格字段并注入
-  var m = ctx.state.cb.match(/"lowestPrice":"(\d+)"/);
-  if (m) {
-    var targetPrice = parseInt(m[1]) - 1;
-    var newBody = ctx.state.cb.replace(
-      /"lowestPrice":"\d+"/g,
-      '"lowestPrice":"' + targetPrice + '"'
-    );
-    ctx.body = Anywhere.codec.utf8.encode(newBody);
-  }
-  Anywhere.done();
+  var text = Anywhere.codec.utf8.decode(ctx.body);
+  text = text.replace(/"ad":true/g, '"ad":false');
+  ctx.body = Anywhere.codec.utf8.encode(text);
 }
 ```
 
 > **何时用 script (100) vs stream-script (101)**：
 > - `100`：整个 body 可一次性获取，或只需最终处理结果。多数场景用此。
-> - `101`：body 分块传输（如大文件、分段 JSON 流），需逐帧处理后再组装。转换时可将 Loon/Surge 的普通脚本先转为 `100`，如有流式需求再手动优化为 `101`。
+> - `101`：body 分块传输（SSE、NDJSON、大响应等），且脚本逻辑能逐帧完成。不要把所有 frame 追加到 `ctx.state` 后最后统一处理；这会重新变成全量缓冲，容易推高 iOS VPN 扩展内存。
 
 ### 7.6 脚本上传与 base64 编码
 

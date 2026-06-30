@@ -60,11 +60,38 @@ func EncodeStaticRespondScript(status int, headers [][2]string, body string, bod
 	return base64.StdEncoding.EncodeToString([]byte(js))
 }
 
+// EncodeLoaderScript 生成轻量 loader，运行时从远端加载已转换后的 process(ctx) 脚本。
+func EncodeLoaderScript(scriptURL string) string {
+	js := fmt.Sprintf(`async function process(ctx) {
+  var key = %s;
+  globalThis.__m2aLoaderCache = globalThis.__m2aLoaderCache || {};
+  var fn = globalThis.__m2aLoaderCache[key];
+  if (!fn) {
+    var res = await Anywhere.http.get(key);
+    var source = Anywhere.codec.utf8.decode(res.body || new Uint8Array());
+    fn = new Function(source + "\n; return process;")();
+    globalThis.__m2aLoaderCache[key] = fn;
+  }
+  return await fn(ctx);
+}
+`, jsStringLiteral(scriptURL))
+	return base64.StdEncoding.EncodeToString([]byte(js))
+}
+
 // FetchAndEncodeScript 下载脚本，改写 API，base64 编码。
 // scriptPath 可以是 URL 或本地路径。baseURL 用于解析相对路径。
 // 若 fetchScripts=false，返回占位符 base64。
 // 若 useStreamScript=true，将改写后的脚本再包装为 stream-script (op 101) 形式。
 func FetchAndEncodeScript(ctx context.Context, f *fetcher.Fetcher, scriptPath, baseURL string, fetchScripts bool, phase int, useStreamScript bool, wrapScript bool, argument string) (string, error) {
+	source, err := FetchAndRewriteScript(ctx, f, scriptPath, baseURL, fetchScripts, phase, useStreamScript, wrapScript, argument)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString([]byte(source)), nil
+}
+
+// FetchAndRewriteScript 下载脚本并返回适配 Anywhere 的 JS 源码（未 base64）。
+func FetchAndRewriteScript(ctx context.Context, f *fetcher.Fetcher, scriptPath, baseURL string, fetchScripts bool, phase int, useStreamScript bool, wrapScript bool, argument string) (string, error) {
 	cacheKey := resolvedScriptCacheKey(scriptPath, baseURL, phase, useStreamScript, wrapScript, fetchScripts, argument)
 	if cached, ok := getScriptCache(cacheKey); ok {
 		return cached, nil
@@ -72,9 +99,10 @@ func FetchAndEncodeScript(ctx context.Context, f *fetcher.Fetcher, scriptPath, b
 
 	if !fetchScripts {
 		// 占位符：返回一个空 process 函数（scriptPath 已转义防注入）
-		encoded := notFetchedPlaceholder(scriptPath)
-		setScriptCache(cacheKey, encoded)
-		return encoded, nil
+		placeholder := "function process(ctx){Anywhere.log.warning(\"script not fetched: \" + " +
+			jsStringLiteral(scriptPath) + ");}"
+		setScriptCache(cacheKey, placeholder)
+		return placeholder, nil
 	}
 
 	resolved := scriptPath
@@ -98,18 +126,16 @@ func FetchAndEncodeScript(ctx context.Context, f *fetcher.Fetcher, scriptPath, b
 	// 包装执行模式：将上游脚本源码 base64 编码，生成包装器 process(ctx)
 	if wrapScript {
 		wrapped := BuildWrappedScript(src, phase, argument)
-		encoded := base64.StdEncoding.EncodeToString([]byte(wrapped))
-		setScriptCache(cacheKey, encoded)
-		return encoded, nil
+		setScriptCache(cacheKey, wrapped)
+		return wrapped, nil
 	}
 
 	rewritten := RewriteScriptAPI(src, phase, argument)
 	if useStreamScript {
 		rewritten = WrapAsStreamScript(rewritten, phase)
 	}
-	encoded := base64.StdEncoding.EncodeToString([]byte(rewritten))
-	setScriptCache(cacheKey, encoded)
-	return encoded, nil
+	setScriptCache(cacheKey, rewritten)
+	return rewritten, nil
 }
 
 // isLikelyNonJSScript 检测下载的脚本内容是否实际上不是 JS 文件（而是模块配置文件）。
@@ -1664,13 +1690,10 @@ func InlineJSPhase(action string) int {
 var _ = ir.SourceLoon
 
 // WrapAsStreamScript 将已改写的脚本包装为 stream-script (op 101) 形式。
-// stream-script 用于处理流式响应（分块传输），通过 ctx.frame 控制帧边界，ctx.state 累积数据。
+// stream-script 的低内存收益来自逐帧处理；转换器不能默认把所有 frame 累积到 ctx.state，
+// 否则长连接/SSE/大响应会重新退化为全量缓冲，甚至比 script 更容易触发 VPN 扩展内存上限。
 //
-// 包装策略：
-//   - 保留原脚本逻辑，但在末尾添加帧检测：非最后一帧时累积 body 到 ctx.state，不调用 done
-//   - 最后一帧时执行原逻辑
-//
-// 注意：此函数为尽力包装，复杂流式逻辑可能需人工调整。
+// 注意：这是尽力包装。需要跨帧状态的脚本应显式、少量地使用 ctx.state。
 func WrapAsStreamScript(rewrittenSrc string, phase int) string {
 	phaseCheck := "request"
 	if phase == 1 {
@@ -1684,31 +1707,11 @@ func WrapAsStreamScript(rewrittenSrc string, phase int) string {
 
 	tmpl := fmt.Sprintf(`async function process(ctx) {
   if (ctx.phase !== "%s" || !ctx.body) return;
-  // 初始化跨帧状态
-  if (!ctx.state.buf) ctx.state.buf = [];
-  if (!ctx.state.text) ctx.state.text = "";
-
-  // 累积当前帧 body
-  ctx.state.buf.push(ctx.body);
   try {
-    ctx.state.text += Anywhere.codec.utf8.decode(ctx.body);
-  } catch (e) {
-    Anywhere.log.warning("decode frame failed: " + e);
-  }
-
-  // 非最后一帧：保存状态后等待后续帧
-  if (!ctx.frame || !ctx.frame.end) {
-    return;
-  }
-
-  // 最后一帧：用累积的完整 body 执行原逻辑
-  try {
-    ctx.body = Anywhere.codec.utf8.encode(ctx.state.text);
 %s
   } catch (e) {
     Anywhere.log.warning("stream process failed: " + e);
   }
-  Anywhere.done();
 }
 `, phaseCheck, indent(inner, "    "))
 	return tmpl

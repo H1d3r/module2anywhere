@@ -47,12 +47,14 @@ export async function onRequest(context) {
   const fetchScripts = query.fetch !== 'false';
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
+  const wrapScripts = query.wrap === 'true';
   const preserveParameters = lib.truthyInput(query.preserveParameters || query.preserveArguments);
+  const scriptMode = lib.normalizeScriptMode(query.scriptMode);
   const argumentsMap = lib.queryArguments(query);
   const initialUA = lib.getUserAgent(sourceHint);
 
   // 检查缓存
-  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap);
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts);
   var cached = lib.cacheGet(ck + ':amrs');
   if (cached.hit) {
     return new Response(cached.value, {
@@ -102,11 +104,14 @@ export async function onRequest(context) {
       ...lib.defaultConvertOptions(),
       generalizeHost: generalize,
       fetchScripts,
+      wrapScripts: wrapScripts,
       sourceURL: inputURL,
       serviceURL: serviceURL,
       addResourceURL: addResourceURL,
       arguments: argumentsMap,
       preserveParameters: preserveParameters,
+      scriptMode: scriptMode,
+      scriptBaseURL: url.origin + '/script.js',
     };
 
     try {

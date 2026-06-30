@@ -244,8 +244,13 @@
                         ><input type="checkbox" id="opt-wrap" />
                         包装执行模式</label
                     >
+                    <label
+                        ><input type="checkbox" id="opt-loader" />
+                        远程加载脚本</label
+                    >
                 </div>
                 <p class="hint">包装执行模式：将上游脚本源码原样编码，运行时构造 $request/$response/$persistentStore 等兼容全局变量后执行。适用于 wloc.js 等自包含跨平台脚本，默认关闭。</p>
+                <p class="hint">远程加载脚本：.amrs 默认仍使用内联脚本；勾选后仅内嵌轻量 loader，运行时从本服务 /script.js 拉取转换后的脚本，可减少规则文件体积和重复脚本内存占用，首次命中需要网络。</p>
                 <div class="btn-group">
                     <button class="btn-primary" onclick="doConvert('mitm')">
                         转换 MITM 规则 <span class="tag tag-mitm">.amrs</span>
@@ -308,7 +313,8 @@
                 const fetchScripts = document.getElementById("opt-fetch").checked;
                 const generalize = document.getElementById("opt-generalize").checked;
                 const wrap = document.getElementById("opt-wrap").checked;
-                return { url, fetchScripts, generalize, wrap };
+                const loader = document.getElementById("opt-loader").checked;
+                return { url, fetchScripts, generalize, wrap, loader };
             }
 
             function buildURL(endpoint, params) {
@@ -318,6 +324,7 @@
                     generalize: params.generalize,
                 });
                 if (params.wrap) searchParams.set('wrap', 'true');
+                if (params.loader) searchParams.set('scriptMode', 'loader');
                 return endpoint + '?' + searchParams.toString();
             }
 

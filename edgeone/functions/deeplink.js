@@ -51,6 +51,7 @@ export async function onRequest(context) {
   var sourceHint = query.source || '';
   var format = (query.format || '').toLowerCase().trim();
   var preserveParameters = lib.truthyInput(query.preserveParameters || query.preserveArguments);
+  var scriptMode = lib.normalizeScriptMode(query.scriptMode);
   var argumentsMap = lib.queryArguments(query);
   var initialUA = lib.getUserAgent(sourceHint);
 
@@ -103,6 +104,8 @@ export async function onRequest(context) {
       addResourceURL: addResourceURL,
       arguments: argumentsMap,
       preserveParameters: preserveParameters,
+      scriptMode: scriptMode,
+      scriptBaseURL: url.origin + '/script.js',
     };
 
     try {
@@ -130,6 +133,7 @@ export async function onRequest(context) {
   var origin = url.origin;
   var linkParams = 'url=' + encodeURIComponent(decodedURL) + '&fetch=' + fetchScripts + '&generalize=' + generalize;
   if (preserveParameters) linkParams += '&preserveParameters=true';
+  if (scriptMode === 'loader') linkParams += '&scriptMode=loader';
   for (var ak in argumentsMap) {
     if (Object.prototype.hasOwnProperty.call(argumentsMap, ak)) {
       linkParams += '&argument.' + encodeURIComponent(ak) + '=' + encodeURIComponent(argumentsMap[ak]);

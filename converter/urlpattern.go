@@ -27,6 +27,8 @@ type Options struct {
 	ScriptTimeoutSec   int  // 单个脚本下载超时（秒，默认 10）
 	Arguments          map[string]string
 	PreserveParameters bool // 在 .amrs 中保留 [Parameter] 段（默认 false）
+	ScriptMode         string
+	ScriptBaseURL      string // loader 模式下远程脚本端点基地址
 }
 
 // DefaultOptions 返回推荐默认值。

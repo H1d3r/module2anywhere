@@ -59,7 +59,7 @@ func main() {
 	generalizeHost := flag.Bool("generalize-host", false, "URL pattern 主机泛化为 [^/]+（默认关闭，谨慎开启）")
 	encodingPreprocess := flag.Bool("encoding-preprocess", true, "为 body 处理规则自动添加 accept-encoding 预处理对（默认开启）")
 	noMetadata := flag.Bool("no-metadata", false, "不在输出文件头部写入元数据注释")
-	streamScript := flag.Bool("stream-script", false, "将脚本转为 stream-script (op 101)，用于流式响应处理")
+	streamScript := flag.Bool("stream-script", false, "将脚本转为 stream-script (op 101)，仅适合已适配逐帧处理的脚本")
 	autoContentType := flag.Bool("auto-content-type", true, "兼容旧参数；官方 Anywhere 当前不识别顶层 content-type，JSON/mock 响应头改由脚本保留")
 	concurrency := flag.Int("concurrency", 8, "脚本并发下载数（默认 8）")
 	scriptTimeout := flag.Int("script-timeout", 10, "单个脚本下载超时秒数（默认 10）")

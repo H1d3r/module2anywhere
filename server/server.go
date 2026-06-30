@@ -60,6 +60,7 @@ func Run(cfg Config) error {
 	mux.HandleFunc("/rule", srv.handleRule)
 	mux.HandleFunc("/convert", srv.handleConvert)
 	mux.HandleFunc("/deeplink", srv.handleDeeplink)
+	mux.HandleFunc("/script.js", srv.handleScript)
 	mux.HandleFunc("/health", srv.handleHealth)
 
 	httpSrv := &http.Server{
@@ -82,6 +83,33 @@ type Server struct {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintln(w, "ok")
+}
+
+func (s *Server) handleScript(w http.ResponseWriter, r *http.Request) {
+	rawScript := r.URL.Query().Get("script")
+	if rawScript == "" {
+		http.Error(w, "Error: script parameter is required", http.StatusBadRequest)
+		return
+	}
+	phase := 0
+	if r.URL.Query().Get("phase") == "1" {
+		phase = 1
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	f := fetcher.New()
+	configureProxy(f, s.cfg.ProxyMode, s.cfg.ProxyRetry)
+	baseURL := r.URL.Query().Get("base")
+	wrap := r.URL.Query().Get("wrap") == "true"
+	argument := r.URL.Query().Get("argument")
+	source, err := converter.FetchAndRewriteScript(ctx, f, rawScript, baseURL, true, phase, false, wrap, argument)
+	if err != nil {
+		http.Error(w, "Error: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	_, _ = w.Write([]byte(source))
 }
 
 // handleMitm 返回 MITM 规则（.amrs 格式）。
@@ -258,11 +286,13 @@ func (s *Server) convertAll(r *http.Request) (*converter.Result, error) {
 	fetchScripts := r.URL.Query().Get("fetch") != "false"
 	// 默认 generalize=false（不泛化主机），通过 generalize=true 显式开启
 	generalize := r.URL.Query().Get("generalize") == "true"
+	wrapScripts := truthyQuery(r.URL.Query().Get("wrap"))
 	preserveParameters := s.cfg.PreserveParameters || truthyQuery(r.URL.Query().Get("preserveParameters")) || truthyQuery(r.URL.Query().Get("preserveArguments"))
 	arguments := argumentsFromQuery(r.URL.Query())
+	scriptMode := normalizeScriptMode(r.URL.Query().Get("scriptMode"))
 
 	// 检查缓存
-	ck := cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, arguments)
+	ck := cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, wrapScripts, scriptMode, arguments)
 	if cached, ok := s.cache.Get(ck); ok {
 		var res converter.Result
 		if err := res.UnmarshalBinary([]byte(cached)); err == nil {
@@ -310,11 +340,14 @@ func (s *Server) convertAll(r *http.Request) (*converter.Result, error) {
 			FetchScripts:       fetchScripts && s.cfg.FetchScripts,
 			IncludeMetadata:    s.cfg.IncludeMetadata,
 			UseStreamScript:    s.cfg.UseStreamScript,
+			WrapScripts:        wrapScripts,
 			AutoContentType:    s.cfg.AutoContentType,
 			Concurrency:        s.cfg.Concurrency,
 			ScriptTimeoutSec:   s.cfg.ScriptTimeoutSec,
 			PreserveParameters: preserveParameters,
 			Arguments:          arguments,
+			ScriptMode:         scriptMode,
+			ScriptBaseURL:      buildScriptServiceURL(r),
 		}
 		conv := converter.New(f, opts)
 		conv.BaseURL = in
@@ -466,6 +499,11 @@ func buildServiceURL(r *http.Request) string {
 	return scheme + "://" + host + r.URL.Path
 }
 
+func buildScriptServiceURL(r *http.Request) string {
+	scheme, host := deriveSchemeHost(r)
+	return scheme + "://" + host + "/script.js"
+}
+
 // deriveSchemeHost 从请求中推导 scheme 与 host，支持 X-Forwarded-* 头。
 func deriveSchemeHost(r *http.Request) (string, string) {
 	scheme := "http"
@@ -559,11 +597,18 @@ func validQueryArgumentName(name string) bool {
 }
 
 // cacheKey 生成缓存键，由 URL + 参数组合而成。
-func cacheKey(decodedURL, name string, fetchScripts, generalize, preserveParameters bool, arguments map[string]string) string {
+func normalizeScriptMode(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), "loader") {
+		return "loader"
+	}
+	return "inline"
+}
+
+func cacheKey(decodedURL, name string, fetchScripts, generalize, preserveParameters, wrapScripts bool, scriptMode string, arguments map[string]string) string {
 	var argParts []string
 	for key, value := range arguments {
 		argParts = append(argParts, key+"="+value)
 	}
 	sort.Strings(argParts)
-	return fmt.Sprintf("%s|%s|%v|%v|%v|%s", decodedURL, name, fetchScripts, generalize, preserveParameters, strings.Join(argParts, "&"))
+	return fmt.Sprintf("%s|%s|%v|%v|%v|%v|%s|%s", decodedURL, name, fetchScripts, generalize, preserveParameters, wrapScripts, scriptMode, strings.Join(argParts, "&"))
 }
