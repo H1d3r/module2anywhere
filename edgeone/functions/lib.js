@@ -2174,15 +2174,93 @@ function parseLoonArguments(body) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("//"))
       continue;
-    const idx = trimmed.indexOf("=");
-    if (idx <= 0) continue;
-    args.push({
-      key: trimmed.slice(0, idx).trim(),
-      value: trimmed.slice(idx + 1).trim(),
-      raw: trimmed,
-    });
+    const arg = parseArgumentLine(trimmed);
+    if (arg) args.push(arg);
   }
   return args;
+}
+
+function parseArgumentLine(line) {
+  const raw = String(line || "").trim();
+  const idx = raw.indexOf("=");
+  if (idx <= 0) return null;
+  const name = raw.slice(0, idx).trim();
+  if (!name || /[{},]/.test(name)) return null;
+  const fields = splitCSVFields(raw.slice(idx + 1));
+  const first = String(fields[0] || "").trim().toLowerCase();
+  const knownType = /^(?:switch|input|text|string|number|select|checkbox)$/i.test(first);
+  const type = knownType ? first : "string";
+  const defaultValue = normalizeArgumentValueForType(knownType ? (fields[1] || "") : (fields[0] || ""), type);
+  const arg = {
+    key: name,
+    value: raw.slice(idx + 1).trim(),
+    type,
+    defaultValue,
+    options: [],
+    tag: "",
+    desc: "",
+    raw,
+  };
+  const optionFields = [];
+  for (const field of fields.slice(knownType ? 1 : 0)) {
+    const pairIdx = String(field || "").indexOf("=");
+    if (pairIdx > 0) {
+      const key = field.slice(0, pairIdx).trim().toLowerCase();
+      const val = trimQuotes(field.slice(pairIdx + 1).trim());
+      if (key === "tag") arg.tag = val;
+      if (key === "desc" || key === "description") arg.desc = val;
+      continue;
+    }
+    const value = normalizeArgumentValueForType(field, type);
+    if (String(value).trim()) optionFields.push(value);
+  }
+  if (type === "select") {
+    arg.options = dedupStrings(optionFields);
+  } else if (type === "switch" || type === "checkbox") {
+    arg.options = dedupStrings(optionFields);
+    if (!arg.options.length) arg.options = ["true", "false"];
+    else if (arg.options.length === 1) arg.options.push(argumentEnabled(arg.options[0]) ? "false" : "true");
+  }
+  return arg;
+}
+
+function parseMetadataArguments(rawArguments, rawDescriptions) {
+  const descriptions = parseMetadataArgumentDescriptions(rawDescriptions || "");
+  const out = [];
+  for (const field of splitCSVFields(String(rawArguments || ""))) {
+    const idx = field.indexOf(":");
+    if (idx <= 0) continue;
+    const name = trimQuotes(field.slice(0, idx).trim());
+    if (!name || /[{}]/.test(name)) continue;
+    let defaultValue = trimQuotes(field.slice(idx + 1).trim());
+    let type = "string";
+    if (/^(?:true|false|1|0|yes|no|on|off)$/i.test(defaultValue)) {
+      type = "switch";
+      defaultValue = normalizeArgumentValueForType(defaultValue, type);
+    }
+    out.push({
+      key: name,
+      value: defaultValue,
+      type,
+      defaultValue,
+      options: type === "switch" ? ["true", "false"] : [],
+      tag: name,
+      desc: descriptions[name] || "",
+      raw: field.trim(),
+    });
+  }
+  return out;
+}
+
+function parseMetadataArgumentDescriptions(raw) {
+  const out = {};
+  for (const line of String(raw || "").replace(/\\n/g, "\n").split("\n")) {
+    const idx = line.indexOf(":");
+    if (idx <= 0) continue;
+    const name = trimQuotes(line.slice(0, idx).trim());
+    if (name) out[name] = line.slice(idx + 1).trim();
+  }
+  return out;
 }
 
 function parseLoonMitM(body) {
@@ -2225,6 +2303,7 @@ function parseLoon(content) {
         if (meta.author) m.author = meta.author;
         if (meta.homepage) m.homepage = meta.homepage;
         if (meta.date) m.date = meta.date;
+        m.arguments = mergeArguments(m.arguments, parseMetadataArguments(meta.arguments, meta["arguments-desc"]));
         break;
       }
       case "Rule":
@@ -2631,6 +2710,7 @@ function parseSurge(content) {
         if (meta.author) m.author = meta.author;
         if (meta.homepage) m.homepage = meta.homepage;
         if (meta.date) m.date = meta.date;
+        m.arguments = mergeArguments(m.arguments, parseMetadataArguments(meta.arguments, meta["arguments-desc"]));
         break;
       }
       case "Rule":
@@ -2647,6 +2727,10 @@ function parseSurge(content) {
         break;
       case "Script":
         m.scripts.push(...parseSurgeScripts(sec.body));
+        break;
+      case "Argument":
+      case "Arguments":
+        m.arguments = mergeArguments(m.arguments, parseLoonArguments(sec.body));
         break;
       case "MITM":
         m.hostnames.push(...parseSurgeMITM(sec.body));
@@ -2683,6 +2767,20 @@ function parseQuantumultX(content) {
   for (let i = 0; i < rawLines.length; i++) {
     const line = rawLines[i].trim();
     if (line === "") continue;
+    if (line.startsWith("#!")) {
+      const kv = line.slice(2);
+      const idx = kv.indexOf("=");
+      if (idx > 0) {
+        const key = kv.slice(0, idx).trim();
+        const val = kv.slice(idx + 1).trim();
+        m.rawMeta[key] = val;
+        if (key === "name") m.name = val;
+        if (key === "desc") m.desc = val;
+        if (key === "author") m.author = val;
+        if (key === "homepage") m.homepage = val;
+        if (key === "date") m.date = val;
+      }
+    }
     const hs = extractQXHostnameValue(line);
     if (hs !== "") {
       hostnames.push(...normalizeHostnames(hs));
@@ -2696,6 +2794,7 @@ function parseQuantumultX(content) {
     }
   }
   m.hostnames = dedupStrings(hostnames);
+  m.arguments = mergeArguments(parseMetadataArguments(m.rawMeta.arguments, m.rawMeta["arguments-desc"]), m.arguments);
 
   // 第二遍：解析行式规则
   for (const raw of rawLines) {
@@ -2926,6 +3025,231 @@ function parse(content, source) {
   }
 }
 
+function mergeArguments() {
+  const out = [];
+  const positions = {};
+  for (let i = 0; i < arguments.length; i++) {
+    const group = arguments[i] || [];
+    for (const arg of group) {
+      const key = String((arg && arg.key) || "").trim();
+      if (!key) continue;
+      if (Object.prototype.hasOwnProperty.call(positions, key)) out[positions[key]] = arg;
+      else {
+        positions[key] = out.length;
+        out.push(arg);
+      }
+    }
+  }
+  return out;
+}
+
+function resolveArgumentValues(args, overrides) {
+  const out = {};
+  for (const arg of args || []) {
+    const key = String(arg.key || "").trim();
+    if (!key) continue;
+    out[key] = normalizeArgumentValueForType(arg.defaultValue || arg.value || "", arg.type || "");
+  }
+  for (const key of Object.keys(overrides || {})) {
+    if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(key)) continue;
+    const found = (args || []).find((arg) => arg.key === key);
+    out[key] = normalizeArgumentValueForType(overrides[key], found ? found.type : "");
+  }
+  return out;
+}
+
+function normalizeArgumentValueForType(value, type) {
+  const text = String(value == null ? "" : value).trim();
+  const normalizedType = String(type || "").toLowerCase().trim();
+  if (normalizedType === "switch" || normalizedType === "checkbox") {
+    if (argumentEnabled(text)) return "true";
+    if (/^(?:false|0|no|off)$/i.test(text)) return "false";
+  }
+  return text;
+}
+
+function argumentEnabled(value) {
+  return /^(?:true|1|yes|on)$/i.test(String(value == null ? "" : value).trim());
+}
+
+function applyArgumentsToModule(m, opts, report) {
+  const values = resolveArgumentValues(m.arguments || [], opts.arguments || {});
+  const parameters = opts.preserveParameters ? buildAmrsParameters(m.arguments || [], values, report) : [];
+  if (!Object.keys(values).length) return { module: m, values, parameters };
+
+  const out = { ...m };
+  out.hostnames = (m.hostnames || []).map((v) => substituteArguments(v, values));
+  out.rules = [];
+  for (const r of m.rules || []) {
+    if (!argumentRuleEnabled(r.raw, values)) {
+      report.skipped.push("参数 enable 关闭，已跳过: " + r.raw);
+      continue;
+    }
+    out.rules.push({
+      ...r,
+      type: substituteArguments(r.type, values),
+      value: substituteArguments(r.value, values),
+      action: substituteArguments(r.action, values),
+      raw: substituteArguments(r.raw, values),
+      options: (r.options || []).map((v) => substituteArguments(v, values)),
+    });
+  }
+  out.rewrites = [];
+  for (const r of m.rewrites || []) {
+    if (!argumentRuleEnabled(r.raw, values)) {
+      report.skipped.push("参数 enable 关闭，已跳过: " + r.raw);
+      continue;
+    }
+    const args = {};
+    for (const key of Object.keys(r.args || {})) args[key] = substituteArguments(r.args[key], values);
+    out.rewrites.push({
+      ...r,
+      pattern: substituteArguments(r.pattern, values),
+      action: substituteArguments(r.action, values),
+      args,
+      rawJS: substituteArguments(r.rawJS, values),
+      raw: substituteArguments(r.raw, values),
+    });
+  }
+  out.scripts = [];
+  for (const s of m.scripts || []) {
+    if (!argumentRuleEnabled(s.raw, values)) {
+      report.skipped.push("参数 enable 关闭，已跳过: " + s.raw);
+      continue;
+    }
+    out.scripts.push({
+      ...s,
+      pattern: substituteArguments(s.pattern, values),
+      scriptPath: substituteArguments(s.scriptPath, values),
+      argument: substituteArguments(s.argument, values),
+      tag: substituteArguments(s.tag, values),
+      engine: substituteArguments(s.engine, values),
+      raw: substituteArguments(s.raw, values),
+    });
+  }
+  out.headerRWs = [];
+  for (const h of m.headerRWs || []) {
+    if (!argumentRuleEnabled(h.raw, values)) {
+      report.skipped.push("参数 enable 关闭，已跳过: " + h.raw);
+      continue;
+    }
+    out.headerRWs.push({
+      ...h,
+      pattern: substituteArguments(h.pattern, values),
+      op: substituteArguments(h.op, values),
+      name: substituteArguments(h.name, values),
+      value: substituteArguments(h.value, values),
+      raw: substituteArguments(h.raw, values),
+    });
+  }
+  out.mapLocals = [];
+  for (const ml of m.mapLocals || []) {
+    if (!argumentRuleEnabled(ml.raw, values)) {
+      report.skipped.push("参数 enable 关闭，已跳过: " + ml.raw);
+      continue;
+    }
+    out.mapLocals.push({
+      ...ml,
+      pattern: substituteArguments(ml.pattern, values),
+      dataURL: substituteArguments(ml.dataURL, values),
+      header: substituteArguments(ml.header, values),
+      dataType: substituteArguments(ml.dataType, values),
+      statusCode: substituteArguments(ml.statusCode, values),
+      raw: substituteArguments(ml.raw, values),
+    });
+  }
+  return { module: out, values, parameters };
+}
+
+function argumentRuleEnabled(raw, values) {
+  const match = String(raw || "").match(/\benable\s*=\s*(?:\{([A-Za-z_][A-Za-z0-9_-]*)\}|([A-Za-z_][A-Za-z0-9_-]*|true|false|1|0|yes|no|on|off))/i);
+  if (!match) return true;
+  const key = match[1] || match[2] || "";
+  return argumentEnabled(Object.prototype.hasOwnProperty.call(values, key) ? values[key] : key);
+}
+
+function substituteArguments(value, values) {
+  if (!value || !values || !Object.keys(values).length) return value || "";
+  return String(value).replace(/\{\{\{([^{}]+)\}\}\}|\{\{([^{}]+)\}\}|\{([A-Za-z_][A-Za-z0-9_-]*)\}/g, function(match, tripleName, doubleName, singleName) {
+    const name = String(tripleName || doubleName || singleName || "").trim();
+    return Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : match;
+  });
+}
+
+function buildAmrsParameters(args, values, report) {
+  const out = [];
+  const seen = {};
+  const nameMap = {};
+  for (let i = 0; i < (args || []).length; i++) {
+    const arg = args[i];
+    const sourceName = String(arg.key || "").trim();
+    if (!sourceName || seen[sourceName]) continue;
+    seen[sourceName] = true;
+    const name = safeParameterName(sourceName, i, nameMap);
+    nameMap[sourceName] = name;
+    if (name !== sourceName) report.warnings.push(`参数 ${sourceName} 已映射为 Anywhere 参数名 ${name}`);
+    const label = arg.tag || sourceName;
+    let description = arg.desc || "";
+    if (name !== sourceName) description = (description ? description + "；" : "") + `来自上游 "${sourceName}" 参数`;
+    const current = Object.prototype.hasOwnProperty.call(values, sourceName) ? values[sourceName] : (arg.defaultValue || "");
+    const param = { type: 0, dataType: 0, name, label, description, defaultValue: String(current), options: [] };
+    const argType = String(arg.type || "").toLowerCase();
+    if (argType === "select") {
+      const options = ensureParameterOptions(arg.options || [], String(current));
+      if (options.length) {
+        param.type = 1;
+        param.options = options;
+        if (!options.includes(param.defaultValue)) param.defaultValue = options[0];
+      }
+    } else if (argType === "switch" || argType === "checkbox") {
+      param.type = 1;
+      param.defaultValue = argumentEnabled(current) ? "true" : "false";
+      param.options = ["true", "false"];
+    }
+    out.push(param);
+  }
+  return out;
+}
+
+function safeParameterName(sourceName, index, nameMap) {
+  const raw = String(sourceName || "").trim();
+  let base = raw.replace(/-/g, "_");
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(base)) base = "ARG_" + stableNameHash(raw).toUpperCase();
+  if (!/^[A-Za-z_]/.test(base)) base = "arg_" + base;
+  base = base.replace(/[^A-Za-z0-9_]/g, "_") || ("arg_" + (index + 1));
+  const used = {};
+  for (const key of Object.keys(nameMap || {})) used[nameMap[key]] = true;
+  let name = base;
+  let suffix = 2;
+  while (used[name]) {
+    name = base + "_" + suffix;
+    suffix++;
+  }
+  return name;
+}
+
+function stableNameHash(value) {
+  let hash = 2166136261;
+  for (const char of String(value || "")) {
+    hash ^= char.codePointAt(0);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash.toString(16);
+}
+
+function ensureParameterOptions(values, defaultValue) {
+  const out = [];
+  const seen = {};
+  for (const value of values || []) {
+    const text = String(value == null ? "" : value).trim();
+    if (!text || seen[text]) continue;
+    seen[text] = true;
+    out.push(text);
+  }
+  if (defaultValue && !seen[defaultValue]) out.push(defaultValue);
+  return out;
+}
+
 // ===================== 核心转换器 =====================
 
 function isRejectAction(action) {
@@ -3000,12 +3324,16 @@ function defaultConvertOptions() {
     autoContentType: true,
     addResourceURL: "",
     wrapScripts: false,
+    arguments: {},
+    preserveParameters: false,
   };
 }
 
 async function convert(m, opts) {
   const options = { ...defaultConvertOptions(), ...opts };
   const report = { skipped: [], degraded: [], warnings: [], scriptErr: [] };
+  const argumentState = applyArgumentsToModule(m, options, report);
+  m = argumentState.module;
   const baseName = m.name || "module2anywhere";
 
   const cleanedHosts = [];
@@ -3068,7 +3396,7 @@ async function convert(m, opts) {
 
   return {
     arrs: generateArrs(baseName, allArrsLines, m, options, 0),
-    amrs: generateAmrs(baseName, m.hostnames, finalAmrsLines, m, options),
+    amrs: generateAmrs(baseName, m.hostnames, finalAmrsLines, m, options, argumentState.parameters),
     arrsName: baseName + ".arrs",
     amrsName: baseName + ".amrs",
     arrsGroups: arrsGroups,
@@ -3529,15 +3857,36 @@ function generateArrs(name, lines, m, opts, routing) {
   return parts.join("\n") + "\n";
 }
 
-function generateAmrs(name, hostnames, lines, m, opts) {
-  if (lines.length === 0 && hostnames.length === 0) return "";
+function generateAmrs(name, hostnames, lines, m, opts, parameters) {
+  parameters = parameters || [];
+  if (lines.length === 0 && hostnames.length === 0 && parameters.length === 0) return "";
   const parts = [];
   if (opts.includeMetadata) parts.push(metadataComments(m, opts));
   parts.push(`name = ${name}`);
   if (hostnames.length > 0) parts.push(`hostname = ${hostnames.join(", ")}`);
   parts.push("");
+  if (parameters.length > 0) {
+    parts.push("[Parameter]");
+    for (const parameter of parameters) parts.push(formatAmrsParameter(parameter));
+    parts.push("", "[Rule]");
+  }
   parts.push(...lines);
   return parts.join("\n") + "\n";
+}
+
+function formatAmrsParameter(parameter) {
+  const fields = [
+    String(parameter.type || 0),
+    String(parameter.dataType || 0),
+    parameter.name || "",
+    parameter.label || "",
+    parameter.description || "",
+    parameter.defaultValue || "",
+  ];
+  if (parameter.type === 1 && parameter.options && parameter.options.length) {
+    fields.push("[" + parameter.options.map(String).join(", ") + "]");
+  }
+  return fields.map((field) => quoteField(String(field))).join(", ");
 }
 
 function inferContentType(lines) {
@@ -3687,8 +4036,13 @@ function cachePut(key, value) {
 }
 
 // cacheKey 生成缓存键。
-function cacheKey(url, name, fetchScripts, generalize) {
-  return url + "|" + name + "|" + fetchScripts + "|" + generalize;
+function cacheKey(url, name, fetchScripts, generalize, preserveParameters, args) {
+  const parts = [];
+  const source = args || {};
+  for (const key of Object.keys(source).sort()) {
+    parts.push(key + "=" + source[key]);
+  }
+  return url + "|" + name + "|" + fetchScripts + "|" + generalize + "|" + !!preserveParameters + "|" + parts.join("&");
 }
 
 const lib = {

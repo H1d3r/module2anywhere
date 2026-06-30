@@ -32,6 +32,7 @@ func ParseLoon(content string) (*ir.Module, error) {
 					m.Date = v
 				}
 			}
+			m.Arguments = mergeArguments(m.Arguments, parseMetadataArguments(meta["arguments"], meta["arguments-desc"]))
 		case "Rule":
 			m.Rules = append(m.Rules, parseLoonRules(sec.body)...)
 		case "Rewrite":
@@ -418,7 +419,7 @@ func parseLoonScriptLine(line string) (*ir.ScriptRule, error) {
 	return s, nil
 }
 
-// parseLoonArguments 解析 [Argument] 段（仅记录，不参与转换）。
+// parseLoonArguments 解析 [Argument] 段。
 func parseLoonArguments(body string) []ir.Argument {
 	var args []ir.Argument
 	for _, line := range strings.Split(body, "\n") {
@@ -426,15 +427,9 @@ func parseLoonArguments(body string) []ir.Argument {
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
 			continue
 		}
-		idx := strings.Index(line, "=")
-		if idx <= 0 {
-			continue
+		if arg, ok := parseArgumentLine(line); ok {
+			args = append(args, arg)
 		}
-		args = append(args, ir.Argument{
-			Key:   strings.TrimSpace(line[:idx]),
-			Value: strings.TrimSpace(line[idx+1:]),
-			Raw:   line,
-		})
 	}
 	return args
 }

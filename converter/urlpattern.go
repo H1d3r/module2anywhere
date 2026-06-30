@@ -25,6 +25,8 @@ type Options struct {
 	AutoContentType    bool // 兼容旧参数；官方 Anywhere 当前不识别顶层 content-type，转换器不再输出该头
 	Concurrency        int  // 并发下载脚本数（默认 8）
 	ScriptTimeoutSec   int  // 单个脚本下载超时（秒，默认 10）
+	Arguments          map[string]string
+	PreserveParameters bool // 在 .amrs 中保留 [Parameter] 段（默认 false）
 }
 
 // DefaultOptions 返回推荐默认值。

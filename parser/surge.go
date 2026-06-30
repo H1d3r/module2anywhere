@@ -32,6 +32,7 @@ func ParseSurge(content string) (*ir.Module, error) {
 					m.Date = v
 				}
 			}
+			m.Arguments = append(m.Arguments, parseMetadataArguments(meta["arguments"], meta["arguments-desc"])...)
 		case "Rule":
 			m.Rules = append(m.Rules, parseSurgeRules(sec.body)...)
 		case "URL Rewrite":
@@ -42,6 +43,8 @@ func ParseSurge(content string) (*ir.Module, error) {
 			m.MapLocals = append(m.MapLocals, parseSurgeMapLocals(sec.body)...)
 		case "Script":
 			m.Scripts = append(m.Scripts, parseSurgeScripts(sec.body)...)
+		case "Argument", "Arguments":
+			m.Arguments = append(m.Arguments, parseLoonArguments(sec.body)...)
 		case "MITM", "MitM", "mitm":
 			// 兼容 [MITM] / [MitM] / [mitm] 任意大小写写法
 			m.Hostnames = append(m.Hostnames, parseSurgeMITM(sec.body)...)

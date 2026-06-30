@@ -26,6 +26,31 @@ import (
 	"github.com/H1d3r/module2anywhere/server"
 )
 
+type argumentFlags map[string]string
+
+func (a *argumentFlags) String() string {
+	if a == nil || len(*a) == 0 {
+		return ""
+	}
+	var parts []string
+	for k, v := range *a {
+		parts = append(parts, k+"="+v)
+	}
+	return strings.Join(parts, ",")
+}
+
+func (a *argumentFlags) Set(value string) error {
+	idx := strings.Index(value, "=")
+	if idx <= 0 {
+		return fmt.Errorf("argument must be key=value")
+	}
+	if *a == nil {
+		*a = make(map[string]string)
+	}
+	(*a)[strings.TrimSpace(value[:idx])] = strings.TrimSpace(value[idx+1:])
+	return nil
+}
+
 func main() {
 	input := flag.String("i", "", "输入文件路径或远程 URL（Loon .plugin / Surge .sgmodule）")
 	outputDir := flag.String("o", "./out", "输出目录（生成 .arrs 和 .amrs）")
@@ -39,7 +64,10 @@ func main() {
 	concurrency := flag.Int("concurrency", 8, "脚本并发下载数（默认 8）")
 	scriptTimeout := flag.Int("script-timeout", 10, "单个脚本下载超时秒数（默认 10）")
 	sourceFlag := flag.String("source", "", "强制指定来源：loon / surge / quantumultx（留空自动检测）")
+	preserveParameters := flag.Bool("preserve-parameters", false, "在 .amrs 中保留 [Parameter] 段（默认关闭）")
 	verbose := flag.Bool("v", false, "输出详细转换报告")
+	var arguments argumentFlags
+	flag.Var(&arguments, "argument", "覆盖模块参数，格式 key=value，可重复")
 
 	// 代理相关
 	proxyMode := flag.String("proxy", "auto", "GitHub 加速代理模式：auto(默认) / none / only")
@@ -65,6 +93,7 @@ func main() {
 			ProxyRetry:         *proxyRetry,
 			Concurrency:        *concurrency,
 			ScriptTimeoutSec:   *scriptTimeout,
+			PreserveParameters: *preserveParameters,
 		}
 		fmt.Printf("启动 Web 服务，监听 %s\n", cfg.Listen)
 		if err := server.Run(cfg); err != nil {
@@ -80,14 +109,14 @@ func main() {
 		os.Exit(2)
 	}
 
-	if err := run(*input, *outputDir, *format, *fetchScripts, *generalizeHost, *encodingPreprocess, !*noMetadata, *streamScript, *autoContentType, *concurrency, *scriptTimeout, *sourceFlag, *verbose, *proxyMode, *proxyRetry); err != nil {
+	if err := run(*input, *outputDir, *format, *fetchScripts, *generalizeHost, *encodingPreprocess, !*noMetadata, *streamScript, *autoContentType, *concurrency, *scriptTimeout, *sourceFlag, *preserveParameters, arguments, *verbose, *proxyMode, *proxyRetry); err != nil {
 		fmt.Fprintln(os.Stderr, "错误:", err)
 		os.Exit(1)
 	}
 }
 
 // run 执行主流程。
-func run(input, outputDir, format string, fetchScripts, generalizeHost, encodingPreprocess, includeMetadata, streamScript, autoContentType bool, concurrency, scriptTimeout int, sourceFlag string, verbose bool, proxyMode string, proxyRetry bool) error {
+func run(input, outputDir, format string, fetchScripts, generalizeHost, encodingPreprocess, includeMetadata, streamScript, autoContentType bool, concurrency, scriptTimeout int, sourceFlag string, preserveParameters bool, arguments map[string]string, verbose bool, proxyMode string, proxyRetry bool) error {
 	ctx := context.Background()
 	f := fetcher.New()
 	// 配置代理
@@ -142,6 +171,8 @@ func run(input, outputDir, format string, fetchScripts, generalizeHost, encoding
 			AutoContentType:    autoContentType,
 			Concurrency:        concurrency,
 			ScriptTimeoutSec:   scriptTimeout,
+			Arguments:          arguments,
+			PreserveParameters: preserveParameters,
 		}
 		conv := converter.New(f, opts)
 		conv.BaseURL = in // 用于解析相对 script-path

@@ -133,6 +133,7 @@ func New(f *fetcher.Fetcher, opts Options) *Converter {
 // Convert 执行转换，返回 Result。
 func (c *Converter) Convert(ctx context.Context, m *ir.Module) (*Result, error) {
 	res := &Result{Report: Report{}}
+	m, argState := c.applyArguments(m, &res.Report)
 	baseName := m.Name
 	if baseName == "" {
 		baseName = "module2anywhere"
@@ -216,7 +217,7 @@ func (c *Converter) Convert(ctx context.Context, m *ir.Module) (*Result, error) 
 		res.Report.AddWarning(fmt.Sprintf("MITM 规则总量较高（%d 行，含预处理规则），可能带来匹配与内存压力", len(amrsLines)))
 	}
 
-	res.Amrs = c.generateAmrs(baseName, m.Hostnames, amrsLines, m)
+	res.Amrs = c.generateAmrs(baseName, m.Hostnames, amrsLines, m, argState.parameters)
 
 	return res, nil
 }
@@ -851,8 +852,8 @@ func (c *Converter) generateArrs(name string, lines []string, m *ir.Module, rout
 }
 
 // generateAmrs 生成 .amrs 文件内容。
-func (c *Converter) generateAmrs(name string, hostnames []string, lines []string, m *ir.Module) string {
-	if len(lines) == 0 && len(hostnames) == 0 {
+func (c *Converter) generateAmrs(name string, hostnames []string, lines []string, m *ir.Module, parameters []amrsParameter) string {
+	if len(lines) == 0 && len(hostnames) == 0 && len(parameters) == 0 {
 		return ""
 	}
 	var buf strings.Builder
@@ -864,10 +865,45 @@ func (c *Converter) generateAmrs(name string, hostnames []string, lines []string
 		buf.WriteString(fmt.Sprintf("hostname = %s\n", strings.Join(hostnames, ", ")))
 	}
 	buf.WriteString("\n")
+	if len(parameters) > 0 {
+		buf.WriteString("[Parameter]\n")
+		for _, p := range parameters {
+			buf.WriteString(formatAMRSParameter(p) + "\n")
+		}
+		buf.WriteString("\n[Rule]\n")
+	}
 	for _, l := range lines {
 		buf.WriteString(l + "\n")
 	}
 	return buf.String()
+}
+
+func formatAMRSParameter(p amrsParameter) string {
+	fields := []string{
+		strconv.Itoa(p.Type),
+		strconv.Itoa(p.DataType),
+		p.Name,
+		p.Label,
+		p.Description,
+		p.DefaultValue,
+	}
+	if p.Type == 1 && len(p.Options) > 0 {
+		fields = append(fields, "["+strings.Join(p.Options, ", ")+"]")
+	}
+	for i, field := range fields {
+		fields[i] = csvQuote(field)
+	}
+	return strings.Join(fields, ", ")
+}
+
+func csvQuote(field string) string {
+	if field == "" {
+		return ""
+	}
+	if strings.ContainsAny(field, ",\"\n\r") || strings.HasPrefix(field, " ") || strings.HasSuffix(field, " ") {
+		return `"` + strings.ReplaceAll(field, `"`, `""`) + `"`
+	}
+	return field
 }
 
 // inferContentType 根据规则行推断合适的 content-type 头部字段。

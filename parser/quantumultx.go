@@ -107,6 +107,7 @@ func ParseQuantumultX(content string) (*ir.Module, error) {
 		}
 	}
 	m.Hostnames = dedupStrings(hostnames)
+	m.Arguments = mergeArguments(parseMetadataArguments(m.RawMeta["arguments"], m.RawMeta["arguments-desc"]), m.Arguments)
 
 	// 第二遍：解析行式规则
 	for _, raw := range rawLines {

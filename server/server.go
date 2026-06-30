@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -39,6 +40,7 @@ type Config struct {
 	ProxyRetry         bool
 	Concurrency        int
 	ScriptTimeoutSec   int
+	PreserveParameters bool
 }
 
 // Run 启动 Web 服务。
@@ -256,9 +258,11 @@ func (s *Server) convertAll(r *http.Request) (*converter.Result, error) {
 	fetchScripts := r.URL.Query().Get("fetch") != "false"
 	// 默认 generalize=false（不泛化主机），通过 generalize=true 显式开启
 	generalize := r.URL.Query().Get("generalize") == "true"
+	preserveParameters := s.cfg.PreserveParameters || truthyQuery(r.URL.Query().Get("preserveParameters")) || truthyQuery(r.URL.Query().Get("preserveArguments"))
+	arguments := argumentsFromQuery(r.URL.Query())
 
 	// 检查缓存
-	ck := cacheKey(decodedURL, name, fetchScripts, generalize)
+	ck := cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, arguments)
 	if cached, ok := s.cache.Get(ck); ok {
 		var res converter.Result
 		if err := res.UnmarshalBinary([]byte(cached)); err == nil {
@@ -307,9 +311,11 @@ func (s *Server) convertAll(r *http.Request) (*converter.Result, error) {
 			IncludeMetadata:    s.cfg.IncludeMetadata,
 			UseStreamScript:    s.cfg.UseStreamScript,
 			AutoContentType:    s.cfg.AutoContentType,
-			Concurrency:        s.cfg.Concurrency,
-			ScriptTimeoutSec:   s.cfg.ScriptTimeoutSec,
-		}
+				Concurrency:        s.cfg.Concurrency,
+				ScriptTimeoutSec:   s.cfg.ScriptTimeoutSec,
+				PreserveParameters: preserveParameters,
+				Arguments:          arguments,
+			}
 		conv := converter.New(f, opts)
 		conv.BaseURL = in
 		// 记录来源 URL 与本服务 URL（用于在 .amrs/.arrs 头部添加注释）
@@ -510,7 +516,54 @@ func findArrsGroup(groups []converter.ArrsGroup, routing int) *converter.ArrsGro
 	return nil
 }
 
+func argumentsFromQuery(values url.Values) map[string]string {
+	args := make(map[string]string)
+	for key, vals := range values {
+		var name string
+		switch {
+		case strings.HasPrefix(key, "argument."):
+			name = strings.TrimPrefix(key, "argument.")
+		case strings.HasPrefix(key, "arg."):
+			name = strings.TrimPrefix(key, "arg.")
+		default:
+			continue
+		}
+		if !validQueryArgumentName(name) || len(vals) == 0 {
+			continue
+		}
+		args[name] = vals[len(vals)-1]
+	}
+	return args
+}
+
+func truthyQuery(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func validQueryArgumentName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '_' || (i > 0 && r >= '0' && r <= '9') || (i > 0 && r == '-') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // cacheKey 生成缓存键，由 URL + 参数组合而成。
-func cacheKey(decodedURL, name string, fetchScripts, generalize bool) string {
-	return fmt.Sprintf("%s|%s|%v|%v", decodedURL, name, fetchScripts, generalize)
+func cacheKey(decodedURL, name string, fetchScripts, generalize, preserveParameters bool, arguments map[string]string) string {
+	var argParts []string
+	for key, value := range arguments {
+		argParts = append(argParts, key+"="+value)
+	}
+	sort.Strings(argParts)
+	return fmt.Sprintf("%s|%s|%v|%v|%v|%s", decodedURL, name, fetchScripts, generalize, preserveParameters, strings.Join(argParts, "&"))
 }
