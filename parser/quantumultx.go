@@ -386,8 +386,9 @@ func parseQXRoutingRule(line string) *ir.RoutingRule {
 	ruleType := strings.ToUpper(strings.TrimSpace(fields[0]))
 	// QX 路由规则类型白名单
 	switch ruleType {
-	case "DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "DOMAIN-SET", "RULE-SET",
-		"IP-CIDR", "IP-CIDR6", "IP6-CIDR", "GEOIP", "USER-AGENT",
+	case "DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "DOMAIN-WILDCARD",
+		"HOST", "HOST-SUFFIX", "HOST-KEYWORD", "HOST-WILDCARD",
+		"DOMAIN-SET", "RULE-SET", "IP-CIDR", "IP-CIDR6", "IP6-CIDR", "GEOIP", "USER-AGENT",
 		"DEST-PORT", "SRC-PORT", "SRC-IP", "SRC-IP-CIDR", "PROCESS-NAME",
 		"SUBNET", "CELLULAR-RADIO":
 	default:

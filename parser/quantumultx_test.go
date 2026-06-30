@@ -261,6 +261,9 @@ func TestParseQXRoutingRule(t *testing.T) {
 		{"DOMAIN-KEYWORD,ads,REJECT", true, "DOMAIN-KEYWORD", "ads", "REJECT"},
 		{"IP-CIDR,10.0.0.0/8,DIRECT", true, "IP-CIDR", "10.0.0.0/8", "DIRECT"},
 		{"DOMAIN,full.example.com,PROXY", true, "DOMAIN", "full.example.com", "PROXY"},
+		{"HOST-SUFFIX,example.org,DIRECT", true, "HOST-SUFFIX", "example.org", "DIRECT"},
+		{"DOMAIN-WILDCARD,*.example.net,REJECT", true, "DOMAIN-WILDCARD", "*.example.net", "REJECT"},
+		{"IP6-CIDR,2001:db8::/32,DIRECT", true, "IP6-CIDR", "2001:db8::/32", "DIRECT"},
 		{"GEOIP,CN,DIRECT", true, "GEOIP", "CN", "DIRECT"},
 		{"USER-AGENT,MicroMessenger%,REJECT", true, "USER-AGENT", "MicroMessenger%", "REJECT"},
 		// 非路由规则

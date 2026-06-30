@@ -176,6 +176,14 @@ func parseSurgeURLRewriteAction(rest string) (string, map[string]string, string)
 		// 归一化为 header-del 动作，便于 converter 统一处理
 		return "header-del", args, ""
 
+	case "header-add", "header-replace",
+		"request-header-add", "request-header-replace", "request-header-del",
+		"response-header-add", "response-header-replace", "response-header-del",
+		"_header-add", "_header-replace",
+		"_request-header-add", "_request-header-replace", "_request-header-del",
+		"_response-header-add", "_response-header-replace", "_response-header-del":
+		return parseHeaderRewriteShortcut(action, remain, args)
+
 	default:
 		// Surge [URL Rewrite] 中无动作前缀的纯 URL 替换是 transparent rewrite
 		// 格式：<pattern> <new-url>，其中 new-url 以 http:// 或 https:// 开头
@@ -201,25 +209,51 @@ func parseSurgeURLRewriteAction(rest string) (string, map[string]string, string)
 				return strings.ToLower(trimmedRemain), args, ""
 			}
 		}
-			if strings.HasPrefix(trimmedRemain, "http://") || strings.HasPrefix(trimmedRemain, "https://") {
-				args["url"] = trimmedRemain
-				return "transparent", args, ""
-			}
-			if strings.HasPrefix(trimmedRemain, "request-header ") ||
-				strings.HasPrefix(trimmedRemain, "request-body ") ||
-				strings.HasPrefix(trimmedRemain, "response-body ") {
-				jsAction, jsRemain := splitFirstWhitespace(trimmedRemain)
-				args["_raw"] = strings.TrimSpace(jsRemain)
-				return jsAction, args, strings.TrimSpace(jsRemain)
-			}
+		if strings.HasPrefix(trimmedRemain, "http://") || strings.HasPrefix(trimmedRemain, "https://") {
+			args["url"] = trimmedRemain
+			return "transparent", args, ""
+		}
+		if strings.HasPrefix(trimmedRemain, "request-header ") ||
+			strings.HasPrefix(trimmedRemain, "request-body ") ||
+			strings.HasPrefix(trimmedRemain, "response-body ") {
+			jsAction, jsRemain := splitFirstWhitespace(trimmedRemain)
+			args["_raw"] = strings.TrimSpace(jsRemain)
+			return jsAction, args, strings.TrimSpace(jsRemain)
+		}
 		if strings.HasPrefix(strings.ToLower(trimmedRemain), "header-del ") {
 			args["header"] = strings.TrimSpace(trimmedRemain[len("header-del "):])
 			return "header-del", args, ""
+		}
+		for _, prefix := range []string{"header-add ", "header-replace ", "request-header-add ", "request-header-replace ", "request-header-del ", "response-header-add ", "response-header-replace ", "response-header-del "} {
+			if strings.HasPrefix(strings.ToLower(trimmedRemain), prefix) {
+				return parseHeaderRewriteShortcut(strings.TrimSpace(prefix), strings.TrimSpace(trimmedRemain[len(prefix):]), args)
+			}
 		}
 		// 未知动作：保留原始 remain 以便日志
 		args["_raw"] = strings.TrimSpace(remain)
 		return action, args, ""
 	}
+}
+
+// parseHeaderRewriteShortcut 解析 URL Rewrite 段中的头部操作简写。
+func parseHeaderRewriteShortcut(action, remain string, args map[string]string) (string, map[string]string, string) {
+	action = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(action)), "_")
+	phase := "0"
+	if strings.HasPrefix(action, "response-header-") {
+		phase = "1"
+		action = strings.TrimPrefix(action, "response-header-")
+	} else if strings.HasPrefix(action, "request-header-") {
+		action = strings.TrimPrefix(action, "request-header-")
+	} else if strings.HasPrefix(action, "header-") {
+		action = strings.TrimPrefix(action, "header-")
+	}
+	args["phase"] = phase
+	name, value := splitFirstWhitespace(remain)
+	args["header"] = trimQuotes(name)
+	if value != "" {
+		args["value"] = trimQuotes(value)
+	}
+	return "header-" + action, args, ""
 }
 
 // parseSurgeHeaderRewrites 解析 [Header Rewrite] 段。
@@ -299,6 +333,10 @@ func parseSurgeMapLocals(body string) []ir.MapLocalRule {
 			case "header":
 			case "headers":
 				r.Header = val
+			case "data-type", "datatype", "format", "type":
+				r.DataType = val
+			case "status-code", "status":
+				r.StatusCode = val
 			}
 		}
 		rules = append(rules, r)

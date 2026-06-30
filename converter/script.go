@@ -42,6 +42,24 @@ func notFetchedPlaceholder(scriptPath string) string {
 	return base64.StdEncoding.EncodeToString([]byte(placeholder))
 }
 
+// EncodeStaticRespondScript 生成一个 request 阶段直接响应的轻量脚本，并返回 base64。
+// 用于保留 Anywhere 原生 rewrite 无法表达的 status/header/body 组合。
+func EncodeStaticRespondScript(status int, headers [][2]string, body string, bodyEncoding string) string {
+	if status <= 0 {
+		status = 200
+	}
+	headerJSON, err := json.Marshal(headers)
+	if err != nil {
+		headerJSON = []byte("[]")
+	}
+	bodyExpr := "Anywhere.codec.utf8.encode(" + jsStringLiteral(body) + ")"
+	if strings.EqualFold(bodyEncoding, "base64") {
+		bodyExpr = "Anywhere.codec.base64.decode(" + jsStringLiteral(body) + ")"
+	}
+	js := fmt.Sprintf("function process(ctx){\n  if (ctx.phase !== \"request\") return;\n  Anywhere.respond({status:%d,headers:%s,body:%s});\n}", status, string(headerJSON), bodyExpr)
+	return base64.StdEncoding.EncodeToString([]byte(js))
+}
+
 // FetchAndEncodeScript 下载脚本，改写 API，base64 编码。
 // scriptPath 可以是 URL 或本地路径。baseURL 用于解析相对路径。
 // 若 fetchScripts=false，返回占位符 base64。

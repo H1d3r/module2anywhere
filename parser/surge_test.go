@@ -79,6 +79,26 @@ func TestParseSurgeURLRewriteInlineJSAliases(t *testing.T) {
 	}
 }
 
+// TestParseRewriteHeaderShortcuts 验证 URL Rewrite 段中的 header add/replace/delete 简写。
+func TestParseRewriteHeaderShortcuts(t *testing.T) {
+	body := `^https?://a\.example/ request-header-add X-Test "1 2"
+^https?://b\.example/ response-header-replace Content-Type application/json
+^https?://c\.example/ _response-header-del ETag`
+	rules := parseSurgeURLRewrites(body)
+	if len(rules) != 3 {
+		t.Fatalf("got %d rules, want 3", len(rules))
+	}
+	if rules[0].Action != "header-add" || rules[0].Args["phase"] != "0" || rules[0].Args["header"] != "X-Test" || rules[0].Args["value"] != "1 2" {
+		t.Fatalf("rules[0]=%+v, want request header-add", rules[0])
+	}
+	if rules[1].Action != "header-replace" || rules[1].Args["phase"] != "1" || rules[1].Args["header"] != "Content-Type" || rules[1].Args["value"] != "application/json" {
+		t.Fatalf("rules[1]=%+v, want response header-replace", rules[1])
+	}
+	if rules[2].Action != "header-del" || rules[2].Args["phase"] != "1" || rules[2].Args["header"] != "ETag" {
+		t.Fatalf("rules[2]=%+v, want response header-del", rules[2])
+	}
+}
+
 // TestParseSurgeURLRewriteUrlPrefix 验证 Surge URL Rewrite 兼容 Loon 风格 url 前缀。
 func TestParseSurgeURLRewriteUrlPrefix(t *testing.T) {
 	rules := parseSurgeURLRewrites(`^https?://example\.com/ url reject-dict`)

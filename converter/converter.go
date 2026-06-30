@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +13,8 @@ import (
 	"github.com/H1d3r/module2anywhere/fetcher"
 	"github.com/H1d3r/module2anywhere/ir"
 )
+
+const tinyGIFBase64 = "R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw=="
 
 // ArrsGroup 单个 .arrs 分组（按 routing action 拆分）。
 type ArrsGroup struct {
@@ -213,13 +216,6 @@ func (c *Converter) Convert(ctx context.Context, m *ir.Module) (*Result, error) 
 		res.Report.AddWarning(fmt.Sprintf("MITM 规则总量较高（%d 行，含预处理规则），可能带来匹配与内存压力", len(amrsLines)))
 	}
 
-	// 4. 自动推断 content-type 头部字段（当存在 JSON reject/mock 内容时）
-	if c.Opts.AutoContentType && m.ContentType == "" {
-		if ct := c.inferContentType(amrsLines); ct != "" {
-			m.ContentType = ct
-		}
-	}
-
 	res.Amrs = c.generateAmrs(baseName, m.Hostnames, amrsLines, m)
 
 	return res, nil
@@ -229,12 +225,22 @@ func (c *Converter) Convert(ctx context.Context, m *ir.Module) (*Result, error) 
 // 返回 directLines（DIRECT）、rejectLines（REJECT 类）、otherLines（其他）、amrsLines（URL-REGEX REJECT 转入 .amrs 的行）。
 func (c *Converter) convertRoutingRules(rules []ir.RoutingRule, report *Report) (directLines, rejectLines, otherLines, amrsLines []string) {
 	for _, r := range rules {
-		switch r.Type {
+		ruleType := normalizeRoutingRuleType(r.Type)
+		switch ruleType {
 		case "DOMAIN-SUFFIX", "DOMAIN":
 			line := fmt.Sprintf("2, %s", r.Value)
 			c.appendByAction(r.Action, line, &directLines, &rejectLines, &otherLines)
 		case "DOMAIN-KEYWORD":
 			line := fmt.Sprintf("3, %s", r.Value)
+			c.appendByAction(r.Action, line, &directLines, &rejectLines, &otherLines)
+		case "DOMAIN-WILDCARD":
+			value := normalizeWildcardDomain(r.Value)
+			if value == "" {
+				report.AddSkipped(fmt.Sprintf("%s 无法转换为安全域名后缀: %s", r.Type, r.Raw))
+				continue
+			}
+			report.AddDegraded(fmt.Sprintf("%s 按 Anywhere 后缀匹配近似转换，匹配范围可能扩大: %s", r.Type, r.Raw))
+			line := fmt.Sprintf("2, %s", value)
 			c.appendByAction(r.Action, line, &directLines, &rejectLines, &otherLines)
 		case "IP-CIDR":
 			line := fmt.Sprintf("0, %s", r.Value)
@@ -253,7 +259,7 @@ func (c *Converter) convertRoutingRules(rules []ir.RoutingRule, report *Report) 
 				report.AddSkipped(fmt.Sprintf("URL-REGEX 非 REJECT 类不可转换: %s", r.Raw))
 			}
 		case "GEOIP", "PROCESS-NAME", "DEST-PORT", "SRC-PORT", "SRC-IP", "SRC-IP-CIDR", "CELLULAR-RADIO", "SUBNET":
-			report.AddSkipped(fmt.Sprintf("%s 不可转换: %s", r.Type, r.Raw))
+			report.AddSkipped(fmt.Sprintf("%s 不可转换: %s", ruleType, r.Raw))
 		case "DOMAIN-SET", "RULE-SET":
 			// 远程列表需单独下载并展开，此处仅记录
 			report.AddWarning(fmt.Sprintf("DOMAIN-SET/RULE-SET 需单独下载展开: %s", r.Raw))
@@ -262,6 +268,51 @@ func (c *Converter) convertRoutingRules(rules []ir.RoutingRule, report *Report) 
 		}
 	}
 	return
+}
+
+// normalizeRoutingRuleType 归一化 Loon/Surge/QX 常见路由类型别名。
+func normalizeRoutingRuleType(ruleType string) string {
+	switch strings.ToUpper(strings.TrimSpace(ruleType)) {
+	case "HOST":
+		return "DOMAIN"
+	case "HOST-SUFFIX":
+		return "DOMAIN-SUFFIX"
+	case "HOST-KEYWORD":
+		return "DOMAIN-KEYWORD"
+	case "HOST-WILDCARD":
+		return "DOMAIN-WILDCARD"
+	case "IP6-CIDR":
+		return "IP-CIDR6"
+	default:
+		return strings.ToUpper(strings.TrimSpace(ruleType))
+	}
+}
+
+// normalizeWildcardDomain 将 DOMAIN-WILDCARD/HOST-WILDCARD 近似折叠为 Anywhere 后缀规则。
+func normalizeWildcardDomain(value string) string {
+	v := strings.TrimSpace(value)
+	v = strings.Trim(v, `"`)
+	v = strings.TrimSuffix(v, ".")
+	v = strings.ReplaceAll(v, `\.`, ".")
+	v = strings.TrimPrefix(v, "+.")
+	v = strings.TrimPrefix(v, ".")
+	v = strings.TrimPrefix(v, "*.")
+	v = strings.TrimPrefix(v, "*")
+	if v == "" {
+		return ""
+	}
+	if strings.ContainsAny(v, "*?") {
+		labels := strings.Split(v, ".")
+		for i, label := range labels {
+			if strings.ContainsAny(label, "*?") {
+				if i+1 >= len(labels) {
+					return ""
+				}
+				return strings.Join(labels[i+1:], ".")
+			}
+		}
+	}
+	return v
 }
 
 // appendByAction 根据 action 将 arrs 行追加到对应分组。
@@ -353,9 +404,41 @@ func (c *Converter) convertRewriteRule(ctx context.Context, m *ir.Module, r ir.R
 		}
 		return fmt.Sprintf("0, 0, %s, 4, %s", pattern, QuoteField(data)), nil
 
-	// 模拟响应
+		// 模拟响应
 	case "mock-response-body":
 		body := r.Args["data"]
+		dataType := strings.ToLower(strings.TrimSpace(r.Args["data-type"]))
+		status, statusOK := parseStatusCode(r.Args["status-code"])
+		if !statusOK {
+			report.AddWarning(fmt.Sprintf("mock-response-body status-code 非法，已按 200 处理: %s", r.Raw))
+		}
+		if dataType == "json" {
+			report.AddDegraded(fmt.Sprintf("mock-response-body data-type=json 已转为脚本以保留 Content-Type: %s", r.Raw))
+			b64 := EncodeStaticRespondScript(status, [][2]string{{"Content-Type", "application/json; charset=utf-8"}}, body, "utf8")
+			return fmt.Sprintf("0, 100, %s, %s", pattern, b64), nil
+		}
+		if status != 200 {
+			report.AddDegraded(fmt.Sprintf("mock-response-body status-code=%d 已转为脚本保留: %s", status, r.Raw))
+			encoding := "utf8"
+			scriptBody := body
+			if dataType == "base64" {
+				encoding = "base64"
+			} else if dataType == "tiny-gif" || dataType == "gif" {
+				encoding = "base64"
+				scriptBody = tinyGIFBase64
+			}
+			b64 := EncodeStaticRespondScript(status, nil, scriptBody, encoding)
+			return fmt.Sprintf("0, 100, %s, %s", pattern, b64), nil
+		}
+		if dataType == "base64" {
+			return fmt.Sprintf("0, 0, %s, 4, %s", pattern, QuoteField(body)), nil
+		}
+		if dataType == "tiny-gif" || dataType == "gif" {
+			return fmt.Sprintf("0, 0, %s, 3", pattern), nil
+		}
+		if dataType == "json" && m != nil && m.ContentType == "" {
+			m.ContentType = "application/json; charset=utf-8"
+		}
 		return fmt.Sprintf("0, 0, %s, 2, %s", pattern, QuoteField(body)), nil
 
 	// JSON 体重写
@@ -428,13 +511,24 @@ func (c *Converter) convertRewriteRule(ctx context.Context, m *ir.Module, r ir.R
 		// QX body-replace 形式：phase=1, op=4
 		return fmt.Sprintf("1, 4, %s, %s, %s", pattern, QuoteField(search), QuoteField(replacement)), nil
 
-	// header-del：删除请求头（Loon header-del / Surge _header-del 已归一化）
-	case "header-del":
+		// header-add/header-replace/header-del：Loon/Surge URL Rewrite 中的头部简写。
+	case "header-add", "header-replace", "header-del":
+		phase := 0
+		if r.Args["phase"] == "1" {
+			phase = 1
+		}
 		headerName := r.Args["header"]
 		if headerName == "" {
-			return "", fmt.Errorf("header-del 缺少 header 名")
+			return "", fmt.Errorf("%s 缺少 header 名", r.Action)
 		}
-		return fmt.Sprintf("0, 2, %s, %s", pattern, QuoteField(headerName)), nil
+		switch r.Action {
+		case "header-add":
+			return fmt.Sprintf("%d, 1, %s, %s, %s", phase, pattern, QuoteField(headerName), QuoteField(r.Args["value"])), nil
+		case "header-replace":
+			return fmt.Sprintf("%d, 3, %s, %s, %s", phase, pattern, QuoteField(headerName), QuoteField(r.Args["value"])), nil
+		default:
+			return fmt.Sprintf("%d, 2, %s, %s", phase, pattern, QuoteField(headerName)), nil
+		}
 
 	// response-body-replace-regex：正则替换响应体 → body-replace (op 4)
 	case "response-body-replace-regex":
@@ -455,11 +549,9 @@ func (c *Converter) convertRewriteRule(ctx context.Context, m *ir.Module, r ir.R
 		if ct == "" {
 			ct = "application/json; charset=utf-8"
 		}
-		if m != nil && m.ContentType == "" {
-			m.ContentType = ct
-		}
-		// op 0 rewrite 在 Anywhere 中是 request-only；echo-response 本质是请求阶段直接合成响应
-		return fmt.Sprintf("0, 0, %s, 2, %s", pattern, QuoteField(body)), nil
+		report.AddDegraded(fmt.Sprintf("echo-response 已转为脚本以保留 Content-Type: %s", r.Raw))
+		b64 := EncodeStaticRespondScript(200, [][2]string{{"Content-Type", ct}}, body, "utf8")
+		return fmt.Sprintf("0, 100, %s, %s", pattern, b64), nil
 
 	// QX jsonjq-response-body：phase=1, op=5 (json-manipulate), pattern, jq
 	case "jsonjq-response-body":
@@ -499,9 +591,20 @@ func (c *Converter) convertHeaderRules(rules []ir.HeaderRule, report *Report) []
 	return lines
 }
 
+func parseStatusCode(raw string) (int, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 200, true
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 100 || n > 999 {
+		return 200, false
+	}
+	return n, true
+}
+
 // convertMapLocals 转换 Surge [Map Local] 规则。
-// 简化处理：若 data 是 URL，下载内容嵌入；否则直接用 data 值。
-// Header 字段支持单个响应头，格式为 "Name: Value"；若格式非法则忽略并告警。
+// 若包含 status/header/json content-type 等原生 rewrite 无法表达的响应信息，则生成轻量脚本保真。
 func (c *Converter) convertMapLocals(ctx context.Context, rules []ir.MapLocalRule, report *Report) []string {
 	var lines []string
 	for _, r := range rules {
@@ -527,6 +630,10 @@ func (c *Converter) convertMapLocals(ctx context.Context, rules []ir.MapLocalRul
 				}
 			}
 		}
+		status, statusOK := parseStatusCode(r.StatusCode)
+		if !statusOK {
+			report.AddWarning(fmt.Sprintf("Map Local status-code 非法，已按 200 处理: %s", r.Raw))
+		}
 		if fetcher.IsRemote(r.DataURL) && c.Fetcher != nil {
 			content, err := c.Fetcher.Fetch(ctx, r.DataURL)
 			if err != nil {
@@ -537,10 +644,37 @@ func (c *Converter) convertMapLocals(ctx context.Context, rules []ir.MapLocalRul
 		} else {
 			body = r.DataURL
 		}
+		dataType := strings.ToLower(strings.TrimSpace(r.DataType))
+		var headers [][2]string
 		if headerName != "" {
-			lines = append(lines, fmt.Sprintf("0, 0, %s, 2, %s, %s, %s", pattern, QuoteField(body), QuoteField(headerName), QuoteField(headerValue)))
-		} else {
-			lines = append(lines, fmt.Sprintf("0, 0, %s, 2, %s", pattern, QuoteField(body)))
+			headers = append(headers, [2]string{headerName, headerValue})
+		}
+		if dataType == "json" && headerName == "" {
+			headers = append(headers, [2]string{"Content-Type", "application/json; charset=utf-8"})
+		}
+		needsScript := status != 200 || len(headers) > 0
+		switch dataType {
+		case "base64":
+			if needsScript {
+				report.AddDegraded(fmt.Sprintf("Map Local 已转为脚本以保留 status/header: %s", r.Raw))
+				lines = append(lines, fmt.Sprintf("0, 100, %s, %s", pattern, EncodeStaticRespondScript(status, headers, body, "base64")))
+			} else {
+				lines = append(lines, fmt.Sprintf("0, 0, %s, 4, %s", pattern, QuoteField(body)))
+			}
+		case "tiny-gif", "gif":
+			if needsScript {
+				report.AddDegraded(fmt.Sprintf("Map Local 已转为脚本以保留 status/header: %s", r.Raw))
+				lines = append(lines, fmt.Sprintf("0, 100, %s, %s", pattern, EncodeStaticRespondScript(status, headers, tinyGIFBase64, "base64")))
+			} else {
+				lines = append(lines, fmt.Sprintf("0, 0, %s, 3", pattern))
+			}
+		default:
+			if needsScript {
+				report.AddDegraded(fmt.Sprintf("Map Local 已转为脚本以保留 status/header: %s", r.Raw))
+				lines = append(lines, fmt.Sprintf("0, 100, %s, %s", pattern, EncodeStaticRespondScript(status, headers, body, "utf8")))
+			} else {
+				lines = append(lines, fmt.Sprintf("0, 0, %s, 2, %s", pattern, QuoteField(body)))
+			}
 		}
 	}
 	return lines
@@ -728,10 +862,6 @@ func (c *Converter) generateAmrs(name string, hostnames []string, lines []string
 	buf.WriteString(fmt.Sprintf("name = %s\n", name))
 	if len(hostnames) > 0 {
 		buf.WriteString(fmt.Sprintf("hostname = %s\n", strings.Join(hostnames, ", ")))
-	}
-	// content-type 头部字段（可选）：设置 reject/mock 响应的默认 Content-Type
-	if m.ContentType != "" {
-		buf.WriteString(fmt.Sprintf("content-type = %s\n", m.ContentType))
 	}
 	buf.WriteString("\n")
 	for _, l := range lines {

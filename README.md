@@ -70,7 +70,8 @@ hostname = example.com, api.example.org
 |-----|------|
 | `name` | 规则集显示名称（必填） |
 | `hostname` | 逗号分隔的域名后缀，决定哪些主机被拦截 |
-| `content-type` | 设置 reject/mock 响应的默认 Content-Type（如 `application/json; charset=utf-8`）；仅在需要自定义响应头时填写 |
+
+> 注意：官方 iOS 项目当前导入器只识别 `name` 和 `hostname` 头。历史文档/手工规则里出现过 `content-type = ...`，但当前官方 `MITMRuleSetParser` 不会保留它。转换器遇到需要固定响应 `Content-Type`、自定义响应头或非 200 状态码的 mock/map-local/echo-response 时，会生成 request 阶段 `script (op 100)` 并用 `Anywhere.respond()` 保真，而不是输出顶层 `content-type`。
 
 **规则行格式**：`<phase>, <operation>, <url-pattern> [, fields...]`
 
@@ -1194,15 +1195,16 @@ name = Bilibili Reject
 - `1, 5, pattern, replace-recursive, ad, null`（替换为 null 即删除效果）
 - 配合 `header-delete accept-encoding` 确保 body 可读
 
-### 10.17 GoodbilityUnlock — content-type 头部字段
+### 10.17 GoodbilityUnlock — Content-Type 保真
 
 **源**：GoodbilityUnlock.amrs ← Goodbility.vip.js (ddgksf2013)
 **关键特征**：
-- `.amrs` 中定义了 `content-type = application/json; charset=utf-8` 头部字段
-- 这是 Anywhere 规则集的全局 Content-Type 设置，用于 reject/mock 响应的默认 MIME 类型
+- 历史手工规则可能使用 `content-type = application/json; charset=utf-8` 头部字段
+- 官方 iOS 导入器当前不识别该顶层字段，转换器不会依赖它
+- 需要固定响应 Content-Type 时，转换器生成 `script (op 100)`，通过 `Anywhere.respond({headers:[["Content-Type", "..."]]})` 保留响应头
 - 配合 `header-add` 设置空值（删除效果）和 `header-replace` 改写
 
-**content-type 头部字段说明**：Anywhere 规则集可在 `hostname` 行后定义 `content-type` 字段，设置 reject/mock 等响应的默认 Content-Type。当 rewrite reject/mock 返回 JSON 内容时，Anywhere 会自动设置合适的 Content-Type，但显式设置可覆盖默认行为。
+**Content-Type 说明**：如果后续官方 Anywhere 增加顶层 `content-type` 支持，可重新启用全局头输出；在当前版本中，脚本响应是更可靠的保真方式。
 
 ---
 

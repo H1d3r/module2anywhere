@@ -113,6 +113,17 @@ const trimQuotes = (s) => {
   return s;
 };
 
+const stripInlineComment = (s) => {
+  s = String(s || "").trim();
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] !== "#" && s[i] !== ";") continue;
+    if (i === 0 || s[i - 1] === " " || s[i - 1] === "\t") {
+      return s.slice(0, i).trim();
+    }
+  }
+  return s;
+};
+
 const normalizeHostnames = (raw) => {
   const parts = raw.split(",");
   const out = [];
@@ -288,6 +299,32 @@ const hasCaptureGroup = (s) => {
   }
   return false;
 };
+
+const tinyGIFBase64 = "R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==";
+
+function jsStringLiteral(value) {
+  return JSON.stringify(String(value || ""));
+}
+
+function encodeStaticRespondScript(status, headers, body, bodyEncoding) {
+  status = parseStatusCode(status);
+  const headerPairs = (headers || []).map(function (h) {
+    return [String(h[0] || ""), String(h[1] || "")];
+  });
+  let bodyExpr = "Anywhere.codec.utf8.encode(" + jsStringLiteral(body) + ")";
+  if (String(bodyEncoding || "").toLowerCase() === "base64") {
+    bodyExpr = "Anywhere.codec.base64.decode(" + jsStringLiteral(body) + ")";
+  }
+  const js =
+    'function process(ctx){\n  if (ctx.phase !== "request") return;\n  Anywhere.respond({status:' +
+    status +
+    ",headers:" +
+    JSON.stringify(headerPairs) +
+    ",body:" +
+    bodyExpr +
+    "});\n}";
+  return btoa(unescape(encodeURIComponent(js)));
+}
 
 // ===================== 远程获取 =====================
 
@@ -1948,9 +1985,25 @@ function parseLoonRewriteAction(rest) {
     case "request-body":
     case "response-body":
       return { action, args, rawJS: remain.trim() };
+    case "header-add":
+    case "header-replace":
     case "header-del":
-      args.header = remain.trim();
-      return { action, args, rawJS: "" };
+    case "request-header-add":
+    case "request-header-replace":
+    case "request-header-del":
+    case "response-header-add":
+    case "response-header-replace":
+    case "response-header-del":
+    case "_header-add":
+    case "_header-replace":
+    case "_header-del":
+    case "_request-header-add":
+    case "_request-header-replace":
+    case "_request-header-del":
+    case "_response-header-add":
+    case "_response-header-replace":
+    case "_response-header-del":
+      return parseHeaderRewriteShortcut(action, remain, args);
     case "response-body-replace-regex": {
       const [search, repl] = splitFirstWhitespace(remain);
       args.search = trimQuotes(search);
@@ -2234,12 +2287,25 @@ function parseSurgeURLRewriteAction(rest) {
     case "_request-body":
     case "_response-body":
       return { action: action.slice(1), args, rawJS: remain.trim() };
+    case "header-add":
+    case "header-replace":
     case "header-del":
-      args.header = remain.trim();
-      return { action, args, rawJS: "" };
+    case "request-header-add":
+    case "request-header-replace":
+    case "request-header-del":
+    case "response-header-add":
+    case "response-header-replace":
+    case "response-header-del":
+    case "_header-add":
+    case "_header-replace":
     case "_header-del":
-      args.header = remain.trim();
-      return { action: "header-del", args, rawJS: "" };
+    case "_request-header-add":
+    case "_request-header-replace":
+    case "_request-header-del":
+    case "_response-header-add":
+    case "_response-header-replace":
+    case "_response-header-del":
+      return parseHeaderRewriteShortcut(action, remain, args);
     default: {
       // Surge [URL Rewrite] 中无动作前缀的纯 URL 替换是 transparent rewrite
       const trimmedRemain = remain.trim();
@@ -2262,6 +2328,24 @@ function parseSurgeURLRewriteAction(rest) {
         args.header = trimmedRemain.slice("header-del ".length).trim();
         return { action: "header-del", args, rawJS: "" };
       }
+      for (const prefix of [
+        "header-add ",
+        "header-replace ",
+        "request-header-add ",
+        "request-header-replace ",
+        "request-header-del ",
+        "response-header-add ",
+        "response-header-replace ",
+        "response-header-del ",
+      ]) {
+        if (trimmedRemain.toLowerCase().startsWith(prefix)) {
+          return parseHeaderRewriteShortcut(
+            prefix.trim(),
+            trimmedRemain.slice(prefix.length).trim(),
+            args,
+          );
+        }
+      }
       {
         if ((action.startsWith("http://") || action.startsWith("https://")) &&
             (trimmedRemain === "302" || trimmedRemain === "307")) {
@@ -2278,6 +2362,24 @@ function parseSurgeURLRewriteAction(rest) {
       return { action, args, rawJS: "" };
     }
   }
+}
+
+function parseHeaderRewriteShortcut(action, remain, args) {
+  action = String(action || "").toLowerCase().trim().replace(/^_/, "");
+  let phase = "0";
+  if (action.startsWith("response-header-")) {
+    phase = "1";
+    action = action.slice("response-header-".length);
+  } else if (action.startsWith("request-header-")) {
+    action = action.slice("request-header-".length);
+  } else if (action.startsWith("header-")) {
+    action = action.slice("header-".length);
+  }
+  args.phase = phase;
+  const parts = splitFirstWhitespace(remain);
+  args.header = trimQuotes(parts[0] || "");
+  if (parts[1]) args.value = trimQuotes(parts[1]);
+  return { action: "header-" + action, args, rawJS: "" };
 }
 
 function parseSurgeURLRewrites(body) {
@@ -2399,7 +2501,7 @@ function parseSurgeMapLocals(body) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("//"))
       continue;
-    const r = { raw: trimmed, pattern: "", dataURL: "", header: "" };
+    const r = { raw: trimmed, pattern: "", dataURL: "", header: "", dataType: "", statusCode: "" };
     const [pattern, rest] = splitFirstWhitespace(trimmed);
     r.pattern = pattern;
     const tokens = tokenizeKV(rest);
@@ -2410,6 +2512,8 @@ function parseSurgeMapLocals(body) {
       const val = stripInlineComment(trimQuotes(t.slice(idx + 1)));
       if (key === "data" || key === "url" || key === "file" || key === "body" || key === "uri" || key === "data-url") r.dataURL = val;
       else if (key === "header" || key === "headers") r.header = val;
+      else if (key === "data-type" || key === "datatype" || key === "format" || key === "type") r.dataType = val;
+      else if (key === "status-code" || key === "status") r.statusCode = val;
     }
     rules.push(r);
   }
@@ -2777,6 +2881,11 @@ function parseQXRoutingRule(line) {
     "DOMAIN",
     "DOMAIN-SUFFIX",
     "DOMAIN-KEYWORD",
+    "DOMAIN-WILDCARD",
+    "HOST",
+    "HOST-SUFFIX",
+    "HOST-KEYWORD",
+    "HOST-WILDCARD",
     "DOMAIN-SET",
     "RULE-SET",
     "IP-CIDR",
@@ -2828,6 +2937,46 @@ function isRejectAction(action) {
     "REJECT-200",
     "REJECT-DATA",
   ].includes(action);
+}
+
+function normalizeRoutingRuleType(ruleType) {
+  const t = String(ruleType || "").toUpperCase().trim();
+  switch (t) {
+    case "HOST":
+      return "DOMAIN";
+    case "HOST-SUFFIX":
+      return "DOMAIN-SUFFIX";
+    case "HOST-KEYWORD":
+      return "DOMAIN-KEYWORD";
+    case "HOST-WILDCARD":
+      return "DOMAIN-WILDCARD";
+    case "IP6-CIDR":
+      return "IP-CIDR6";
+    default:
+      return t;
+  }
+}
+
+function normalizeWildcardDomain(value) {
+  let v = String(value || "").trim();
+  v = v.replace(/^"|"$/g, "");
+  v = v.replace(/\.$/, "");
+  v = v.replace(/\\\./g, ".");
+  v = v.replace(/^\+\./, "");
+  v = v.replace(/^\./, "");
+  v = v.replace(/^\*\./, "");
+  v = v.replace(/^\*/, "");
+  if (!v) return "";
+  if (/[*?]/.test(v)) {
+    const labels = v.split(".");
+    for (let i = 0; i < labels.length; i++) {
+      if (/[*?]/.test(labels[i])) {
+        if (i + 1 >= labels.length) return "";
+        return labels.slice(i + 1).join(".");
+      }
+    }
+  }
+  return v;
 }
 
 /** appendByAction 按 action 类型将规则行分配到对应的 arrs 分组 */
@@ -2913,10 +3062,6 @@ async function convert(m, opts) {
   let finalAmrsLines = amrsLines;
   if (options.encodingPreprocess)
     finalAmrsLines = addEncodingPreprocess(amrsLines);
-  if (options.autoContentType && !m.contentType) {
-    const ct = inferContentType(finalAmrsLines);
-    if (ct) m.contentType = ct;
-  }
 
   // 兼容旧接口：合并所有 arrs 行
   var allArrsLines = [].concat(directLines, rejectLines, otherLines);
@@ -2938,7 +3083,8 @@ function convertRoutingRules(rules, opts, report) {
   var amrsLines = [];
   for (var i = 0; i < rules.length; i++) {
     var r = rules[i];
-    switch (r.type) {
+    var ruleType = normalizeRoutingRuleType(r.type);
+    switch (ruleType) {
       case "DOMAIN-SUFFIX":
       case "DOMAIN": {
         var line = "2, " + r.value;
@@ -2947,6 +3093,17 @@ function convertRoutingRules(rules, opts, report) {
       }
       case "DOMAIN-KEYWORD": {
         var line = "3, " + r.value;
+        appendByAction(r.action, line, directLines, rejectLines, otherLines);
+        break;
+      }
+      case "DOMAIN-WILDCARD": {
+        var value = normalizeWildcardDomain(r.value);
+        if (!value) {
+          report.skipped.push(r.type + " 无法转换为安全域名后缀: " + r.raw);
+          break;
+        }
+        report.degraded.push(r.type + " 按 Anywhere 后缀匹配近似转换，匹配范围可能扩大: " + r.raw);
+        var line = "2, " + value;
         appendByAction(r.action, line, directLines, rejectLines, otherLines);
         break;
       }
@@ -2976,7 +3133,7 @@ function convertRoutingRules(rules, opts, report) {
       case "SRC-IP-CIDR":
       case "CELLULAR-RADIO":
       case "SUBNET":
-        report.skipped.push(r.type + " 不可转换: " + r.raw);
+        report.skipped.push(ruleType + " 不可转换: " + r.raw);
         break;
       case "DOMAIN-SET":
       case "RULE-SET":
@@ -3055,6 +3212,31 @@ function convertRewriteRule(r, m, opts, report) {
       return `0, 0, ${pattern}, 4`;
     }
     case "mock-response-body":
+      const mockStatus = parseStatusCode(r.args["status-code"]);
+      {
+        const dataType = String(r.args["data-type"] || "").toLowerCase().trim();
+        if (dataType === "json") {
+          report.degraded.push(`mock-response-body data-type=json 已转为脚本以保留 Content-Type: ${r.raw}`);
+          return `0, 100, ${pattern}, ${encodeStaticRespondScript(mockStatus, [["Content-Type", "application/json; charset=utf-8"]], r.args.data || "", "utf8")}`;
+        }
+        if (mockStatus !== 200) {
+          report.degraded.push(`mock-response-body status-code=${mockStatus} 已转为脚本保留: ${r.raw}`);
+          let encoding = "utf8";
+          let scriptBody = r.args.data || "";
+          if (dataType === "base64") encoding = "base64";
+          else if (dataType === "tiny-gif" || dataType === "gif") {
+            encoding = "base64";
+            scriptBody = tinyGIFBase64;
+          }
+          return `0, 100, ${pattern}, ${encodeStaticRespondScript(mockStatus, [], scriptBody, encoding)}`;
+        }
+        if (dataType === "base64") {
+          return `0, 0, ${pattern}, 4, ${quoteField(r.args.data || "")}`;
+        }
+        if (dataType === "tiny-gif" || dataType === "gif") {
+          return `0, 0, ${pattern}, 3`;
+        }
+      }
       return `0, 0, ${pattern}, 2, ${quoteField(r.args.data || "")}`;
     case "response-body-json-del":
       return `1, 5, ${pattern}, delete, ${dotPathToJSONPath(r.args.path || "")}`;
@@ -3081,10 +3263,19 @@ function convertRewriteRule(r, m, opts, report) {
       return `0, 100, ${pattern}, ${encodeInlineRewriteJS(r.rawJS, 0)}`;
     case "_response-body":
       return `1, 100, ${pattern}, ${encodeInlineRewriteJS(r.rawJS, 1)}`;
+    case "header-add":
+    case "header-replace":
     case "header-del": {
+      const phase = r.args.phase === "1" ? 1 : 0;
       const headerName = r.args.header || "";
       if (!headerName) return "";
-      return `0, 2, ${pattern}, ${quoteField(headerName)}`;
+      if (r.action === "header-add") {
+        return `${phase}, 1, ${pattern}, ${quoteField(headerName)}, ${quoteField(r.args.value || "")}`;
+      }
+      if (r.action === "header-replace") {
+        return `${phase}, 3, ${pattern}, ${quoteField(headerName)}, ${quoteField(r.args.value || "")}`;
+      }
+      return `${phase}, 2, ${pattern}, ${quoteField(headerName)}`;
     }
     case "response-body-replace-regex": {
       const search = r.args.search || "";
@@ -3099,10 +3290,8 @@ function convertRewriteRule(r, m, opts, report) {
         report.skipped.push(`echo-response 缺少 body: ${r.raw}`);
         return "";
       }
-      // 通过模块级 content-type 传递响应类型
-      if (m && !m.contentType) m.contentType = ct;
-      // op 0 rewrite 在 Anywhere 中是 request-only；echo-response 本质是请求阶段直接合成响应
-      return `0, 0, ${pattern}, 2, ${quoteField(body)}`;
+      report.degraded.push(`echo-response 已转为脚本以保留 Content-Type: ${r.raw}`);
+      return `0, 100, ${pattern}, ${encodeStaticRespondScript(200, [["Content-Type", ct]], body, "utf8")}`;
     }
     case "jsonjq-response-body": {
       const jq = r.args.jq || "";
@@ -3168,6 +3357,7 @@ async function convertMapLocals(rules, opts, report, source) {
         }
       }
     }
+    const status = parseStatusCode(r.statusCode);
     let body = r.dataURL;
     if (r.dataURL.startsWith("http")) {
       try {
@@ -3177,15 +3367,42 @@ async function convertMapLocals(rules, opts, report, source) {
         continue;
       }
     }
-    if (headerName) {
-      lines.push(
-        `0, 0, ${pattern}, 2, ${quoteField(body)}, ${quoteField(headerName)}, ${quoteField(headerValue)}`,
-      );
+    const dataType = String(r.dataType || "").toLowerCase().trim();
+    const headers = [];
+    if (headerName) headers.push([headerName, headerValue]);
+    if (dataType === "json" && !headerName) {
+      headers.push(["Content-Type", "application/json; charset=utf-8"]);
+    }
+    const needsScript = status !== 200 || headers.length > 0;
+    if (dataType === "base64") {
+      if (needsScript) {
+        report.degraded.push(`Map Local 已转为脚本以保留 status/header: ${r.raw}`);
+        lines.push(`0, 100, ${pattern}, ${encodeStaticRespondScript(status, headers, body, "base64")}`);
+      } else {
+        lines.push(`0, 0, ${pattern}, 4, ${quoteField(body)}`);
+      }
+    } else if (dataType === "tiny-gif" || dataType === "gif") {
+      if (needsScript) {
+        report.degraded.push(`Map Local 已转为脚本以保留 status/header: ${r.raw}`);
+        lines.push(`0, 100, ${pattern}, ${encodeStaticRespondScript(status, headers, tinyGIFBase64, "base64")}`);
+      } else {
+        lines.push(`0, 0, ${pattern}, 3`);
+      }
+    } else if (needsScript) {
+      report.degraded.push(`Map Local 已转为脚本以保留 status/header: ${r.raw}`);
+      lines.push(`0, 100, ${pattern}, ${encodeStaticRespondScript(status, headers, body, "utf8")}`);
     } else {
       lines.push(`0, 0, ${pattern}, 2, ${quoteField(body)}`);
     }
   }
   return lines;
+}
+
+function parseStatusCode(raw) {
+  if (raw === undefined || raw === null || String(raw).trim() === "") return 200;
+  const n = parseInt(String(raw).trim(), 10);
+  if (!n || n < 100 || n > 999) return 200;
+  return n;
 }
 
 async function convertScriptRules(m, opts, report, source) {
@@ -3318,7 +3535,6 @@ function generateAmrs(name, hostnames, lines, m, opts) {
   if (opts.includeMetadata) parts.push(metadataComments(m, opts));
   parts.push(`name = ${name}`);
   if (hostnames.length > 0) parts.push(`hostname = ${hostnames.join(", ")}`);
-  if (m.contentType) parts.push(`content-type = ${m.contentType}`);
   parts.push("");
   parts.push(...lines);
   return parts.join("\n") + "\n";
@@ -3499,6 +3715,7 @@ export {
   parseKeyValueList,
   trimQuotes,
   normalizeHostnames,
+  stripInlineComment,
   dedupStrings,
   splitFirstWhitespace,
   splitWhitespace,
@@ -3557,6 +3774,8 @@ export {
   parseQXRoutingRule,
   parse,
   isRejectAction,
+  normalizeRoutingRuleType,
+  normalizeWildcardDomain,
   defaultConvertOptions,
   convert,
   convertRoutingRules,

@@ -41,13 +41,13 @@ type Module struct {
 	Date        string            // #!date
 	RawMeta     map[string]string // 其他元数据（icon/tag/category 等会被丢弃，但保留原始以便日志）
 	Hostnames   []string          // MITM hostname 列表（已规范化，去除 *. 与 %APPEND%）
-	ContentType string            // .amrs content-type 头部字段（可选，用于 reject/mock 响应默认 MIME）
+	ContentType string            // 兼容旧字段；官方 Anywhere 当前不识别顶层 content-type
 	Rules       []RoutingRule     // [Rule] 段
 	Rewrites    []RewriteRule     // [Rewrite] / [URL Rewrite] 段
 	Scripts     []ScriptRule      // [Script] 段
 	HeaderRWs   []HeaderRule      // [Header Rewrite] 段（Surge）
 	MapLocals   []MapLocalRule    // [Map Local] 段（Surge）
-	Arguments   []Argument        // [Argument] 段（Loon，仅记录，不参与转换）
+	Arguments   []Argument        // [Argument] 段或 #!arguments 元数据（参与参数替换/enable 判断）
 }
 
 // RoutingRule 路由规则（[Rule] 段）。
@@ -94,17 +94,24 @@ type HeaderRule struct {
 
 // MapLocalRule Surge [Map Local] 规则。
 type MapLocalRule struct {
-	Pattern string // URL 正则
-	DataURL string // data="..." 指向的本地/远程文件
-	Header  string // header="..." 头部
-	Raw     string // 原始行
+	Pattern    string // URL 正则
+	DataURL    string // data="..." 指向的本地/远程文件
+	Header     string // header="..." 头部
+	DataType   string // data-type / format（json/base64/tiny-gif/text）
+	StatusCode string // status-code / status
+	Raw        string // 原始行
 }
 
-// Argument Loon [Argument] 段条目（仅记录，不参与转换）。
+// Argument 表示模块参数定义。
 type Argument struct {
-	Key   string
-	Value string
-	Raw   string
+	Key          string
+	Value        string
+	Type         string
+	DefaultValue string
+	Options      []string
+	Tag          string
+	Desc         string
+	Raw          string
 }
 
 // RoutingType 表示 Anywhere .arrs 的规则类型 ID。
@@ -120,7 +127,7 @@ const (
 // IsRejectAction 判断动作是否为 REJECT 类（用于决定 URL-REGEX 是否转入 .amrs）。
 func IsRejectAction(action string) bool {
 	switch action {
-	case "REJECT", "REJECT-DICT", "REJECT-ARRAY", "REJECT-IMG", "REJECT-200":
+	case "REJECT", "REJECT-DICT", "REJECT-ARRAY", "REJECT-IMG", "REJECT-200", "REJECT-DATA":
 		return true
 	}
 	return false

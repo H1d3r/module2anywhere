@@ -247,15 +247,14 @@ func parseLoonRewriteAction(rest string) (string, map[string]string, string) {
 		// 兼容 Surge 风格的下划线内联 JS 别名
 		return strings.TrimPrefix(action, "_"), args, strings.TrimSpace(remain)
 
-	case "header-del":
-		// header-del <header-name>（仅请求阶段）
-		args["header"] = strings.TrimSpace(remain)
-		return action, args, ""
-
-	case "_header-del":
-		// 兼容 Surge 风格的 _header-del 别名
-		args["header"] = strings.TrimSpace(remain)
-		return "header-del", args, ""
+	case "header-add", "header-replace", "header-del",
+		"request-header-add", "request-header-replace", "request-header-del",
+		"response-header-add", "response-header-replace", "response-header-del",
+		"_header-add", "_header-replace", "_header-del",
+		"_request-header-add", "_request-header-replace", "_request-header-del",
+		"_response-header-add", "_response-header-replace", "_response-header-del":
+		// 头部简写：header-del <name> / request-header-add <name> <value> / response-header-replace <name> <value>
+		return parseHeaderRewriteShortcut(action, remain, args)
 
 	case "response-body-replace-regex":
 		// response-body-replace-regex <search> <replacement>
