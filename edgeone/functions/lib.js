@@ -138,23 +138,50 @@ const normalizeHostnames = (raw) => {
   const out = [];
   const seen = new Set();
   for (let p of parts) {
-    p = p.trim();
-    if (!p) continue;
-    p = p.replace(/^%APPEND%/i, "").trim();
-    if (p.startsWith("*.")) {
-      p = p.slice(2);
-    } else if (p.startsWith("*")) {
-      p = p.slice(1);
+    for (const host of normalizeHostnameCandidates(p)) {
+      if (!host || seen.has(host)) continue;
+      seen.add(host);
+      out.push(host);
     }
-    if (p.startsWith("-")) continue;
-    p = p.trim();
-    if (/[*?]/.test(p)) continue;
-    if (!p || seen.has(p)) continue;
-    seen.add(p);
-    out.push(p);
   }
   return out;
 };
+
+function normalizeHostnameCandidates(raw) {
+  let value = String(raw || "").trim().toLowerCase();
+  value = value.replace(/^%append%/i, "").trim();
+  if (!value || value.startsWith("-") || /[?/\s]/.test(value)) return [];
+  const candidates = [];
+  const add = (item) => {
+    item = String(item || "").trim();
+    item = item.replace(/:\d+$/, "").replace(/^\.+|\.+$/g, "");
+    if (!item || /[*?]/.test(item) || isUnsafeHostnameSuffix(item) || !validHostnameSuffix(item)) return;
+    if (!candidates.includes(item)) candidates.push(item);
+  };
+  if (value.startsWith("*.")) {
+    add(value.slice(2));
+  } else if (value.startsWith("*") && value.indexOf(".") >= 0) {
+    add(value.slice(1));
+    add(value.slice(value.indexOf(".") + 1));
+  } else {
+    const firstLabel = value.split(".", 1)[0] || "";
+    if (firstLabel.indexOf("*") >= 0 && value.indexOf(".") >= 0) {
+      add(value.slice(value.indexOf(".") + 1));
+    } else {
+      add(value);
+    }
+  }
+  return candidates;
+}
+
+function validHostnameSuffix(host) {
+  return /^[a-z0-9.-]+$/.test(host) && host.indexOf(".") >= 0;
+}
+
+function isUnsafeHostnameSuffix(host) {
+  if (!host || host.indexOf(".") < 0) return true;
+  return /^(?:com|net|org|top|cn|tv|cc|io|app|co|me|xyz|site|vip)$/.test(host);
+}
 
 // dedupStrings 字符串去重，保持顺序。
 const dedupStrings = (arr) => {
@@ -229,6 +256,192 @@ const convertURLPattern = (pattern, generalize) => {
   }
   return pattern;
 };
+
+function inferHostnameSuffixesFromPattern(pattern) {
+  const out = [];
+  for (const patternPart of splitTopLevelAlternation(String(pattern || ""))) {
+    const p = unwrapNonCapture(patternPart.trim());
+    let hostPart = urlPatternHostPart(p);
+    if (!hostPart) continue;
+    hostPart = unwrapNonCapture(hostPart.replace(/^\?/, ""));
+    hostPart = unwrapCapture(hostPart);
+    for (const part of expandLeadingHostGroup(hostPart)) {
+      appendHostnameCandidate(out, inferHostnameSuffixFromHostPattern(part));
+    }
+  }
+  return out;
+}
+
+function hasComplexHostnamePattern(pattern) {
+  for (const patternPart of splitTopLevelAlternation(String(pattern || ""))) {
+    const p = unwrapNonCapture(patternPart.trim());
+    let hostPart = urlPatternHostPart(p);
+    if (!hostPart) continue;
+    hostPart = unwrapCapture(unwrapNonCapture(hostPart.replace(/^\?/, "")));
+    if (/[*+?[\]()|]/.test(hostPart) || hostPart.indexOf("\\d") >= 0) return true;
+  }
+  return false;
+}
+
+function unwrapNonCapture(s) {
+  s = String(s || "");
+  if (s.startsWith("(?:") && s.endsWith(")")) {
+    const close = findMatchingParen(s.slice(3));
+    if (close === s.length - 4) return s.slice(3, -1);
+  }
+  return s;
+}
+
+function unwrapCapture(s) {
+  s = String(s || "");
+  if (s.startsWith("(") && s.endsWith(")") && !s.startsWith("(?")) {
+    const close = findMatchingParen(s.slice(1));
+    if (close === s.length - 2) return s.slice(1, -1);
+  }
+  return s;
+}
+
+function findMatchingParen(s) {
+  let depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === "(") {
+      depth++;
+    } else if (s[i] === ")") {
+      if (depth === 0) return i;
+      depth--;
+    }
+  }
+  return -1;
+}
+
+function expandLeadingHostGroup(s) {
+  s = String(s || "");
+  if (!s.startsWith("(")) return splitTopLevelAlternation(s);
+  const innerStart = s.startsWith("(?:") ? 3 : 1;
+  const close = findMatchingParen(s.slice(innerStart));
+  if (close < 0) return splitTopLevelAlternation(s);
+  const closeAbs = innerStart + close;
+  const suffix = s.slice(closeAbs + 1);
+  return splitTopLevelAlternation(s.slice(innerStart, closeAbs)).map((alt) => alt + suffix);
+}
+
+function urlPatternHostPart(pattern) {
+  pattern = String(pattern || "").replace(/\\\\\//g, "/").replace(/\\\//g, "/");
+  for (const marker of ["://", ":\\/\\/"]) {
+    const idx = pattern.indexOf(marker);
+    if (idx < 0) continue;
+    const rest = pattern.slice(idx + marker.length);
+    if (!rest) return "";
+    if (rest.startsWith("(?:")) {
+      const close = findMatchingParen(rest.slice(3));
+      if (close >= 0) {
+        let end = 3 + close + 1;
+        if (end < rest.length && rest.slice(end, end + 2) === "\\.") {
+          end += 2;
+          while (end < rest.length && isHostPatternChar(rest[end])) end++;
+        }
+        if (end < rest.length && rest[end] === ":") {
+          end++;
+          while (end < rest.length && /[0-9\\d+]/.test(rest[end])) end++;
+        }
+        return rest.slice(0, end);
+      }
+    }
+    const slash = rest.indexOf("/");
+    return slash >= 0 ? rest.slice(0, slash) : rest;
+  }
+  return "";
+}
+
+function inferHostnameSuffixFromHostPattern(part) {
+  part = String(part || "").trim();
+  if (!part) return "";
+  part = part.replace(/^\^/, "").replace(/\$$/, "");
+  if (part.startsWith("(?:")) part = part.slice(3);
+  if (part.endsWith(")")) part = part.slice(0, -1);
+  part = stripRegexPort(part);
+  if (!hasStaticHostnameTail(part)) return "";
+  part = part
+    .replace(/\\\./g, ".")
+    .replace(/\\-/g, "-")
+    .replace(/\\_/g, "_")
+    .replace(/\[A-Za-z0-9-\]\+/g, "")
+    .replace(/\[a-zA-Z0-9-\]\+/g, "")
+    .replace(/\[a-z0-9-\]\+/g, "")
+    .replace(/\[0-9\]\+/g, "")
+    .replace(/\.\*/g, "")
+    .replace(/\.\+/g, "")
+    .replace(/[*+?]/g, "")
+    .replace(/^\.+|\.+$/g, "");
+  if (/[(){}|^$/]/.test(part)) {
+    const idx = part.lastIndexOf(".");
+    if (idx >= 0 && idx + 1 < part.length) part = part.slice(idx + 1);
+    else return "";
+  }
+  const labels = part.split(".").map((v) => v.replace(/^-+|-+$/g, "")).filter(Boolean);
+  if (labels.length < 2) return "";
+  const tail = labels.slice(-2);
+  if (labels.length === 2 && /[\\[\]()+*?]/.test(labels[0])) return "";
+  for (const label of tail) {
+    if (/[\\[\]()+*?]/.test(label)) return "";
+  }
+  const host = tail.join(".").toLowerCase();
+  return isUnsafeHostnameSuffix(host) ? "" : host;
+}
+
+function hasStaticHostnameTail(hostPattern) {
+  const labels = String(hostPattern || "")
+    .replace(/\\\\\./g, ".")
+    .replace(/\\\./g, ".")
+    .replace(/\\-/g, "-")
+    .split(".")
+    .map((v) => v.trim())
+    .filter(Boolean);
+  if (labels.length < 2) return false;
+  for (const label of labels.slice(-2)) {
+    if (/[\\[\]()+*?]/.test(label)) return false;
+  }
+  return true;
+}
+
+function splitTopLevelAlternation(s) {
+  const parts = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === "\\") {
+      i++;
+    } else if (ch === "(") {
+      depth++;
+    } else if (ch === ")") {
+      if (depth > 0) depth--;
+    } else if (ch === "|" && depth === 0) {
+      parts.push(s.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(s.slice(start));
+  return parts;
+}
+
+function stripRegexPort(s) {
+  const idx = s.lastIndexOf(":");
+  if (idx < 0) return s;
+  const port = s.slice(idx + 1);
+  if (!port || !/^[0-9\\d+]+$/.test(port)) return s;
+  return s.slice(0, idx);
+}
+
+function appendHostnameCandidate(hosts, host) {
+  host = String(host || "").trim().toLowerCase().replace(/^\.+|\.+$/g, "");
+  if (!host || /[*?/\\\s]/.test(host) || isUnsafeHostnameSuffix(host)) return;
+  if (!hosts.includes(host)) hosts.push(host);
+}
+
+function isHostPatternChar(ch) {
+  return /[a-zA-Z0-9.\\-]/.test(ch) || ch === "\\";
+}
 
 function generalizeHost(pattern) {
   if (!pattern.startsWith("^http")) return pattern;
@@ -3514,6 +3727,7 @@ async function convert(m, opts) {
     ...(await convertMapLocals(m.mapLocals, options, report, m.source)),
     ...(await convertScriptRules(m, options, report, m.source)),
   ];
+  m.hostnames = addInferredHostnames(m.hostnames, amrsLines, report);
   addMemoryRiskWarnings(amrsLines, options, report);
 
   let finalAmrsLines = amrsLines;
@@ -3531,6 +3745,38 @@ async function convert(m, opts) {
     arrsGroups: arrsGroups,
     report,
   };
+}
+
+function addInferredHostnames(hostnames, lines, report) {
+  const seen = new Set();
+  const out = [];
+  for (const host of hostnames || []) {
+    const h = String(host || "").trim().toLowerCase();
+    if (!h || seen.has(h)) continue;
+    seen.add(h);
+    out.push(h);
+  }
+  const added = [];
+  let complexUncovered = 0;
+  for (const line of lines || []) {
+    const fields = splitAmrsFields(line);
+    if (fields.length < 3) continue;
+    const inferred = inferHostnameSuffixesFromPattern(fields[2]);
+    if (inferred.length === 0 && hasComplexHostnamePattern(fields[2])) complexUncovered++;
+    for (const host of inferred) {
+      if (seen.has(host)) continue;
+      seen.add(host);
+      out.push(host);
+      added.push(host);
+    }
+  }
+  if (added.length > 0) {
+    report.warnings.push(`已从 MITM 规则 URL pattern 推断补充 ${added.length} 个 hostname 后缀: ${added.join(", ")}`);
+  }
+  if (complexUncovered > 0) {
+    report.warnings.push(`存在 ${complexUncovered} 条 MITM 规则的主机正则过于复杂，Anywhere hostname 只能按后缀匹配，可能需要手动补充具体域名或更宽的安全后缀`);
+  }
+  return out;
 }
 
 function convertRoutingRules(rules, opts, report) {
@@ -4055,6 +4301,8 @@ function addEncodingPreprocess(lines) {
   for (const p of patterns) {
     pre.push(`0, 2, ${p}, accept-encoding`);
     pre.push(`0, 1, ${p}, accept-encoding, identity`);
+    pre.push(`0, 2, ${p}, if-none-match`);
+    pre.push(`0, 2, ${p}, if-modified-since`);
   }
   return [...pre, ...lines];
 }

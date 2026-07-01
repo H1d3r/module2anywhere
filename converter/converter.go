@@ -161,9 +161,6 @@ func (c *Converter) Convert(ctx context.Context, m *ir.Module) (*Result, error) 
 	res.ArrsName = baseName + ".arrs"
 	res.AmrsName = baseName + ".amrs"
 
-	// 注入 hostname 列表供后续 pattern 主机泛化判断使用
-	c.Hostnames = m.Hostnames
-
 	// 0. 清理 hostname：去除含通配符 ? / * 的项（Anywhere 不支持）
 	cleanedHosts := make([]string, 0, len(m.Hostnames))
 	for _, h := range m.Hostnames {
@@ -174,6 +171,8 @@ func (c *Converter) Convert(ctx context.Context, m *ir.Module) (*Result, error) 
 		cleanedHosts = append(cleanedHosts, h)
 	}
 	m.Hostnames = cleanedHosts
+	// 注入 hostname 列表供后续 pattern 主机泛化判断使用
+	c.Hostnames = m.Hostnames
 	if len(m.Hostnames) > 80 {
 		res.Report.AddWarning(fmt.Sprintf("MITM hostname 数量过多（%d），可能导致高频匹配与资源开销上升", len(m.Hostnames)))
 	}
@@ -228,6 +227,7 @@ func (c *Converter) Convert(ctx context.Context, m *ir.Module) (*Result, error) 
 	if len(m.Scripts) > 20 {
 		res.Report.AddWarning(fmt.Sprintf("脚本规则数量较多（%d），建议检查是否存在重复 script-path 或可合并规则", len(m.Scripts)))
 	}
+	m.Hostnames = c.addInferredHostnames(m.Hostnames, amrsLines, &res.Report)
 	c.addMemoryRiskWarnings(amrsLines, &res.Report)
 
 	// 3. accept-encoding 预处理对（可选）
@@ -241,6 +241,46 @@ func (c *Converter) Convert(ctx context.Context, m *ir.Module) (*Result, error) 
 	res.Amrs = c.generateAmrs(baseName, m.Hostnames, amrsLines, m, argState.parameters)
 
 	return res, nil
+}
+
+func (c *Converter) addInferredHostnames(hostnames []string, lines []string, report *Report) []string {
+	seen := make(map[string]bool, len(hostnames))
+	out := make([]string, 0, len(hostnames))
+	for _, h := range hostnames {
+		h = strings.ToLower(strings.TrimSpace(h))
+		if h == "" || seen[h] {
+			continue
+		}
+		seen[h] = true
+		out = append(out, h)
+	}
+	var added []string
+	complexUncovered := 0
+	for _, line := range lines {
+		fields := splitAmrsFields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		inferred := InferHostnameSuffixesFromPattern(fields[2])
+		if len(inferred) == 0 && HasComplexHostnamePattern(fields[2]) {
+			complexUncovered++
+		}
+		for _, h := range inferred {
+			if seen[h] {
+				continue
+			}
+			seen[h] = true
+			out = append(out, h)
+			added = append(added, h)
+		}
+	}
+	if len(added) > 0 {
+		report.AddWarning(fmt.Sprintf("已从 MITM 规则 URL pattern 推断补充 %d 个 hostname 后缀: %s", len(added), strings.Join(added, ", ")))
+	}
+	if complexUncovered > 0 {
+		report.AddWarning(fmt.Sprintf("存在 %d 条 MITM 规则的主机正则过于复杂，Anywhere hostname 只能按后缀匹配，可能需要手动补充具体域名或更宽的安全后缀", complexUncovered))
+	}
+	return out
 }
 
 func (c *Converter) addMemoryRiskWarnings(lines []string, report *Report) {
@@ -960,11 +1000,15 @@ func unionAMRSPattern(patterns []string) string {
 	return b.String()
 }
 
-// addEncodingPreprocess 为含缓冲 body 处理的 URL 添加 accept-encoding 预处理对。
+// addEncodingPreprocess 为含缓冲 body 处理的 URL 添加请求预处理。
 // 策略：扫描所有 phase=1 的 body-json/script 规则，提取其 pattern，添加：
 //
 //	0, 2, <pattern>, accept-encoding
 //	0, 1, <pattern>, accept-encoding, identity
+//	0, 2, <pattern>, if-none-match
+//	0, 2, <pattern>, if-modified-since
+//
+// 删除缓存验证头可以避免服务器返回 304 导致响应阶段没有 body 可改写。
 func (c *Converter) addEncodingPreprocess(lines []string) []string {
 	// 收集需要预处理的 pattern（phase=1 且 op ∈ {4, 5, 100}）。
 	// stream-script (101) 应保持上游压缩和分帧语义，避免把流式路径放大成未压缩大流量。
@@ -989,11 +1033,13 @@ func (c *Converter) addEncodingPreprocess(lines []string) []string {
 	if len(patterns) == 0 {
 		return lines
 	}
-	// 在原规则前插入预处理对
+	// 在原规则前插入预处理规则
 	var pre []string
 	for p := range patterns {
 		pre = append(pre, fmt.Sprintf("0, 2, %s, accept-encoding", p))
 		pre = append(pre, fmt.Sprintf("0, 1, %s, accept-encoding, identity", p))
+		pre = append(pre, fmt.Sprintf("0, 2, %s, if-none-match", p))
+		pre = append(pre, fmt.Sprintf("0, 2, %s, if-modified-since", p))
 	}
 	return append(pre, lines...)
 }

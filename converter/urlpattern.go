@@ -88,6 +88,288 @@ func ConvertURLPatternWithHostnames(pattern string, generalize bool, hostnames [
 	return pattern
 }
 
+// InferHostnameSuffixesFromPattern 从 AMRS URL pattern 中推断 Anywhere 可表达的 hostname 后缀。
+// 仅返回保守候选：固定主机、简单 alternation 主机、以及 regex 主机中的可识别品牌后缀。
+func InferHostnameSuffixesFromPattern(pattern string) []string {
+	var out []string
+	for _, patternPart := range splitTopLevelAlternation(pattern) {
+		p := unwrapNonCapture(strings.TrimSpace(patternPart))
+		hostPart := urlPatternHostPart(p)
+		if hostPart == "" {
+			continue
+		}
+		hostPart = strings.TrimPrefix(hostPart, "?")
+		hostPart = unwrapNonCapture(hostPart)
+		hostPart = unwrapCapture(hostPart)
+		for _, part := range expandLeadingHostGroup(hostPart) {
+			out = appendHostnameCandidate(out, inferHostnameSuffixFromHostPattern(part))
+		}
+	}
+	return out
+}
+
+// HasComplexHostnamePattern 判断 URL pattern 的主机段是否含 Anywhere hostname 无法直接表达的正则。
+func HasComplexHostnamePattern(pattern string) bool {
+	for _, patternPart := range splitTopLevelAlternation(pattern) {
+		p := unwrapNonCapture(strings.TrimSpace(patternPart))
+		hostPart := urlPatternHostPart(p)
+		if hostPart == "" {
+			continue
+		}
+		hostPart = unwrapCapture(unwrapNonCapture(strings.TrimPrefix(hostPart, "?")))
+		if strings.ContainsAny(hostPart, "*+?[]()|") || strings.Contains(hostPart, `\d`) {
+			return true
+		}
+	}
+	return false
+}
+
+func unwrapNonCapture(s string) string {
+	if strings.HasPrefix(s, "(?:") && strings.HasSuffix(s, ")") {
+		if close := findMatchingParen(s[3:]); close == len(s)-4 {
+			return s[3 : len(s)-1]
+		}
+	}
+	return s
+}
+
+func unwrapCapture(s string) string {
+	if strings.HasPrefix(s, "(") && strings.HasSuffix(s, ")") && !strings.HasPrefix(s, "(?") {
+		if close := findMatchingParen(s[1:]); close == len(s)-2 {
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
+}
+
+func expandLeadingHostGroup(s string) []string {
+	if !strings.HasPrefix(s, "(") {
+		return splitTopLevelAlternation(s)
+	}
+	innerStart := 1
+	if strings.HasPrefix(s, "(?:") {
+		innerStart = 3
+	}
+	close := findMatchingParen(s[innerStart:])
+	if close < 0 {
+		return splitTopLevelAlternation(s)
+	}
+	closeAbs := innerStart + close
+	suffix := s[closeAbs+1:]
+	alts := splitTopLevelAlternation(s[innerStart:closeAbs])
+	out := make([]string, 0, len(alts))
+	for _, alt := range alts {
+		out = append(out, alt+suffix)
+	}
+	return out
+}
+
+func urlPatternHostPart(pattern string) string {
+	pattern = strings.ReplaceAll(pattern, `\\/`, `/`)
+	pattern = strings.ReplaceAll(pattern, `\/`, `/`)
+	for _, marker := range []string{"://", `:\/\/`} {
+		idx := strings.Index(pattern, marker)
+		if idx < 0 {
+			continue
+		}
+		rest := pattern[idx+len(marker):]
+		if rest == "" {
+			return ""
+		}
+		if strings.HasPrefix(rest, "(?:") {
+			if close := findMatchingParen(rest[3:]); close >= 0 {
+				end := 3 + close + 1
+				if end < len(rest) && strings.HasPrefix(rest[end:], `\.`) {
+					end += 2
+					for end < len(rest) && isHostPatternByte(rest[end]) {
+						end++
+					}
+				}
+				if end < len(rest) && rest[end] == ':' {
+					end++
+					for end < len(rest) && (isDigitByte(rest[end]) || rest[end] == '\\' || rest[end] == 'd' || rest[end] == '+') {
+						end++
+					}
+				}
+				return rest[:end]
+			}
+		}
+		end := 0
+		for end < len(rest) && rest[end] != '/' {
+			end++
+		}
+		return rest[:end]
+	}
+	return ""
+}
+
+func inferHostnameSuffixFromHostPattern(part string) string {
+	part = strings.TrimSpace(part)
+	if part == "" {
+		return ""
+	}
+	part = strings.TrimPrefix(part, "^")
+	part = strings.TrimSuffix(part, "$")
+	part = strings.TrimPrefix(part, "(?:")
+	part = strings.TrimSuffix(part, ")")
+	part = stripRegexPort(part)
+	if !hasStaticHostnameTail(part) {
+		return ""
+	}
+	part = strings.ReplaceAll(part, `\.`, ".")
+	part = strings.ReplaceAll(part, `\-`, "-")
+	part = strings.ReplaceAll(part, `\_`, "_")
+	part = strings.ReplaceAll(part, "[A-Za-z0-9-]+", "")
+	part = strings.ReplaceAll(part, "[a-zA-Z0-9-]+", "")
+	part = strings.ReplaceAll(part, "[a-z0-9-]+", "")
+	part = strings.ReplaceAll(part, "[0-9]+", "")
+	part = strings.ReplaceAll(part, ".*", "")
+	part = strings.ReplaceAll(part, ".+", "")
+	part = strings.ReplaceAll(part, "*", "")
+	part = strings.ReplaceAll(part, "+", "")
+	part = strings.ReplaceAll(part, "?", "")
+	part = strings.Trim(part, ".")
+	if strings.ContainsAny(part, `(){}|^$/`) {
+		if idx := strings.LastIndex(part, "."); idx >= 0 && idx+1 < len(part) {
+			part = part[idx+1:]
+		} else {
+			return ""
+		}
+	}
+	labels := strings.Split(part, ".")
+	filtered := labels[:0]
+	for _, label := range labels {
+		label = strings.Trim(label, "-")
+		if label != "" {
+			filtered = append(filtered, label)
+		}
+	}
+	if len(filtered) < 2 {
+		return ""
+	}
+	originalLabels := append([]string(nil), filtered...)
+	if len(originalLabels) > 2 {
+		filtered = originalLabels[len(originalLabels)-2:]
+	}
+	if len(originalLabels) == 2 && strings.ContainsAny(originalLabels[0], `\[]()+*?`) {
+		return ""
+	}
+	for _, label := range filtered {
+		if strings.ContainsAny(label, `\[]()+*?`) {
+			return ""
+		}
+	}
+	host := strings.ToLower(strings.Join(filtered, "."))
+	if isUnsafeInferredHostnameSuffix(host) {
+		return ""
+	}
+	return host
+}
+
+func hasStaticHostnameTail(hostPattern string) bool {
+	raw := strings.ReplaceAll(hostPattern, `\\.`, ".")
+	raw = strings.ReplaceAll(raw, `\.`, ".")
+	raw = strings.ReplaceAll(raw, `\-`, "-")
+	labels := strings.Split(raw, ".")
+	filtered := labels[:0]
+	for _, label := range labels {
+		label = strings.TrimSpace(label)
+		if label != "" {
+			filtered = append(filtered, label)
+		}
+	}
+	if len(filtered) < 2 {
+		return false
+	}
+	for _, label := range filtered[len(filtered)-2:] {
+		if strings.ContainsAny(label, `\[]()+*?`) {
+			return false
+		}
+	}
+	return true
+}
+
+func splitTopLevelAlternation(s string) []string {
+	var parts []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			i++
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case '|':
+			if depth == 0 {
+				parts = append(parts, s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	parts = append(parts, s[start:])
+	return parts
+}
+
+func stripRegexPort(s string) string {
+	idx := strings.LastIndex(s, ":")
+	if idx < 0 {
+		return s
+	}
+	port := s[idx+1:]
+	if port == "" {
+		return s
+	}
+	for _, r := range port {
+		if (r >= '0' && r <= '9') || r == '\\' || r == 'd' || r == '+' {
+			continue
+		}
+		return s
+	}
+	return s[:idx]
+}
+
+func appendHostnameCandidate(hosts []string, host string) []string {
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" || strings.ContainsAny(host, "*?/ \\") || isUnsafeInferredHostnameSuffix(host) {
+		return hosts
+	}
+	for _, existing := range hosts {
+		if existing == host {
+			return hosts
+		}
+	}
+	return append(hosts, host)
+}
+
+func isUnsafeInferredHostnameSuffix(host string) bool {
+	if !strings.Contains(host, ".") {
+		return true
+	}
+	for _, r := range host {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '-' {
+			continue
+		}
+		return true
+	}
+	switch host {
+	case "com", "net", "org", "top", "cn", "tv", "cc", "io", "app", "co", "me", "xyz", "site", "vip":
+		return true
+	}
+	return false
+}
+
+func isHostPatternByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '.' || b == '-' || b == '\\'
+}
+
+func isDigitByte(b byte) bool {
+	return b >= '0' && b <= '9'
+}
+
 // safeGeneralizeHost 在确认 pattern 主机已被 hostnames 覆盖时才泛化。
 // 若 pattern 主机段已含通配形式（.* / [^/]+ / * / ? 等），视为已泛化不再处理。
 // 若主机段含真正捕获组（`(...))` 形式但不是 `(?:...)`），保留原样。

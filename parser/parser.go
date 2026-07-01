@@ -310,34 +310,89 @@ func stripInlineComment(s string) string {
 // normalizeHostnames 规范化 hostname 列表：
 //   - 去除 %APPEND% / %APPEND% 前缀（Surge）
 //   - 去除 *. / * 前缀（Anywhere 用后缀匹配，无需通配符）
+//   - 对部分复杂通配符提取可表达的后缀候选（例如 v.foo*.com -> foo.com）
 //   - 去重、trim
 func normalizeHostnames(raw string) []string {
 	parts := strings.Split(raw, ",")
 	out := make([]string, 0, len(parts))
 	seen := make(map[string]bool)
 	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
+		for _, host := range normalizeHostnameCandidates(p) {
+			if host == "" || seen[host] {
+				continue
+			}
+			seen[host] = true
+			out = append(out, host)
 		}
-		// Surge %APPEND% / %APPEND%
-		p = strings.TrimPrefix(p, "%APPEND%")
-		p = strings.TrimSpace(p)
-		// 去除通配符前缀
-		p = strings.TrimPrefix(p, "*.")
-		p = strings.TrimPrefix(p, "*")
-		if strings.HasPrefix(p, "-") {
-			continue
-		}
-		p = strings.TrimSpace(p)
-		if strings.ContainsAny(p, "*?") {
-			continue
-		}
-		if p == "" || seen[p] {
-			continue
-		}
-		seen[p] = true
-		out = append(out, p)
 	}
 	return out
+}
+
+func normalizeHostnameCandidates(raw string) []string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	value = strings.TrimPrefix(value, "%append%")
+	value = strings.TrimSpace(value)
+	if value == "" || strings.HasPrefix(value, "-") || strings.ContainsAny(value, "?/ \t") {
+		return nil
+	}
+	add := func(candidates []string, item string) []string {
+		item = strings.TrimSpace(item)
+		if idx := strings.LastIndex(item, ":"); idx > -1 && allDigits(item[idx+1:]) {
+			item = item[:idx]
+		}
+		item = strings.Trim(item, ".")
+		if item == "" || strings.ContainsAny(item, "*?") || isPublicHostnameSuffix(item) || !validHostnameSuffix(item) {
+			return candidates
+		}
+		for _, existing := range candidates {
+			if existing == item {
+				return candidates
+			}
+		}
+		return append(candidates, item)
+	}
+
+	var candidates []string
+	switch {
+	case strings.HasPrefix(value, "*."):
+		candidates = add(candidates, value[2:])
+	case strings.HasPrefix(value, "*") && strings.Contains(value, "."):
+		candidates = add(candidates, value[1:])
+		candidates = add(candidates, value[strings.Index(value, ".")+1:])
+	case strings.Contains(strings.SplitN(value, ".", 2)[0], "*") && strings.Contains(value, "."):
+		candidates = add(candidates, value[strings.Index(value, ".")+1:])
+	default:
+		candidates = add(candidates, value)
+	}
+	return candidates
+}
+
+func validHostnameSuffix(host string) bool {
+	for _, r := range host {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return strings.Contains(host, ".")
+}
+
+func isPublicHostnameSuffix(host string) bool {
+	switch host {
+	case "com", "net", "org", "top", "cn", "tv", "cc", "io", "app", "co", "me", "xyz", "site", "vip":
+		return true
+	}
+	return false
+}
+
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
