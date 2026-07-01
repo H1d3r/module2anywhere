@@ -58,8 +58,9 @@ func DefaultOptions() Options {
 // ConvertURLPattern 转换 URL 正则模式以适配 Anywhere。
 // 步骤：
 //  1. \/ → /（去除不必要的转义）
-//  2. （可选）安全主机泛化：仅当显式开启且 pattern 中所有具体主机都被 hostnames 覆盖时才执行
-//  3. 结尾 \? → (?:\?|$)
+//  2. URL host 区域统一小写，避免 Anywhere lowercased host 匹配时规则永不触发
+//  3. （可选）安全主机泛化：仅当显式开启且 pattern 中所有具体主机都被 hostnames 覆盖时才执行
+//  4. 结尾 \? → (?:\?|$)
 func ConvertURLPattern(pattern string, generalize bool) string {
 	return ConvertURLPatternWithHostnames(pattern, generalize, nil)
 }
@@ -76,16 +77,71 @@ func ConvertURLPatternWithHostnames(pattern string, generalize bool, hostnames [
 	// 1. 去除 \/ 转义
 	pattern = strings.ReplaceAll(pattern, `\/`, `/`)
 
-	// 2. 安全主机泛化
+	// 2. Anywhere 会用 lowercased URL host 匹配 gate pattern，host 区域不能保留 A-Z。
+	pattern = normalizeURLPatternHostCase(pattern)
+
+	// 3. 安全主机泛化
 	if generalize {
 		pattern = safeGeneralizeHost(pattern, hostnames)
 	}
 
-	// 3. 结尾 \? → (?:\?|$)
+	// 4. 结尾 \? → (?:\?|$)
 	if strings.HasSuffix(pattern, `\?`) {
 		pattern = strings.TrimSuffix(pattern, `\?`) + `(?:\?|$)`
 	}
 	return pattern
+}
+
+func normalizeURLPatternHostCase(pattern string) string {
+	var b strings.Builder
+	start := 0
+	for {
+		idx := strings.Index(pattern[start:], "://")
+		if idx < 0 {
+			b.WriteString(pattern[start:])
+			break
+		}
+		hostStart := start + idx + len("://")
+		b.WriteString(pattern[start:hostStart])
+		hostEnd := hostStart + urlPatternHostEnd(pattern[hostStart:])
+		b.WriteString(normalizeHostPatternCase(pattern[hostStart:hostEnd]))
+		start = hostEnd
+	}
+	return b.String()
+}
+
+func urlPatternHostEnd(rest string) int {
+	inClass := false
+	escaped := false
+	for i := 0; i < len(rest); i++ {
+		ch := rest[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		switch ch {
+		case '[':
+			inClass = true
+		case ']':
+			inClass = false
+		case '/':
+			if !inClass {
+				return i
+			}
+		}
+	}
+	return len(rest)
+}
+
+func normalizeHostPatternCase(host string) string {
+	host = strings.ToLower(host)
+	host = strings.ReplaceAll(host, "a-za-z", "a-z")
+	host = strings.ReplaceAll(host, "a-z_a-z", "a-z_")
+	return host
 }
 
 // InferHostnameSuffixesFromPattern 从 AMRS URL pattern 中推断 Anywhere 可表达的 hostname 后缀。

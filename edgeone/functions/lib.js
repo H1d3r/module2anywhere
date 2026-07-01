@@ -275,6 +275,7 @@ const parseKVArgs = (s, args) => {
 const convertURLPattern = (pattern, generalize) => {
   if (!pattern) return pattern;
   pattern = pattern.replace(/\\\//g, "/");
+  pattern = normalizeURLPatternHostCase(pattern);
   if (generalize) {
     pattern = generalizeHost(pattern);
   }
@@ -283,6 +284,52 @@ const convertURLPattern = (pattern, generalize) => {
   }
   return pattern;
 };
+
+function normalizeURLPatternHostCase(pattern) {
+  pattern = String(pattern || "");
+  let out = "";
+  let start = 0;
+  while (true) {
+    const idx = pattern.indexOf("://", start);
+    if (idx < 0) {
+      out += pattern.slice(start);
+      break;
+    }
+    const hostStart = idx + 3;
+    out += pattern.slice(start, hostStart);
+    const hostEnd = hostStart + urlPatternHostEnd(pattern.slice(hostStart));
+    out += normalizeHostPatternCase(pattern.slice(hostStart, hostEnd));
+    start = hostEnd;
+  }
+  return out;
+}
+
+function urlPatternHostEnd(rest) {
+  let inClass = false;
+  let escaped = false;
+  for (let i = 0; i < rest.length; i++) {
+    const ch = rest[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === "[") inClass = true;
+    else if (ch === "]") inClass = false;
+    else if (ch === "/" && !inClass) return i;
+  }
+  return rest.length;
+}
+
+function normalizeHostPatternCase(host) {
+  return String(host || "")
+    .toLowerCase()
+    .replace(/a-za-z/g, "a-z")
+    .replace(/a-z_a-z/g, "a-z_");
+}
 
 function inferHostnameSuffixesFromPattern(pattern) {
   const out = [];

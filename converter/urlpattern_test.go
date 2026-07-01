@@ -1,7 +1,10 @@
 // converter 包：URL pattern 安全泛化测试。
 package converter
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestSafeGeneralizeHost 验证主机泛化的安全检查。
 func TestSafeGeneralizeHost(t *testing.T) {
@@ -102,4 +105,65 @@ func TestEndOptionalQuery(t *testing.T) {
 			t.Errorf("ConvertURLPattern(%q): got %q, want %q", c.in, got, c.want)
 		}
 	}
+}
+
+func TestConvertURLPatternLowercasesHostRegion(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "literal host uppercase",
+			in:   `^https://API\.Example\.COM/v1/DoNotLowerPath`,
+			want: `^https://api\.example\.com/v1/DoNotLowerPath`,
+		},
+		{
+			name: "host character class uppercase range",
+			in:   `^https?://[a-zA-Z0-9_.-]+\.cainiao\.com/gw/mtop\.cainiao\.app\.e2e\.engine\.page\.fetch`,
+			want: `^https?://[a-z0-9_.-]+\.cainiao\.com/gw/mtop\.cainiao\.app\.e2e\.engine\.page\.fetch`,
+		},
+		{
+			name: "slash in host character class is not path boundary",
+			in:   `^https://[^/]+/PathKeepsCase`,
+			want: `^https://[^/]+/PathKeepsCase`,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ConvertURLPattern(c.in, false)
+			if got != c.want {
+				t.Fatalf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestConvertURLPatternLowercasesAlternationHosts(t *testing.T) {
+	in := `(?:^https?://[a-zA-Z0-9_.-]+\.cainiao\.com/gw/mtop\.cainiao\.app\.e2e\.engine\.page\.fetch)|(?:^https?://[a-zA-Z0-9_.-]+\.cainiao\.com/gw/mtop\.cainiao\.nbpresentation\.homepage\.merge\.get\.cn)|(?:^https?://[a-zA-Z0-9_.-]+\.cainiao\.com/gw/mtop\.cainiao\.nbpresentation\.protocol\.homepage\.get\.cn)|(?:^https?://[a-zA-Z0-9_.-]+\.cainiao\.com/gw/mtop\.cainiao\.adkeyword)`
+	got := ConvertURLPattern(in, false)
+	if strings.ContainsAny(urlPatternHostRegionsForTest(got), "ABCDEFGHIJKLMNOPQRSTUVWXYZ") {
+		t.Fatalf("host regions still contain uppercase letters: %s", got)
+	}
+	if strings.Contains(got, "[a-zA-Z") {
+		t.Fatalf("host character class was not narrowed: %s", got)
+	}
+}
+
+func urlPatternHostRegionsForTest(pattern string) string {
+	var out strings.Builder
+	start := 0
+	for {
+		idx := strings.Index(pattern[start:], "://")
+		if idx < 0 {
+			break
+		}
+		hostStart := start + idx + len("://")
+		hostEnd := hostStart + urlPatternHostEnd(pattern[hostStart:])
+		out.WriteString(pattern[hostStart:hostEnd])
+		out.WriteByte('\n')
+		start = hostEnd
+	}
+	return out.String()
 }
