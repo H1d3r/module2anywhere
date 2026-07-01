@@ -317,8 +317,8 @@ func buildScriptLoaderURL(base, scriptPath, moduleBaseURL string, phase int, wra
 		q.Set("base", moduleBaseURL)
 	}
 	q.Set("phase", strconv.Itoa(phase))
-	if wrap {
-		q.Set("wrap", "true")
+	if !wrap {
+		q.Set("wrap", "false")
 	}
 	if strings.TrimSpace(argument) != "" {
 		q.Set("argument", argument)

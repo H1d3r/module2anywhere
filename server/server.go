@@ -104,7 +104,7 @@ func (s *Server) handleScript(w http.ResponseWriter, r *http.Request) {
 	f := fetcher.New()
 	configureProxy(f, s.cfg.ProxyMode, s.cfg.ProxyRetry)
 	baseURL := r.URL.Query().Get("base")
-	wrap := r.URL.Query().Get("wrap") == "true"
+	wrap := defaultTrueQuery(r.URL.Query().Get("wrap"))
 	argument := r.URL.Query().Get("argument")
 	maxScriptBytes := int64Query(r.URL.Query().Get("maxScriptBytes"), s.cfg.MaxScriptBytes)
 	if maxScriptBytes <= 0 {
@@ -294,7 +294,7 @@ func (s *Server) convertAll(r *http.Request) (*converter.Result, error) {
 	fetchScripts := r.URL.Query().Get("fetch") != "false"
 	// 默认 generalize=false（不泛化主机），通过 generalize=true 显式开启
 	generalize := r.URL.Query().Get("generalize") == "true"
-	wrapScripts := truthyQuery(r.URL.Query().Get("wrap"))
+	wrapScripts := defaultTrueQuery(r.URL.Query().Get("wrap"))
 	preserveParameters := s.cfg.PreserveParameters || truthyQuery(r.URL.Query().Get("preserveParameters")) || truthyQuery(r.URL.Query().Get("preserveArguments"))
 	arguments := argumentsFromQuery(r.URL.Query())
 	scriptMode := normalizeScriptMode(r.URL.Query().Get("scriptMode"))
@@ -603,6 +603,10 @@ func truthyQuery(value string) bool {
 	default:
 		return false
 	}
+}
+
+func defaultTrueQuery(value string) bool {
+	return !strings.EqualFold(strings.TrimSpace(value), "false")
 }
 
 func validQueryArgumentName(name string) bool {

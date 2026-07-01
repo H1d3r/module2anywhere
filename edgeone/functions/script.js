@@ -34,7 +34,7 @@ export async function onRequest(context) {
   }
 
   const phase = query.phase === '1' ? 1 : 0;
-  const wrap = query.wrap === 'true';
+  const wrap = lib.defaultTrueInput(query.wrap);
   const argument = query.argument || '';
   const maxScriptBytes = lib.positiveIntInput(query.maxScriptBytes, 1024 * 1024);
   const baseURL = query.base || '';

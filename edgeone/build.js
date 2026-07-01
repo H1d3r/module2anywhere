@@ -81,7 +81,7 @@ export async function onRequest(context) {
   const fetchScripts = query.fetch !== 'false';
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
-  const wrapScripts = query.wrap === 'true';
+  const wrapScripts = lib.defaultTrueInput(query.wrap);
   const maxInputBytes = lib.positiveIntInput(query.maxInputBytes, 512 * 1024);
   const maxScriptBytes = lib.positiveIntInput(query.maxScriptBytes, 1024 * 1024);
   const maxScriptFetches = lib.positiveIntInput(query.maxScriptFetches, 45);
@@ -230,7 +230,7 @@ export async function onRequest(context) {
   const fetchScripts = query.fetch !== 'false';
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
-  const wrapScripts = query.wrap === 'true';
+  const wrapScripts = lib.defaultTrueInput(query.wrap);
   const maxInputBytes = lib.positiveIntInput(query.maxInputBytes, 512 * 1024);
   const maxScriptBytes = lib.positiveIntInput(query.maxScriptBytes, 1024 * 1024);
   const maxScriptFetches = lib.positiveIntInput(query.maxScriptFetches, 45);
@@ -379,7 +379,7 @@ export async function onRequest(context) {
   const fetchScripts = query.fetch !== 'false';
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
-  const wrapScripts = query.wrap === 'true';
+  const wrapScripts = lib.defaultTrueInput(query.wrap);
   const maxInputBytes = lib.positiveIntInput(query.maxInputBytes, 512 * 1024);
   const maxScriptBytes = lib.positiveIntInput(query.maxScriptBytes, 1024 * 1024);
   const maxScriptFetches = lib.positiveIntInput(query.maxScriptFetches, 45);
@@ -526,7 +526,7 @@ export async function onRequest(context) {
   const fetchScripts = query.fetch !== 'false';
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
-  const wrapScripts = query.wrap === 'true';
+  const wrapScripts = lib.defaultTrueInput(query.wrap);
   const maxInputBytes = lib.positiveIntInput(query.maxInputBytes, 512 * 1024);
   const maxScriptBytes = lib.positiveIntInput(query.maxScriptBytes, 1024 * 1024);
   const maxScriptFetches = lib.positiveIntInput(query.maxScriptFetches, 45);
@@ -682,7 +682,7 @@ export async function onRequest(context) {
   const fetchScripts = query.fetch !== 'false';
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
-  const wrapScripts = query.wrap === 'true';
+  const wrapScripts = lib.defaultTrueInput(query.wrap);
   const maxInputBytes = lib.positiveIntInput(query.maxInputBytes, 512 * 1024);
   const maxScriptBytes = lib.positiveIntInput(query.maxScriptBytes, 1024 * 1024);
   const maxScriptFetches = lib.positiveIntInput(query.maxScriptFetches, 45);
@@ -836,7 +836,7 @@ export async function onRequest(context) {
   const fetchScripts = query.fetch !== 'false';
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
-  const wrapScripts = query.wrap === 'true';
+  const wrapScripts = lib.defaultTrueInput(query.wrap);
   const maxInputBytes = lib.positiveIntInput(query.maxInputBytes, 512 * 1024);
   const maxScriptBytes = lib.positiveIntInput(query.maxScriptBytes, 1024 * 1024);
   const maxScriptFetches = lib.positiveIntInput(query.maxScriptFetches, 45);
@@ -1008,7 +1008,7 @@ export async function onRequest(context) {
   const fetchScripts = query.fetch !== 'false';
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
-  const wrapScripts = query.wrap === 'true';
+  const wrapScripts = lib.defaultTrueInput(query.wrap);
   const maxInputBytes = lib.positiveIntInput(query.maxInputBytes, 512 * 1024);
   const maxScriptBytes = lib.positiveIntInput(query.maxScriptBytes, 1024 * 1024);
   const maxScriptFetches = lib.positiveIntInput(query.maxScriptFetches, 45);
@@ -1144,7 +1144,7 @@ export async function onRequest(context) {
   }
 
   const phase = query.phase === '1' ? 1 : 0;
-  const wrap = query.wrap === 'true';
+  const wrap = lib.defaultTrueInput(query.wrap);
   const argument = query.argument || '';
   const maxScriptBytes = lib.positiveIntInput(query.maxScriptBytes, 1024 * 1024);
   const baseURL = query.base || '';
@@ -1213,7 +1213,7 @@ export async function onRequest(context) {
   var name = query.name || '';
   var fetchScripts = query.fetch !== 'false';
   var generalize = query.generalize === 'true';
-  var wrapScripts = query.wrap === 'true';
+  var wrapScripts = lib.defaultTrueInput(query.wrap);
   var sourceHint = query.source || '';
   var format = (query.format || '').toLowerCase().trim();
   var maxInputBytes = lib.positiveIntInput(query.maxInputBytes, 512 * 1024);
@@ -1313,7 +1313,7 @@ export async function onRequest(context) {
       linkParams += '&argument.' + encodeURIComponent(ak) + '=' + encodeURIComponent(argumentsMap[ak]);
     }
   }
-  if (wrapScripts) linkParams += '&wrap=true';
+  if (!wrapScripts) linkParams += '&wrap=false';
   if (sourceHint) linkParams += '&source=' + encodeURIComponent(sourceHint);
   if (name) linkParams += '&name=' + encodeURIComponent(name);
 

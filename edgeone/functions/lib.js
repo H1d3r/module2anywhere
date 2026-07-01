@@ -781,7 +781,7 @@ function scriptLoaderURL(baseURL, scriptPath, moduleBaseURL, phase, wrap, argume
   u.searchParams.set("script", scriptPath || "");
   if (moduleBaseURL) u.searchParams.set("base", moduleBaseURL);
   u.searchParams.set("phase", String(phase || 0));
-  if (wrap) u.searchParams.set("wrap", "true");
+  if (!wrap) u.searchParams.set("wrap", "false");
   if (String(argument || "").trim()) u.searchParams.set("argument", String(argument || ""));
   if (maxScriptBytes > 0) u.searchParams.set("maxScriptBytes", String(maxScriptBytes));
   return u.toString();
@@ -935,20 +935,12 @@ function encodeInlineScript(rawJS, phase, wrap) {
  */
 function buildWrappedScript(rawJS, phase, argument) {
   const phaseCheck = phase === 1 ? "response" : "request";
-  // 检测是否需要 async（与 rewriteScriptAPI 保持一致）
-  const needsAsync =
-    rawJS.includes("$httpClient") ||
-    rawJS.includes("$.http") ||
-    rawJS.includes("$env.http") ||
-    rawJS.includes("await ") ||
-    rawJS.includes("async ") ||
-    rawJS.includes("$done({response:");
 
   // 将上游脚本源码 base64 编码
   const upstreamB64 = btoa(unescape(encodeURIComponent(rawJS)));
 
   // 生成包装器脚本
-  const wrapper = `${needsAsync ? "async " : ""}function process(ctx) {
+  const wrapper = `async function process(ctx) {
   if (ctx.phase !== "${phaseCheck}") return;
   var _requestTimers = [];
   globalThis._requestTimersStack = globalThis._requestTimersStack || [];
@@ -3697,7 +3689,7 @@ function defaultConvertOptions() {
     useStreamScript: false,
     autoContentType: true,
     addResourceURL: "",
-    wrapScripts: false,
+    wrapScripts: true,
     arguments: {},
     preserveParameters: false,
     scriptMode: "inline",
@@ -4585,6 +4577,10 @@ function truthyInput(value) {
   return /^(?:1|true|yes|on)$/i.test(String(value || "").trim());
 }
 
+function defaultTrueInput(value) {
+  return !/^false$/i.test(String(value || "").trim());
+}
+
 function positiveIntInput(value, fallback) {
   const n = parseInt(String(value || "").trim(), 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
@@ -4618,6 +4614,7 @@ const lib = {
   cachePut,
   cacheKey,
   truthyInput,
+  defaultTrueInput,
   normalizeScriptMode,
   positiveIntInput,
   queryArguments,
@@ -4721,6 +4718,7 @@ export {
   cacheKey,
   normalizeScriptMode,
   truthyInput,
+  defaultTrueInput,
   positiveIntInput,
   queryArguments,
   // 也导出 lib 对象本身，方便端点文件使用 lib.xxx 形式

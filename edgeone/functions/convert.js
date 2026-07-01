@@ -65,7 +65,7 @@ export async function onRequest(context) {
   const fetchScripts = query.fetch !== 'false';
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
-  const wrapScripts = query.wrap === 'true';
+  const wrapScripts = lib.defaultTrueInput(query.wrap);
   const maxInputBytes = lib.positiveIntInput(query.maxInputBytes, 512 * 1024);
   const maxScriptBytes = lib.positiveIntInput(query.maxScriptBytes, 1024 * 1024);
   const maxScriptFetches = lib.positiveIntInput(query.maxScriptFetches, 45);

@@ -60,6 +60,7 @@ func main() {
 	encodingPreprocess := flag.Bool("encoding-preprocess", true, "为 body 处理规则自动添加 accept-encoding 预处理对（默认开启）")
 	noMetadata := flag.Bool("no-metadata", false, "不在输出文件头部写入元数据注释")
 	streamScript := flag.Bool("stream-script", false, "将脚本转为 stream-script (op 101)，仅适合已适配逐帧处理的脚本")
+	wrapScripts := flag.Bool("wrap-scripts", true, "包装执行模式：原样编码上游脚本并运行兼容层（默认开启，设为 false 使用直改模式）")
 	autoContentType := flag.Bool("auto-content-type", true, "兼容旧参数；官方 Anywhere 当前不识别顶层 content-type，JSON/mock 响应头改由脚本保留")
 	concurrency := flag.Int("concurrency", 8, "脚本并发下载数（默认 8）")
 	scriptTimeout := flag.Int("script-timeout", 10, "单个脚本下载超时秒数（默认 10）")
@@ -115,14 +116,14 @@ func main() {
 		os.Exit(2)
 	}
 
-	if err := run(*input, *outputDir, *format, *fetchScripts, *generalizeHost, *encodingPreprocess, !*noMetadata, *streamScript, *autoContentType, *concurrency, *scriptTimeout, *maxInputBytes, *maxScriptBytes, *maxScriptFetches, *sourceFlag, *preserveParameters, arguments, *verbose, *proxyMode, *proxyRetry); err != nil {
+	if err := run(*input, *outputDir, *format, *fetchScripts, *generalizeHost, *encodingPreprocess, !*noMetadata, *streamScript, *wrapScripts, *autoContentType, *concurrency, *scriptTimeout, *maxInputBytes, *maxScriptBytes, *maxScriptFetches, *sourceFlag, *preserveParameters, arguments, *verbose, *proxyMode, *proxyRetry); err != nil {
 		fmt.Fprintln(os.Stderr, "错误:", err)
 		os.Exit(1)
 	}
 }
 
 // run 执行主流程。
-func run(input, outputDir, format string, fetchScripts, generalizeHost, encodingPreprocess, includeMetadata, streamScript, autoContentType bool, concurrency, scriptTimeout int, maxInputBytes, maxScriptBytes int64, maxScriptFetches int, sourceFlag string, preserveParameters bool, arguments map[string]string, verbose bool, proxyMode string, proxyRetry bool) error {
+func run(input, outputDir, format string, fetchScripts, generalizeHost, encodingPreprocess, includeMetadata, streamScript, wrapScripts, autoContentType bool, concurrency, scriptTimeout int, maxInputBytes, maxScriptBytes int64, maxScriptFetches int, sourceFlag string, preserveParameters bool, arguments map[string]string, verbose bool, proxyMode string, proxyRetry bool) error {
 	ctx := context.Background()
 	f := fetcher.New()
 	// 配置代理
@@ -174,6 +175,7 @@ func run(input, outputDir, format string, fetchScripts, generalizeHost, encoding
 			FetchScripts:       fetchScripts,
 			IncludeMetadata:    includeMetadata,
 			UseStreamScript:    streamScript,
+			WrapScripts:        wrapScripts,
 			AutoContentType:    autoContentType,
 			Concurrency:        concurrency,
 			ScriptTimeoutSec:   scriptTimeout,

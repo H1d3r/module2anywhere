@@ -1359,10 +1359,6 @@ func BuildWrappedScript(rawJS string, phase int, argument string) string {
 	if phase == 1 {
 		phaseCheck = "response"
 	}
-	needsAsync := strings.Contains(rawJS, "$httpClient") || strings.Contains(rawJS, "$.http") ||
-		strings.Contains(rawJS, "$env.http") || strings.Contains(rawJS, "await ") ||
-		strings.Contains(rawJS, "async ") || strings.Contains(rawJS, "$done({response:")
-
 	upstreamB64 := base64.StdEncoding.EncodeToString([]byte(rawJS))
 	argumentLiteral := "{}"
 	if strings.TrimSpace(argument) != "" {
@@ -1371,12 +1367,7 @@ func BuildWrappedScript(rawJS string, phase int, argument string) string {
 		}
 	}
 
-	asyncKw := ""
-	if needsAsync {
-		asyncKw = "async "
-	}
-
-	wrapper := fmt.Sprintf(`%sfunction process(ctx) {
+	wrapper := fmt.Sprintf(`async function process(ctx) {
   if (ctx.phase !== "%s") return;
   var _requestTimers = [];
   globalThis._requestTimersStack = globalThis._requestTimersStack || [];
@@ -1640,7 +1631,7 @@ if (typeof globalThis.console !== 'undefined') {
   if (typeof globalThis.console.trace === 'undefined') globalThis.console.trace = function() { globalThis.console.warn('trace'); };
   if (typeof globalThis.console.table === 'undefined') globalThis.console.table = function(obj) { globalThis.console.info(JSON.stringify(obj)); };
 }
-`, asyncKw, phaseCheck, argumentLiteral, upstreamB64)
+`, phaseCheck, argumentLiteral, upstreamB64)
 
 	return wrapper
 }
