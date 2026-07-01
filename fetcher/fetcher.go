@@ -14,7 +14,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -299,28 +301,101 @@ func buildProxyURL(proxyPrefix, rawURL string) string {
 	return proxyPrefix + strings.TrimPrefix(rawURL, "https://")
 }
 
+func githubRawToJsDelivr(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "https" || strings.ToLower(u.Hostname()) != "raw.githubusercontent.com" {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 4 {
+		return ""
+	}
+	owner, repo, ref := parts[0], parts[1], parts[2]
+	pathStart := 3
+	if parts[2] == "refs" && len(parts) >= 6 && (parts[3] == "heads" || parts[3] == "tags") {
+		ref = parts[4]
+		pathStart = 5
+	}
+	filePath := strings.Join(parts[pathStart:], "/")
+	if owner == "" || repo == "" || ref == "" || filePath == "" {
+		return ""
+	}
+	query := ""
+	if u.RawQuery != "" {
+		query = "?" + u.RawQuery
+	}
+	return "https://cdn.jsdelivr.net/gh/" + owner + "/" + repo + "@" + ref + "/" + filePath + query
+}
+
+func validateRemoteURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("URL 无法解析: %q", rawURL)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("只允许 http/https URL: %q", rawURL)
+	}
+	host := strings.Trim(strings.ToLower(u.Hostname()), "[]")
+	if isBlockedFetchHost(host) {
+		return fmt.Errorf("不允许拉取 localhost、内网或链路本地地址: %s", host)
+	}
+	return nil
+}
+
+func isBlockedFetchHost(host string) bool {
+	if host == "" {
+		return true
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		addr, ok := netip.AddrFromSlice(ip)
+		if !ok {
+			return true
+		}
+		addr = addr.Unmap()
+		return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsMulticast() || addr.IsUnspecified()
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		addr = addr.Unmap()
+		return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsMulticast() || addr.IsUnspecified()
+	}
+	return false
+}
+
 // Fetch 加载资源内容。本地路径直接读，远程 URL 走 HTTP（GitHub 自动代理）。
 // 按文件名后缀选择 User-Agent：.plugin/.lpx 用 Loon UA，.sgmodule 用 Shadowrocket UA，.conf 用 QuantumultX UA。
 func (f *Fetcher) Fetch(ctx context.Context, path string) (string, error) {
+	return f.FetchWithLimit(ctx, path, 0)
+}
+
+// FetchWithLimit 加载资源内容，maxBytes > 0 时限制远程/本地读取大小。
+func (f *Fetcher) FetchWithLimit(ctx context.Context, path string, maxBytes int64) (string, error) {
 	if !IsRemote(path) {
-		b, err := os.ReadFile(path)
+		b, err := readLocalFileLimit(path, maxBytes)
 		if err != nil {
 			return "", fmt.Errorf("读取本地文件失败 %q: %w", path, err)
 		}
 		return string(b), nil
 	}
 	filename := filepath.Base(path)
-	return f.fetchRemoteWithProxy(ctx, path, filename)
+	return f.fetchRemoteWithProxyLimit(ctx, path, filename, maxBytes)
 }
 
 // FetchScript 下载脚本 JS。命中缓存则直接返回。
 // 若已设置 f.Source（解析阶段识别了模块来源），则按 source 选择 UA。
 // 否则按脚本 URL 路径后缀选择 UA。
 func (f *Fetcher) FetchScript(ctx context.Context, url string) (string, error) {
+	return f.FetchScriptWithLimit(ctx, url, 0)
+}
+
+// FetchScriptWithLimit 下载脚本 JS。命中缓存则直接返回；maxBytes > 0 时限制远程大小。
+func (f *Fetcher) FetchScriptWithLimit(ctx context.Context, url string, maxBytes int64) (string, error) {
 	if v, ok := f.cache.Get(url); ok {
 		return v, nil
 	}
-	src, err := f.fetchRemoteWithProxy(ctx, url, filepath.Base(url))
+	src, err := f.fetchRemoteWithProxyLimit(ctx, url, filepath.Base(url), maxBytes)
 	if err != nil {
 		return "", err
 	}
@@ -331,17 +406,24 @@ func (f *Fetcher) FetchScript(ctx context.Context, url string) (string, error) {
 // fetchRemoteWithProxy 通过 HTTP GET 拉取远程内容，对 GitHub URL 自动应用加速代理。
 // filename 用于按后缀选择 UA（仅在显式 UA 未设置时生效）。
 func (f *Fetcher) fetchRemoteWithProxy(ctx context.Context, url, filename string) (string, error) {
+	return f.fetchRemoteWithProxyLimit(ctx, url, filename, 0)
+}
+
+func (f *Fetcher) fetchRemoteWithProxyLimit(ctx context.Context, url, filename string, maxBytes int64) (string, error) {
+	if err := validateRemoteURL(url); err != nil {
+		return "", err
+	}
 	ua := f.resolveUserAgent(filename)
 	// 非 GitHub URL 直接请求
 	if !isGitHubURL(url) {
-		return f.fetchRemoteWithUA(ctx, url, ua)
+		return f.fetchRemoteWithUALimit(ctx, url, ua, maxBytes)
 	}
 
 	// GitHub URL：根据代理模式处理
 	switch f.Proxy.Mode {
 	case ProxyModeNone:
 		// 禁用代理，直连
-		return f.fetchRemoteWithUA(ctx, url, ua)
+		return f.fetchRemoteWithUALimit(ctx, url, ua, maxBytes)
 	case ProxyModeOnly:
 		// 仅使用代理，不回退
 		if len(f.Proxy.Proxies) == 0 {
@@ -349,7 +431,7 @@ func (f *Fetcher) fetchRemoteWithProxy(ctx context.Context, url, filename string
 		}
 		for _, proxy := range f.Proxy.Proxies {
 			proxyURL := buildProxyURL(proxy, url)
-			data, err := f.fetchRemoteWithUA(ctx, proxyURL, ua)
+			data, err := f.fetchRemoteWithUALimit(ctx, proxyURL, ua, maxBytes)
 			if err == nil {
 				return data, nil
 			}
@@ -360,7 +442,7 @@ func (f *Fetcher) fetchRemoteWithProxy(ctx context.Context, url, filename string
 		var lastErr error
 		for _, proxy := range f.Proxy.Proxies {
 			proxyURL := buildProxyURL(proxy, url)
-			data, err := f.fetchRemoteWithUA(ctx, proxyURL, ua)
+			data, err := f.fetchRemoteWithUALimit(ctx, proxyURL, ua, maxBytes)
 			if err == nil {
 				return data, nil
 			}
@@ -369,14 +451,21 @@ func (f *Fetcher) fetchRemoteWithProxy(ctx context.Context, url, filename string
 				break
 			}
 		}
+		if jsdelivr := githubRawToJsDelivr(url); jsdelivr != "" {
+			data, err := f.fetchRemoteWithUALimit(ctx, jsdelivr, ua, maxBytes)
+			if err == nil {
+				return data, nil
+			}
+			lastErr = err
+		}
 		// 所有代理失败，回退直连
-		data, err := f.fetchRemoteWithUA(ctx, url, ua)
+		data, err := f.fetchRemoteWithUALimit(ctx, url, ua, maxBytes)
 		if err == nil {
 			return data, nil
 		}
 		return "", fmt.Errorf("代理与直连均失败 (代理最后错误: %v, 直连错误: %w)", lastErr, err)
 	default:
-		return f.fetchRemoteWithUA(ctx, url, ua)
+		return f.fetchRemoteWithUALimit(ctx, url, ua, maxBytes)
 	}
 }
 
@@ -388,6 +477,13 @@ func (f *Fetcher) fetchRemote(ctx context.Context, url string) (string, error) {
 // fetchRemoteWithUA 通过 HTTP GET 拉取远程内容，使用指定 UA。
 // 自动处理 gzip 响应以减少传输量。
 func (f *Fetcher) fetchRemoteWithUA(ctx context.Context, url, ua string) (string, error) {
+	return f.fetchRemoteWithUALimit(ctx, url, ua, 0)
+}
+
+func (f *Fetcher) fetchRemoteWithUALimit(ctx context.Context, url, ua string, maxBytes int64) (string, error) {
+	if err := validateRemoteURL(url); err != nil {
+		return "", err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", fmt.Errorf("构造请求失败 %q: %w", url, err)
@@ -409,6 +505,9 @@ func (f *Fetcher) fetchRemoteWithUA(ctx context.Context, url, ua string) (string
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("远程资源 %q 返回非 2xx 状态码: %d", url, resp.StatusCode)
 	}
+	if maxBytes > 0 && resp.ContentLength > maxBytes {
+		return "", fmt.Errorf("远程资源 %q 超过大小限制 %d bytes", url, maxBytes)
+	}
 
 	// 自动解压 gzip 响应
 	var reader io.Reader = resp.Body
@@ -421,11 +520,38 @@ func (f *Fetcher) fetchRemoteWithUA(ctx context.Context, url, ua string) (string
 		reader = gz
 	}
 
-	body, err := io.ReadAll(reader)
+	body, err := readAllLimit(reader, maxBytes)
 	if err != nil {
 		return "", fmt.Errorf("读取远程响应失败 %q: %w", url, err)
 	}
 	return string(body), nil
+}
+
+func readLocalFileLimit(path string, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		return os.ReadFile(path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return readAllLimit(f, maxBytes)
+}
+
+func readAllLimit(r io.Reader, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		return io.ReadAll(r)
+	}
+	limited := io.LimitReader(r, maxBytes+1)
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, fmt.Errorf("内容超过大小限制 %d bytes", maxBytes)
+	}
+	return body, nil
 }
 
 // ResolveScriptPath 将 script-path 解析为可下载的 URL。

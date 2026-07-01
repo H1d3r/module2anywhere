@@ -11,11 +11,20 @@
 
 // ===================== 工具函数 =====================
 
+const inlineSectionHeaderRE = /\s+(\[(?:Rule|Rewrite|URL Rewrite|Header Rewrite|Map Local|Script|MitM|MITM|mitm|Argument|Host|General)\])\s*/g;
+const inlineMetadataRE = /\s+(#![A-Za-z0-9_-]+\s*=)/g;
+
+function normalizeInlineSections(content) {
+  return String(content || "")
+    .replace(inlineMetadataRE, "\n$1")
+    .replace(inlineSectionHeaderRE, "\n$1\n");
+}
+
 const splitSections = (content) => {
   const sections = [];
   let current = null;
   const bodyLines = [];
-  for (const raw of content.split("\n")) {
+  for (const raw of normalizeInlineSections(content).split("\n")) {
     const line = raw.replace(/\r$/, "");
     const trimmed = line.trim();
     if (trimmed === "") {
@@ -376,9 +385,57 @@ function proxyURLWithPrefix(proxyPrefix, rawURL) {
   return proxyPrefix + rawURL.replace(/^https:\/\//, "");
 }
 
+function githubRawToJsDelivr(rawURL) {
+  try {
+    var u = new URL(rawURL);
+    if (u.protocol !== "https:" || u.hostname !== "raw.githubusercontent.com") return "";
+    var parts = u.pathname.split("/").filter(Boolean);
+    if (parts.length < 4) return "";
+    var owner = parts[0];
+    var repo = parts[1];
+    var ref = parts[2];
+    var pathStart = 3;
+    if (parts[2] === "refs" && (parts[3] === "heads" || parts[3] === "tags") && parts[4]) {
+      ref = parts[4];
+      pathStart = 5;
+    }
+    var filePath = parts.slice(pathStart).join("/");
+    if (!owner || !repo || !ref || !filePath) return "";
+    return "https://cdn.jsdelivr.net/gh/" + owner + "/" + repo + "@" + ref + "/" + filePath + (u.search || "");
+  } catch (e) {
+    return "";
+  }
+}
+
+function isBlockedFetchHost(hostname) {
+  var host = String(hostname || "").replace(/^\[|\]$/g, "").toLowerCase();
+  if (!host) return true;
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return true;
+  var m = host.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (m) {
+    var a = Number(m[1]);
+    var b = Number(m[2]);
+    if (a === 0 || a === 10 || a === 127 || a >= 224) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+  }
+  if (host === "::1" || host === "::" || /^fe80:/i.test(host) || /^fc/i.test(host) || /^fd/i.test(host) || /^ff/i.test(host)) return true;
+  return false;
+}
+
+function validateFetchURL(rawURL) {
+  var u = new URL(rawURL);
+  if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("只允许 http/https URL: " + rawURL);
+  if (isBlockedFetchHost(u.hostname)) throw new Error("不允许拉取 localhost、内网或链路本地地址: " + u.hostname);
+  return u;
+}
+
 // fetchRaw 带超时（10 秒），避免代理卡死整个请求
 // 使用 Promise.race + setTimeout 实现超时
-async function fetchRaw(url, userAgent) {
+async function fetchRaw(url, userAgent, maxBytes) {
+  validateFetchURL(url);
   var ua = userAgent || DEFAULT_USER_AGENT;
   var fetchPromise = fetch(url, {
     headers: { "User-Agent": ua, Accept: "*/*" },
@@ -390,26 +447,46 @@ async function fetchRaw(url, userAgent) {
   });
   var resp = await Promise.race([fetchPromise, timeoutPromise]);
   if (!resp.ok) throw new Error("请求 " + url + " 返回状态码 " + resp.status);
-  return await resp.text();
+  var limit = Number(maxBytes || 0);
+  var contentLength = Number(resp.headers.get("content-length") || "0");
+  if (limit > 0 && contentLength > limit) throw new Error("远程资源超过大小限制 " + limit + " bytes: " + url);
+  var text = await resp.text();
+  if (limit > 0 && new TextEncoder().encode(text).length > limit) throw new Error("远程资源超过大小限制 " + limit + " bytes: " + url);
+  return text;
 }
 
-async function fetchRemoteWithProxy(url, userAgent) {
+async function fetchRemoteWithProxy(url, userAgent, maxBytes) {
+  validateFetchURL(url);
   var ua = userAgent || DEFAULT_USER_AGENT;
   // 非 GitHub URL 直接 fetch
-  if (!isGitHubURL(url)) return fetchRaw(url, ua);
+  if (!isGitHubURL(url)) return fetchRaw(url, ua, maxBytes);
   // 如果 URL 已经是代理 URL（用户手动加了代理前缀），直接 fetch
-  if (isProxyURL(url)) return fetchRaw(url, ua);
+  if (isProxyURL(url)) return fetchRaw(url, ua, maxBytes);
   // 原始 GitHub URL：依次尝试代理，最后 fallback 直连
+  var lastError = null;
   for (var i = 0; i < GITHUB_PROXIES.length; i++) {
     var proxyURL = proxyURLWithPrefix(GITHUB_PROXIES[i], url);
     try {
-      var data = await fetchRaw(proxyURL, ua);
+      var data = await fetchRaw(proxyURL, ua, maxBytes);
       if (data) return data;
     } catch (e) {
+      lastError = e;
       /* 代理失败，继续尝试下一个 */
     }
   }
-  return fetchRaw(url, ua);
+  var jsdelivr = githubRawToJsDelivr(url);
+  if (jsdelivr) {
+    try {
+      return await fetchRaw(jsdelivr, ua, maxBytes);
+    } catch (e) {
+      lastError = e;
+    }
+  }
+  try {
+    return await fetchRaw(url, ua, maxBytes);
+  } catch (e) {
+    throw lastError || e;
+  }
 }
 
 function isRemote(path) {
@@ -449,13 +526,14 @@ function scriptCacheKey(
   ].join("|");
 }
 
-function scriptLoaderURL(baseURL, scriptPath, moduleBaseURL, phase, wrap, argument) {
+function scriptLoaderURL(baseURL, scriptPath, moduleBaseURL, phase, wrap, argument, maxScriptBytes) {
   const u = new URL(baseURL);
   u.searchParams.set("script", scriptPath || "");
   if (moduleBaseURL) u.searchParams.set("base", moduleBaseURL);
   u.searchParams.set("phase", String(phase || 0));
   if (wrap) u.searchParams.set("wrap", "true");
   if (String(argument || "").trim()) u.searchParams.set("argument", String(argument || ""));
+  if (maxScriptBytes > 0) u.searchParams.set("maxScriptBytes", String(maxScriptBytes));
   return u.toString();
 }
 
@@ -522,6 +600,7 @@ async function fetchAndEncodeScript(
   userAgent,
   wrap,
   argument,
+  maxScriptBytes,
 ) {
   const finalSrc = await fetchAndRewriteScript(
     scriptPath,
@@ -531,6 +610,7 @@ async function fetchAndEncodeScript(
     userAgent,
     wrap,
     argument,
+    maxScriptBytes,
   );
   return btoa(unescape(encodeURIComponent(finalSrc)));
 }
@@ -543,6 +623,7 @@ async function fetchAndRewriteScript(
   userAgent,
   wrap,
   argument,
+  maxScriptBytes,
 ) {
   const cacheKey = scriptCacheKey(
     scriptPath,
@@ -563,7 +644,7 @@ async function fetchAndRewriteScript(
     return placeholder;
   }
   try {
-    const src = await fetchRemoteWithProxy(scriptPath, userAgent);
+    const src = await fetchRemoteWithProxy(scriptPath, userAgent, maxScriptBytes);
     // 检测上游 script-path 误用 .conf/.plugin/.sgmodule 等非 JS 文件
     // 这些文件是 QuantumultX/Loon/Surge 模块配置，不是 JS 脚本，直接执行会导致语法错误
     if (isLikelyNonJSScript(scriptPath, src)) {
@@ -3371,6 +3452,8 @@ function defaultConvertOptions() {
     preserveParameters: false,
     scriptMode: "inline",
     scriptBaseURL: "",
+    maxScriptBytes: 1024 * 1024,
+    maxScriptFetches: 45,
   };
 }
 
@@ -3779,6 +3862,65 @@ function parseStatusCode(raw) {
   return n;
 }
 
+function scriptMergeKey(s) {
+  return JSON.stringify([
+    s.phase || 0,
+    s.scriptPath || "",
+    s.argument || "",
+    !!s.requiresBody,
+    !!s.binaryBody,
+    s.maxSize || 0,
+    s.engine || "",
+  ]);
+}
+
+function unionAMRSPattern(patterns) {
+  const seen = {};
+  const uniq = [];
+  for (const pattern of patterns || []) {
+    if (seen[pattern]) continue;
+    seen[pattern] = true;
+    uniq.push(pattern);
+  }
+  if (uniq.length === 0) return "";
+  if (uniq.length === 1) return uniq[0];
+  return uniq.map((pattern) => "(?:" + pattern + ")").join("|");
+}
+
+function mergeScriptRulesForConversion(scripts, opts, report) {
+  const tasks = [];
+  const byKey = {};
+  for (let i = 0; i < scripts.length; i++) {
+    const s = scripts[i];
+    const pattern = convertURLPattern(s.pattern, opts && opts.generalizeHost);
+    if (!s.scriptPath) {
+      tasks.push({ index: i, s: s, pattern: pattern, count: 1, patterns: [pattern] });
+      continue;
+    }
+    const key = scriptMergeKey(s);
+    if (Object.prototype.hasOwnProperty.call(byKey, key)) {
+      const task = tasks[byKey[key]];
+      task.patterns.push(pattern);
+      task.pattern = unionAMRSPattern(task.patterns);
+      task.count++;
+      continue;
+    }
+    byKey[key] = tasks.length;
+    tasks.push({ index: i, s: s, pattern: pattern, count: 1, patterns: [pattern] });
+  }
+  let mergedRules = 0;
+  for (const task of tasks) {
+    if (task.count > 1) {
+      mergedRules += task.count - 1;
+      report.warnings.push(`同 phase/script-path/argument 的 ${task.count} 条脚本规则已合并为 1 条 URL union 规则: ${task.s.scriptPath}`);
+    }
+  }
+  if (mergedRules > 0) {
+    report.warnings.push(`脚本规则合并减少了 ${mergedRules} 条重复脚本上下文`);
+  }
+  return tasks;
+}
+
 async function convertScriptRules(m, opts, report, source) {
   const userAgent = getUserAgent(source);
   // 与 Go 侧 Concurrency 默认值（8）对齐，限制并发下载数
@@ -3797,25 +3939,42 @@ async function convertScriptRules(m, opts, report, source) {
     const count = pathCounts[path];
     if (count > 1) {
       dupTotal += count;
-      report.warnings.push(`脚本 ${path} 被 ${count} 条规则引用（运行时将创建 ${count} 个独立脚本上下文，建议审查模块是否可精简）`);
+      report.warnings.push(`脚本 ${path} 被 ${count} 条原始规则引用，转换器会尝试合并同 phase/script-path/argument 的规则`);
     }
   }
   if (dupTotal > 0) {
-    report.warnings.push(`共 ${dupTotal} 条规则引用了重复的 script-path，输出文件大小和运行时内存均被放大`);
+    report.warnings.push(`共 ${dupTotal} 条原始规则引用了重复的 script-path，若 phase/argument 等选项不同仍会保留独立脚本上下文`);
+  }
+  const maxScriptBytes = opts && opts.maxScriptBytes > 0 ? opts.maxScriptBytes : 1024 * 1024;
+  const maxScriptFetches = opts && opts.maxScriptFetches > 0 ? opts.maxScriptFetches : 45;
+  const scriptBudgetSkipped = {};
+  const seenScriptPaths = {};
+  let uniqueScriptCount = 0;
+  for (const s of scripts) {
+    if (!s.scriptPath || seenScriptPaths[s.scriptPath]) continue;
+    seenScriptPaths[s.scriptPath] = true;
+    if (uniqueScriptCount >= maxScriptFetches) {
+      const msg = `脚本下载数量超过上限 ${maxScriptFetches}，已跳过: ${s.scriptPath}`;
+      scriptBudgetSkipped[s.scriptPath] = msg;
+      report.scriptErr.push(msg);
+    }
+    uniqueScriptCount++;
   }
 
-  // 预计算每条脚本的 pattern 与有效性，保留原索引以按序输出
-  // results 按 scripts 原长度分配，skipped 的位置保持 undefined
-  const results = new Array(scripts.length);
+  const tasks = mergeScriptRulesForConversion(scripts, opts, report);
+
+  // 预计算每条脚本的 pattern 与有效性，保留合并后首条规则的输出顺序
+  // results 按 tasks 长度分配，skipped 的位置保持 undefined
+  const results = new Array(tasks.length);
   const queue = [];
-  for (let i = 0; i < scripts.length; i++) {
-    const s = scripts[i];
-    const pattern = convertURLPattern(s.pattern, opts.generalizeHost);
+  for (let i = 0; i < tasks.length; i++) {
+    const task = tasks[i];
+    const s = task.s;
     if (!s.scriptPath) {
       report.skipped.push(`脚本无 script-path: ${s.raw}`);
       continue;
     }
-    queue.push({ index: i, s: s, pattern: pattern });
+    queue.push({ index: i, s: s, pattern: task.pattern });
   }
 
   // 简单 worker 池：从队列拉取任务执行，限制并发下载数
@@ -3824,6 +3983,16 @@ async function convertScriptRules(m, opts, report, source) {
       const t = queue.shift();
       try {
         let b64;
+        if (scriptBudgetSkipped[t.s.scriptPath]) {
+          const placeholder =
+            'function process(ctx){Anywhere.log.warning("script not fetched: " + ' +
+            JSON.stringify(String(t.s.scriptPath)) +
+            ");}";
+          b64 = btoa(unescape(encodeURIComponent(placeholder)));
+          const op = opts.useStreamScript ? "101" : "100";
+          results[t.index] = `${t.s.phase}, ${op}, ${t.pattern}, ${b64}`;
+          continue;
+        }
         if (String(opts.scriptMode || "").toLowerCase() === "loader" && opts.scriptBaseURL && !opts.useStreamScript) {
           const loaderURL = scriptLoaderURL(
             opts.scriptBaseURL,
@@ -3832,6 +4001,7 @@ async function convertScriptRules(m, opts, report, source) {
             t.s.phase,
             opts.wrapScripts,
             t.s.argument || "",
+            maxScriptBytes,
           );
           b64 = encodeLoaderScript(loaderURL);
         } else {
@@ -3844,6 +4014,7 @@ async function convertScriptRules(m, opts, report, source) {
             userAgent,
             opts.wrapScripts,
             t.s.argument || "",
+            maxScriptBytes,
           );
         }
         const op = opts.useStreamScript ? "101" : "100";
@@ -4116,17 +4287,22 @@ function normalizeScriptMode(value) {
   return String(value || "").toLowerCase().trim() === "loader" ? "loader" : "inline";
 }
 
-function cacheKey(url, name, fetchScripts, generalize, preserveParameters, args, scriptMode, wrapScripts) {
+function cacheKey(url, name, fetchScripts, generalize, preserveParameters, args, scriptMode, wrapScripts, maxInputBytes, maxScriptBytes, maxScriptFetches) {
   const parts = [];
   const source = args || {};
   for (const key of Object.keys(source).sort()) {
     parts.push(key + "=" + source[key]);
   }
-  return url + "|" + name + "|" + fetchScripts + "|" + generalize + "|" + !!preserveParameters + "|" + !!wrapScripts + "|" + normalizeScriptMode(scriptMode) + "|" + parts.join("&");
+  return url + "|" + name + "|" + fetchScripts + "|" + generalize + "|" + !!preserveParameters + "|" + !!wrapScripts + "|" + normalizeScriptMode(scriptMode) + "|" + Number(maxInputBytes || 0) + "|" + Number(maxScriptBytes || 0) + "|" + Number(maxScriptFetches || 0) + "|" + parts.join("&");
 }
 
 function truthyInput(value) {
   return /^(?:1|true|yes|on)$/i.test(String(value || "").trim());
+}
+
+function positiveIntInput(value, fallback) {
+  const n = parseInt(String(value || "").trim(), 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
 function queryArguments(query) {
@@ -4158,6 +4334,7 @@ const lib = {
   cacheKey,
   truthyInput,
   normalizeScriptMode,
+  positiveIntInput,
   queryArguments,
   fetchAndRewriteScript,
 };
@@ -4259,6 +4436,7 @@ export {
   cacheKey,
   normalizeScriptMode,
   truthyInput,
+  positiveIntInput,
   queryArguments,
   // 也导出 lib 对象本身，方便端点文件使用 lib.xxx 形式
   lib,

@@ -82,8 +82,8 @@ func EncodeLoaderScript(scriptURL string) string {
 // scriptPath 可以是 URL 或本地路径。baseURL 用于解析相对路径。
 // 若 fetchScripts=false，返回占位符 base64。
 // 若 useStreamScript=true，将改写后的脚本再包装为 stream-script (op 101) 形式。
-func FetchAndEncodeScript(ctx context.Context, f *fetcher.Fetcher, scriptPath, baseURL string, fetchScripts bool, phase int, useStreamScript bool, wrapScript bool, argument string) (string, error) {
-	source, err := FetchAndRewriteScript(ctx, f, scriptPath, baseURL, fetchScripts, phase, useStreamScript, wrapScript, argument)
+func FetchAndEncodeScript(ctx context.Context, f *fetcher.Fetcher, scriptPath, baseURL string, fetchScripts bool, phase int, useStreamScript bool, wrapScript bool, argument string, maxScriptBytes int64) (string, error) {
+	source, err := FetchAndRewriteScript(ctx, f, scriptPath, baseURL, fetchScripts, phase, useStreamScript, wrapScript, argument, maxScriptBytes)
 	if err != nil {
 		return "", err
 	}
@@ -91,7 +91,7 @@ func FetchAndEncodeScript(ctx context.Context, f *fetcher.Fetcher, scriptPath, b
 }
 
 // FetchAndRewriteScript 下载脚本并返回适配 Anywhere 的 JS 源码（未 base64）。
-func FetchAndRewriteScript(ctx context.Context, f *fetcher.Fetcher, scriptPath, baseURL string, fetchScripts bool, phase int, useStreamScript bool, wrapScript bool, argument string) (string, error) {
+func FetchAndRewriteScript(ctx context.Context, f *fetcher.Fetcher, scriptPath, baseURL string, fetchScripts bool, phase int, useStreamScript bool, wrapScript bool, argument string, maxScriptBytes int64) (string, error) {
 	cacheKey := resolvedScriptCacheKey(scriptPath, baseURL, phase, useStreamScript, wrapScript, fetchScripts, argument)
 	if cached, ok := getScriptCache(cacheKey); ok {
 		return cached, nil
@@ -112,7 +112,7 @@ func FetchAndRewriteScript(ctx context.Context, f *fetcher.Fetcher, scriptPath, 
 	if f == nil {
 		return "", fmt.Errorf("fetcher 未初始化")
 	}
-	src, err := f.FetchScript(ctx, resolved)
+	src, err := f.FetchScriptWithLimit(ctx, resolved, maxScriptBytes)
 	if err != nil {
 		return "", fmt.Errorf("下载脚本失败 %q: %w", resolved, err)
 	}

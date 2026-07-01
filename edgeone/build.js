@@ -82,13 +82,16 @@ export async function onRequest(context) {
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
   const wrapScripts = query.wrap === 'true';
+  const maxInputBytes = lib.positiveIntInput(query.maxInputBytes, 512 * 1024);
+  const maxScriptBytes = lib.positiveIntInput(query.maxScriptBytes, 1024 * 1024);
+  const maxScriptFetches = lib.positiveIntInput(query.maxScriptFetches, 45);
   const preserveParameters = lib.truthyInput(query.preserveParameters || query.preserveArguments);
   const scriptMode = lib.normalizeScriptMode(query.scriptMode);
   const argumentsMap = lib.queryArguments(query);
   const initialUA = lib.getUserAgent(sourceHint);
 
   // 检查缓存
-  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts);
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts, maxInputBytes, maxScriptBytes, maxScriptFetches);
   var cached = lib.cacheGet(ck + ':amrs');
   if (cached.hit) {
     return new Response(cached.value, {
@@ -122,7 +125,7 @@ export async function onRequest(context) {
   for (const inputURL of inputURLs) {
     let content;
     try {
-      content = await lib.fetchRemoteWithProxy(inputURL, initialUA);
+      content = await lib.fetchRemoteWithProxy(inputURL, initialUA, maxInputBytes);
     } catch (e) {
       return new Response(\`Error: Failed to fetch remote file: \${e.message || e}\`, {
         status: 500,
@@ -148,6 +151,8 @@ export async function onRequest(context) {
       preserveParameters: preserveParameters,
       scriptMode: scriptMode,
       scriptBaseURL: url.origin + '/script.js',
+      maxScriptBytes: maxScriptBytes,
+      maxScriptFetches: maxScriptFetches,
     };
 
     try {
@@ -226,13 +231,16 @@ export async function onRequest(context) {
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
   const wrapScripts = query.wrap === 'true';
+  const maxInputBytes = lib.positiveIntInput(query.maxInputBytes, 512 * 1024);
+  const maxScriptBytes = lib.positiveIntInput(query.maxScriptBytes, 1024 * 1024);
+  const maxScriptFetches = lib.positiveIntInput(query.maxScriptFetches, 45);
   const preserveParameters = lib.truthyInput(query.preserveParameters || query.preserveArguments);
   const scriptMode = lib.normalizeScriptMode(query.scriptMode);
   const argumentsMap = lib.queryArguments(query);
   const initialUA = lib.getUserAgent(sourceHint);
 
   // 检查缓存
-  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts);
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts, maxInputBytes, maxScriptBytes, maxScriptFetches);
   var cached = lib.cacheGet(ck + ':arrs');
   if (cached.hit) {
     return new Response(cached.value, {
@@ -266,7 +274,7 @@ export async function onRequest(context) {
   for (const inputURL of inputURLs) {
     let content;
     try {
-      content = await lib.fetchRemoteWithProxy(inputURL, initialUA);
+      content = await lib.fetchRemoteWithProxy(inputURL, initialUA, maxInputBytes);
     } catch (e) {
       return new Response(\`Error: Failed to fetch remote file: \${e.message || e}\`, {
         status: 500,
@@ -292,6 +300,8 @@ export async function onRequest(context) {
       preserveParameters: preserveParameters,
       scriptMode: scriptMode,
       scriptBaseURL: url.origin + '/script.js',
+      maxScriptBytes: maxScriptBytes,
+      maxScriptFetches: maxScriptFetches,
     };
 
     try {
@@ -370,13 +380,16 @@ export async function onRequest(context) {
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
   const wrapScripts = query.wrap === 'true';
+  const maxInputBytes = lib.positiveIntInput(query.maxInputBytes, 512 * 1024);
+  const maxScriptBytes = lib.positiveIntInput(query.maxScriptBytes, 1024 * 1024);
+  const maxScriptFetches = lib.positiveIntInput(query.maxScriptFetches, 45);
   const preserveParameters = lib.truthyInput(query.preserveParameters || query.preserveArguments);
   const scriptMode = lib.normalizeScriptMode(query.scriptMode);
   const argumentsMap = lib.queryArguments(query);
   const initialUA = lib.getUserAgent(sourceHint);
 
   // 检查缓存
-  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts);
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts, maxInputBytes, maxScriptBytes, maxScriptFetches);
   var cached = lib.cacheGet(ck + ':amrs');
   if (cached.hit) {
     return new Response(cached.value, {
@@ -408,7 +421,7 @@ export async function onRequest(context) {
   for (const inputURL of inputURLs) {
     let content;
     try {
-      content = await lib.fetchRemoteWithProxy(inputURL, initialUA);
+      content = await lib.fetchRemoteWithProxy(inputURL, initialUA, maxInputBytes);
     } catch (e) {
       return new Response(\`Error: Failed to fetch remote file: \${e.message || e}\`, {
         status: 500,
@@ -434,6 +447,8 @@ export async function onRequest(context) {
       preserveParameters: preserveParameters,
       scriptMode: scriptMode,
       scriptBaseURL: url.origin + '/script.js',
+      maxScriptBytes: maxScriptBytes,
+      maxScriptFetches: maxScriptFetches,
     };
 
     try {
@@ -512,13 +527,16 @@ export async function onRequest(context) {
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
   const wrapScripts = query.wrap === 'true';
+  const maxInputBytes = lib.positiveIntInput(query.maxInputBytes, 512 * 1024);
+  const maxScriptBytes = lib.positiveIntInput(query.maxScriptBytes, 1024 * 1024);
+  const maxScriptFetches = lib.positiveIntInput(query.maxScriptFetches, 45);
   const preserveParameters = lib.truthyInput(query.preserveParameters || query.preserveArguments);
   const scriptMode = lib.normalizeScriptMode(query.scriptMode);
   const argumentsMap = lib.queryArguments(query);
   const initialUA = lib.getUserAgent(sourceHint);
 
   // 检查缓存
-  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts);
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts, maxInputBytes, maxScriptBytes, maxScriptFetches);
   var cached = lib.cacheGet(ck + ':rule');
   if (cached.hit) {
     return new Response(cached.value, {
@@ -549,7 +567,7 @@ export async function onRequest(context) {
   for (const inputURL of inputURLs) {
     let content;
     try {
-      content = await lib.fetchRemoteWithProxy(inputURL, initialUA);
+      content = await lib.fetchRemoteWithProxy(inputURL, initialUA, maxInputBytes);
     } catch (e) {
       return new Response(\`Error: Failed to fetch remote file: \${e.message || e}\`, {
         status: 500,
@@ -575,6 +593,8 @@ export async function onRequest(context) {
       preserveParameters: preserveParameters,
       scriptMode: scriptMode,
       scriptBaseURL: url.origin + '/script.js',
+      maxScriptBytes: maxScriptBytes,
+      maxScriptFetches: maxScriptFetches,
     };
 
     try {
@@ -663,13 +683,16 @@ export async function onRequest(context) {
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
   const wrapScripts = query.wrap === 'true';
+  const maxInputBytes = lib.positiveIntInput(query.maxInputBytes, 512 * 1024);
+  const maxScriptBytes = lib.positiveIntInput(query.maxScriptBytes, 1024 * 1024);
+  const maxScriptFetches = lib.positiveIntInput(query.maxScriptFetches, 45);
   const preserveParameters = lib.truthyInput(query.preserveParameters || query.preserveArguments);
   const scriptMode = lib.normalizeScriptMode(query.scriptMode);
   const argumentsMap = lib.queryArguments(query);
   const initialUA = lib.getUserAgent(sourceHint);
 
   // 检查缓存
-  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts);
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts, maxInputBytes, maxScriptBytes, maxScriptFetches);
   var cached = lib.cacheGet(ck + ':direct');
   if (cached.hit) {
     return new Response(cached.value, {
@@ -700,7 +723,7 @@ export async function onRequest(context) {
   for (const inputURL of inputURLs) {
     let content;
     try {
-      content = await lib.fetchRemoteWithProxy(inputURL, initialUA);
+      content = await lib.fetchRemoteWithProxy(inputURL, initialUA, maxInputBytes);
     } catch (e) {
       return new Response(\`Error: Failed to fetch remote file: \${e.message || e}\`, {
         status: 500,
@@ -726,6 +749,8 @@ export async function onRequest(context) {
       preserveParameters: preserveParameters,
       scriptMode: scriptMode,
       scriptBaseURL: url.origin + '/script.js',
+      maxScriptBytes: maxScriptBytes,
+      maxScriptFetches: maxScriptFetches,
     };
 
     try {
@@ -812,13 +837,16 @@ export async function onRequest(context) {
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
   const wrapScripts = query.wrap === 'true';
+  const maxInputBytes = lib.positiveIntInput(query.maxInputBytes, 512 * 1024);
+  const maxScriptBytes = lib.positiveIntInput(query.maxScriptBytes, 1024 * 1024);
+  const maxScriptFetches = lib.positiveIntInput(query.maxScriptFetches, 45);
   const preserveParameters = lib.truthyInput(query.preserveParameters || query.preserveArguments);
   const scriptMode = lib.normalizeScriptMode(query.scriptMode);
   const argumentsMap = lib.queryArguments(query);
   const initialUA = lib.getUserAgent(sourceHint);
 
   // 检查缓存
-  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts);
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts, maxInputBytes, maxScriptBytes, maxScriptFetches);
   var cached = lib.cacheGet(ck + ':reject');
   if (cached.hit) {
     return new Response(cached.value, {
@@ -849,7 +877,7 @@ export async function onRequest(context) {
   for (const inputURL of inputURLs) {
     let content;
     try {
-      content = await lib.fetchRemoteWithProxy(inputURL, initialUA);
+      content = await lib.fetchRemoteWithProxy(inputURL, initialUA, maxInputBytes);
     } catch (e) {
       return new Response(\`Error: Failed to fetch remote file: \${e.message || e}\`, {
         status: 500,
@@ -875,6 +903,8 @@ export async function onRequest(context) {
       preserveParameters: preserveParameters,
       scriptMode: scriptMode,
       scriptBaseURL: url.origin + '/script.js',
+      maxScriptBytes: maxScriptBytes,
+      maxScriptFetches: maxScriptFetches,
     };
 
     try {
@@ -979,13 +1009,16 @@ export async function onRequest(context) {
   const generalize = query.generalize === 'true';
   const sourceHint = query.source || '';
   const wrapScripts = query.wrap === 'true';
+  const maxInputBytes = lib.positiveIntInput(query.maxInputBytes, 512 * 1024);
+  const maxScriptBytes = lib.positiveIntInput(query.maxScriptBytes, 1024 * 1024);
+  const maxScriptFetches = lib.positiveIntInput(query.maxScriptFetches, 45);
   const preserveParameters = lib.truthyInput(query.preserveParameters || query.preserveArguments);
   const scriptMode = lib.normalizeScriptMode(query.scriptMode);
   const argumentsMap = lib.queryArguments(query);
   const initialUA = lib.getUserAgent(sourceHint);
 
   // 检查缓存
-  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts);
+  var ck = lib.cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, argumentsMap, scriptMode, wrapScripts, maxInputBytes, maxScriptBytes, maxScriptFetches);
   var cached = lib.cacheGet(ck + ':' + format);
   if (cached.hit) {
     return new Response(cached.value, {
@@ -1019,7 +1052,7 @@ export async function onRequest(context) {
   for (const inputURL of inputURLs) {
     let content;
     try {
-      content = await lib.fetchRemoteWithProxy(inputURL, initialUA);
+      content = await lib.fetchRemoteWithProxy(inputURL, initialUA, maxInputBytes);
     } catch (e) {
       return new Response(\`Error: Failed to fetch remote file: \${e.message || e}\`, {
         status: 500,
@@ -1045,6 +1078,8 @@ export async function onRequest(context) {
       preserveParameters: preserveParameters,
       scriptMode: scriptMode,
       scriptBaseURL: url.origin + '/script.js',
+      maxScriptBytes: maxScriptBytes,
+      maxScriptFetches: maxScriptFetches,
     };
 
     try {
@@ -1111,12 +1146,13 @@ export async function onRequest(context) {
   const phase = query.phase === '1' ? 1 : 0;
   const wrap = query.wrap === 'true';
   const argument = query.argument || '';
+  const maxScriptBytes = lib.positiveIntInput(query.maxScriptBytes, 1024 * 1024);
   const baseURL = query.base || '';
   const resolved = lib.resolveScriptPath(rawScript, baseURL);
   const userAgent = lib.getUserAgent(baseURL);
 
   try {
-    const source = await lib.fetchAndRewriteScript(resolved, true, phase, false, userAgent, wrap, argument);
+    const source = await lib.fetchAndRewriteScript(resolved, true, phase, false, userAgent, wrap, argument, maxScriptBytes);
     return new Response(source, {
       status: 200,
       headers: {
@@ -1180,6 +1216,9 @@ export async function onRequest(context) {
   var wrapScripts = query.wrap === 'true';
   var sourceHint = query.source || '';
   var format = (query.format || '').toLowerCase().trim();
+  var maxInputBytes = lib.positiveIntInput(query.maxInputBytes, 512 * 1024);
+  var maxScriptBytes = lib.positiveIntInput(query.maxScriptBytes, 1024 * 1024);
+  var maxScriptFetches = lib.positiveIntInput(query.maxScriptFetches, 45);
   var preserveParameters = lib.truthyInput(query.preserveParameters || query.preserveArguments);
   var scriptMode = lib.normalizeScriptMode(query.scriptMode);
   var argumentsMap = lib.queryArguments(query);
@@ -1211,7 +1250,7 @@ export async function onRequest(context) {
     var inputURL = inputURLs[idx];
     var content;
     try {
-      content = await lib.fetchRemoteWithProxy(inputURL, initialUA);
+      content = await lib.fetchRemoteWithProxy(inputURL, initialUA, maxInputBytes);
     } catch (e) {
       return new Response('Error: Failed to fetch remote file: ' + (e.message || e), {
         status: 500,
@@ -1236,6 +1275,8 @@ export async function onRequest(context) {
       preserveParameters: preserveParameters,
       scriptMode: scriptMode,
       scriptBaseURL: url.origin + '/script.js',
+      maxScriptBytes: maxScriptBytes,
+      maxScriptFetches: maxScriptFetches,
     };
 
     try {
@@ -1264,6 +1305,9 @@ export async function onRequest(context) {
   var linkParams = 'url=' + encodeURIComponent(decodedURL) + '&fetch=' + fetchScripts + '&generalize=' + generalize;
   if (preserveParameters) linkParams += '&preserveParameters=true';
   if (scriptMode === 'loader') linkParams += '&scriptMode=loader';
+  if (maxInputBytes !== 512 * 1024) linkParams += '&maxInputBytes=' + encodeURIComponent(maxInputBytes);
+  if (maxScriptBytes !== 1024 * 1024) linkParams += '&maxScriptBytes=' + encodeURIComponent(maxScriptBytes);
+  if (maxScriptFetches !== 45) linkParams += '&maxScriptFetches=' + encodeURIComponent(maxScriptFetches);
   for (var ak in argumentsMap) {
     if (Object.prototype.hasOwnProperty.call(argumentsMap, ak)) {
       linkParams += '&argument.' + encodeURIComponent(ak) + '=' + encodeURIComponent(argumentsMap[ak]);

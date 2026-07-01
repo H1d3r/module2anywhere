@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,6 +41,9 @@ type Config struct {
 	ProxyRetry         bool
 	Concurrency        int
 	ScriptTimeoutSec   int
+	MaxInputBytes      int64
+	MaxScriptBytes     int64
+	MaxScriptFetches   int
 	PreserveParameters bool
 }
 
@@ -102,7 +106,11 @@ func (s *Server) handleScript(w http.ResponseWriter, r *http.Request) {
 	baseURL := r.URL.Query().Get("base")
 	wrap := r.URL.Query().Get("wrap") == "true"
 	argument := r.URL.Query().Get("argument")
-	source, err := converter.FetchAndRewriteScript(ctx, f, rawScript, baseURL, true, phase, false, wrap, argument)
+	maxScriptBytes := int64Query(r.URL.Query().Get("maxScriptBytes"), s.cfg.MaxScriptBytes)
+	if maxScriptBytes <= 0 {
+		maxScriptBytes = 1024 * 1024
+	}
+	source, err := converter.FetchAndRewriteScript(ctx, f, rawScript, baseURL, true, phase, false, wrap, argument, maxScriptBytes)
 	if err != nil {
 		http.Error(w, "Error: "+err.Error(), http.StatusBadRequest)
 		return
@@ -290,9 +298,21 @@ func (s *Server) convertAll(r *http.Request) (*converter.Result, error) {
 	preserveParameters := s.cfg.PreserveParameters || truthyQuery(r.URL.Query().Get("preserveParameters")) || truthyQuery(r.URL.Query().Get("preserveArguments"))
 	arguments := argumentsFromQuery(r.URL.Query())
 	scriptMode := normalizeScriptMode(r.URL.Query().Get("scriptMode"))
+	maxInputBytes := int64Query(r.URL.Query().Get("maxInputBytes"), s.cfg.MaxInputBytes)
+	if maxInputBytes <= 0 {
+		maxInputBytes = 512 * 1024
+	}
+	maxScriptBytes := int64Query(r.URL.Query().Get("maxScriptBytes"), s.cfg.MaxScriptBytes)
+	if maxScriptBytes <= 0 {
+		maxScriptBytes = 1024 * 1024
+	}
+	maxScriptFetches := intQuery(r.URL.Query().Get("maxScriptFetches"), s.cfg.MaxScriptFetches)
+	if maxScriptFetches <= 0 {
+		maxScriptFetches = 45
+	}
 
 	// 检查缓存
-	ck := cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, wrapScripts, scriptMode, arguments)
+	ck := cacheKey(decodedURL, name, fetchScripts, generalize, preserveParameters, wrapScripts, scriptMode, maxInputBytes, maxScriptBytes, maxScriptFetches, arguments)
 	if cached, ok := s.cache.Get(ck); ok {
 		var res converter.Result
 		if err := res.UnmarshalBinary([]byte(cached)); err == nil {
@@ -316,7 +336,7 @@ func (s *Server) convertAll(r *http.Request) (*converter.Result, error) {
 	type modRes = serverModRes
 	results := make([]modRes, 0, len(inputs))
 	for _, in := range inputs {
-		content, err := f.Fetch(ctx, in)
+		content, err := f.FetchWithLimit(ctx, in, maxInputBytes)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch remote file: %w", err)
 		}
@@ -344,6 +364,8 @@ func (s *Server) convertAll(r *http.Request) (*converter.Result, error) {
 			AutoContentType:    s.cfg.AutoContentType,
 			Concurrency:        s.cfg.Concurrency,
 			ScriptTimeoutSec:   s.cfg.ScriptTimeoutSec,
+			MaxScriptBytes:     maxScriptBytes,
+			MaxScriptFetches:   maxScriptFetches,
 			PreserveParameters: preserveParameters,
 			Arguments:          arguments,
 			ScriptMode:         scriptMode,
@@ -604,11 +626,33 @@ func normalizeScriptMode(value string) string {
 	return "inline"
 }
 
-func cacheKey(decodedURL, name string, fetchScripts, generalize, preserveParameters, wrapScripts bool, scriptMode string, arguments map[string]string) string {
+func cacheKey(decodedURL, name string, fetchScripts, generalize, preserveParameters, wrapScripts bool, scriptMode string, maxInputBytes, maxScriptBytes int64, maxScriptFetches int, arguments map[string]string) string {
 	var argParts []string
 	for key, value := range arguments {
 		argParts = append(argParts, key+"="+value)
 	}
 	sort.Strings(argParts)
-	return fmt.Sprintf("%s|%s|%v|%v|%v|%v|%s|%s", decodedURL, name, fetchScripts, generalize, preserveParameters, wrapScripts, scriptMode, strings.Join(argParts, "&"))
+	return fmt.Sprintf("%s|%s|%v|%v|%v|%v|%s|%d|%d|%d|%s", decodedURL, name, fetchScripts, generalize, preserveParameters, wrapScripts, scriptMode, maxInputBytes, maxScriptBytes, maxScriptFetches, strings.Join(argParts, "&"))
+}
+
+func int64Query(value string, fallback int64) int64 {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+func intQuery(value string, fallback int) int {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return fallback
+	}
+	return n
 }

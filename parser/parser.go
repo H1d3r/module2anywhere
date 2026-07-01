@@ -11,10 +11,14 @@ package parser
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/H1d3r/module2anywhere/ir"
 )
+
+var inlineSectionHeaderRE = regexp.MustCompile(`\s+(\[(?:Rule|Rewrite|URL Rewrite|Header Rewrite|Map Local|Script|MitM|MITM|mitm|Argument|Host|General)\])\s*`)
+var inlineMetadataRE = regexp.MustCompile(`\s+(#![A-Za-z0-9_-]+\s*=)`)
 
 // Parse 根据来源格式分派解析器。source 决定使用 Loon/Surge/QuantumultX 语法。
 func Parse(content string, source ir.Source) (*ir.Module, error) {
@@ -145,7 +149,7 @@ func splitSections(content string) []section {
 	var current section
 	var bodyLines []string
 
-	lines := strings.Split(content, "\n")
+	lines := strings.Split(normalizeInlineSections(content), "\n")
 	for _, raw := range lines {
 		line := strings.TrimRight(raw, "\r")
 		trimmed := strings.TrimSpace(line)
@@ -186,6 +190,18 @@ func splitSections(content string) []section {
 		sections = append(sections, current)
 	}
 	return sections
+}
+
+// normalizeInlineSections 兼容被压成单行的模块文件。
+// 例如部分 Loon plugin 会形如：
+//
+//	#!name=... [Script] http-response ... [MITM] hostname=...
+//
+// 标准解析器只识别独立一行的段头，因此这里仅对已知模块段头插入换行，
+// 避免误伤 URL 正则中普通的字符类方括号。
+func normalizeInlineSections(content string) string {
+	content = inlineMetadataRE.ReplaceAllString(content, "\n$1")
+	return inlineSectionHeaderRE.ReplaceAllString(content, "\n$1\n")
 }
 
 type section struct {

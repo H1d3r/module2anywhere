@@ -63,6 +63,9 @@ func main() {
 	autoContentType := flag.Bool("auto-content-type", true, "兼容旧参数；官方 Anywhere 当前不识别顶层 content-type，JSON/mock 响应头改由脚本保留")
 	concurrency := flag.Int("concurrency", 8, "脚本并发下载数（默认 8）")
 	scriptTimeout := flag.Int("script-timeout", 10, "单个脚本下载超时秒数（默认 10）")
+	maxInputBytes := flag.Int64("max-input-bytes", 512*1024, "远程模块最大读取字节数（默认 512KB，0 表示不限制）")
+	maxScriptBytes := flag.Int64("max-script-bytes", 1024*1024, "单个远程脚本最大读取字节数（默认 1MB，0 使用默认值）")
+	maxScriptFetches := flag.Int("max-script-fetches", 45, "单次转换最多下载的唯一脚本数量（默认 45，0 使用默认值）")
 	sourceFlag := flag.String("source", "", "强制指定来源：loon / surge / quantumultx（留空自动检测）")
 	preserveParameters := flag.Bool("preserve-parameters", false, "在 .amrs 中保留 [Parameter] 段（默认关闭）")
 	verbose := flag.Bool("v", false, "输出详细转换报告")
@@ -93,6 +96,9 @@ func main() {
 			ProxyRetry:         *proxyRetry,
 			Concurrency:        *concurrency,
 			ScriptTimeoutSec:   *scriptTimeout,
+			MaxInputBytes:      *maxInputBytes,
+			MaxScriptBytes:     *maxScriptBytes,
+			MaxScriptFetches:   *maxScriptFetches,
 			PreserveParameters: *preserveParameters,
 		}
 		fmt.Printf("启动 Web 服务，监听 %s\n", cfg.Listen)
@@ -109,14 +115,14 @@ func main() {
 		os.Exit(2)
 	}
 
-	if err := run(*input, *outputDir, *format, *fetchScripts, *generalizeHost, *encodingPreprocess, !*noMetadata, *streamScript, *autoContentType, *concurrency, *scriptTimeout, *sourceFlag, *preserveParameters, arguments, *verbose, *proxyMode, *proxyRetry); err != nil {
+	if err := run(*input, *outputDir, *format, *fetchScripts, *generalizeHost, *encodingPreprocess, !*noMetadata, *streamScript, *autoContentType, *concurrency, *scriptTimeout, *maxInputBytes, *maxScriptBytes, *maxScriptFetches, *sourceFlag, *preserveParameters, arguments, *verbose, *proxyMode, *proxyRetry); err != nil {
 		fmt.Fprintln(os.Stderr, "错误:", err)
 		os.Exit(1)
 	}
 }
 
 // run 执行主流程。
-func run(input, outputDir, format string, fetchScripts, generalizeHost, encodingPreprocess, includeMetadata, streamScript, autoContentType bool, concurrency, scriptTimeout int, sourceFlag string, preserveParameters bool, arguments map[string]string, verbose bool, proxyMode string, proxyRetry bool) error {
+func run(input, outputDir, format string, fetchScripts, generalizeHost, encodingPreprocess, includeMetadata, streamScript, autoContentType bool, concurrency, scriptTimeout int, maxInputBytes, maxScriptBytes int64, maxScriptFetches int, sourceFlag string, preserveParameters bool, arguments map[string]string, verbose bool, proxyMode string, proxyRetry bool) error {
 	ctx := context.Background()
 	f := fetcher.New()
 	// 配置代理
@@ -132,7 +138,7 @@ func run(input, outputDir, format string, fetchScripts, generalizeHost, encoding
 	// 2. 对每个 URL 解析并转换为中间结果
 	results := make([]moduleResult, 0, len(inputs))
 	for _, in := range inputs {
-		content, err := f.Fetch(ctx, in)
+		content, err := f.FetchWithLimit(ctx, in, maxInputBytes)
 		if err != nil {
 			return fmt.Errorf("加载输入失败: %w", err)
 		}
@@ -171,6 +177,8 @@ func run(input, outputDir, format string, fetchScripts, generalizeHost, encoding
 			AutoContentType:    autoContentType,
 			Concurrency:        concurrency,
 			ScriptTimeoutSec:   scriptTimeout,
+			MaxScriptBytes:     maxScriptBytes,
+			MaxScriptFetches:   maxScriptFetches,
 			Arguments:          arguments,
 			PreserveParameters: preserveParameters,
 		}

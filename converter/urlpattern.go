@@ -16,19 +16,22 @@ type Options struct {
 	// GeneralizeHost 是否将 URL pattern 中的主机部分泛化为 [^/]+。
 	// 出于安全考虑（避免匹配到不相关域名），仅当显式开启且 pattern 主机已被 hostname 列表覆盖时才会泛化。
 	// 默认 false（保留原始主机）。
-	GeneralizeHost     bool
-	EncodingPreprocess bool // 为 body 处理规则自动添加 accept-encoding 预处理对（默认 true）
-	FetchScripts       bool // 远程下载脚本并改写（默认 true；false 时仅生成占位符）
-	IncludeMetadata    bool // 在输出文件头部写入 desc/author 等注释（默认 true）
-	UseStreamScript    bool // 将脚本转为 stream-script (op 101)，用于流式响应处理（默认 false）
-	WrapScripts        bool // 包装执行模式：将上游脚本源码原样编码，运行时构造兼容全局变量后执行（默认 false）
-	AutoContentType    bool // 兼容旧参数；官方 Anywhere 当前不识别顶层 content-type，转换器不再输出该头
-	Concurrency        int  // 并发下载脚本数（默认 8）
-	ScriptTimeoutSec   int  // 单个脚本下载超时（秒，默认 10）
-	Arguments          map[string]string
-	PreserveParameters bool // 在 .amrs 中保留 [Parameter] 段（默认 false）
-	ScriptMode         string
-	ScriptBaseURL      string // loader 模式下远程脚本端点基地址
+	GeneralizeHost      bool
+	EncodingPreprocess  bool // 为 body 处理规则自动添加 accept-encoding 预处理对（默认 true）
+	FetchScripts        bool // 远程下载脚本并改写（默认 true；false 时仅生成占位符）
+	IncludeMetadata     bool // 在输出文件头部写入 desc/author 等注释（默认 true）
+	UseStreamScript     bool // 将脚本转为 stream-script (op 101)，用于流式响应处理（默认 false）
+	WrapScripts         bool // 包装执行模式：将上游脚本源码原样编码，运行时构造兼容全局变量后执行（默认 false）
+	AutoContentType     bool // 兼容旧参数；官方 Anywhere 当前不识别顶层 content-type，转换器不再输出该头
+	Concurrency         int  // 并发下载脚本数（默认 8）
+	ScriptTimeoutSec    int  // 单个脚本下载超时（秒，默认 10）
+	MaxScriptBytes      int64
+	MaxTotalScriptBytes int64
+	MaxScriptFetches    int
+	Arguments           map[string]string
+	PreserveParameters  bool // 在 .amrs 中保留 [Parameter] 段（默认 false）
+	ScriptMode          string
+	ScriptBaseURL       string // loader 模式下远程脚本端点基地址
 }
 
 // DefaultOptions 返回推荐默认值。
@@ -37,15 +40,18 @@ type Options struct {
 // 如需泛化请显式 --generalize-host，且仅在确认 hostname 字段已覆盖所有 pattern 主机时使用。
 func DefaultOptions() Options {
 	return Options{
-		GeneralizeHost:     false,
-		EncodingPreprocess: true,
-		FetchScripts:       true,
-		IncludeMetadata:    true,
-		UseStreamScript:    false,
-		WrapScripts:        false,
-		AutoContentType:    true,
-		Concurrency:        8,
-		ScriptTimeoutSec:   10,
+		GeneralizeHost:      false,
+		EncodingPreprocess:  true,
+		FetchScripts:        true,
+		IncludeMetadata:     true,
+		UseStreamScript:     false,
+		WrapScripts:         false,
+		AutoContentType:     true,
+		Concurrency:         8,
+		ScriptTimeoutSec:    10,
+		MaxScriptBytes:      1024 * 1024,
+		MaxTotalScriptBytes: 5 * 1024 * 1024,
+		MaxScriptFetches:    45,
 	}
 }
 

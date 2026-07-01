@@ -50,6 +50,9 @@ export async function onRequest(context) {
   var wrapScripts = query.wrap === 'true';
   var sourceHint = query.source || '';
   var format = (query.format || '').toLowerCase().trim();
+  var maxInputBytes = lib.positiveIntInput(query.maxInputBytes, 512 * 1024);
+  var maxScriptBytes = lib.positiveIntInput(query.maxScriptBytes, 1024 * 1024);
+  var maxScriptFetches = lib.positiveIntInput(query.maxScriptFetches, 45);
   var preserveParameters = lib.truthyInput(query.preserveParameters || query.preserveArguments);
   var scriptMode = lib.normalizeScriptMode(query.scriptMode);
   var argumentsMap = lib.queryArguments(query);
@@ -81,7 +84,7 @@ export async function onRequest(context) {
     var inputURL = inputURLs[idx];
     var content;
     try {
-      content = await lib.fetchRemoteWithProxy(inputURL, initialUA);
+      content = await lib.fetchRemoteWithProxy(inputURL, initialUA, maxInputBytes);
     } catch (e) {
       return new Response('Error: Failed to fetch remote file: ' + (e.message || e), {
         status: 500,
@@ -106,6 +109,8 @@ export async function onRequest(context) {
       preserveParameters: preserveParameters,
       scriptMode: scriptMode,
       scriptBaseURL: url.origin + '/script.js',
+      maxScriptBytes: maxScriptBytes,
+      maxScriptFetches: maxScriptFetches,
     };
 
     try {
@@ -134,6 +139,9 @@ export async function onRequest(context) {
   var linkParams = 'url=' + encodeURIComponent(decodedURL) + '&fetch=' + fetchScripts + '&generalize=' + generalize;
   if (preserveParameters) linkParams += '&preserveParameters=true';
   if (scriptMode === 'loader') linkParams += '&scriptMode=loader';
+  if (maxInputBytes !== 512 * 1024) linkParams += '&maxInputBytes=' + encodeURIComponent(maxInputBytes);
+  if (maxScriptBytes !== 1024 * 1024) linkParams += '&maxScriptBytes=' + encodeURIComponent(maxScriptBytes);
+  if (maxScriptFetches !== 45) linkParams += '&maxScriptFetches=' + encodeURIComponent(maxScriptFetches);
   for (var ak in argumentsMap) {
     if (Object.prototype.hasOwnProperty.call(argumentsMap, ak)) {
       linkParams += '&argument.' + encodeURIComponent(ak) + '=' + encodeURIComponent(argumentsMap[ak]);

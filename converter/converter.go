@@ -17,6 +17,25 @@ import (
 
 const tinyGIFBase64 = "R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw=="
 
+type scriptMergeKey struct {
+	phase        int
+	scriptPath   string
+	argument     string
+	requiresBody bool
+	binaryBody   bool
+	maxSize      int
+	engine       string
+}
+
+type scriptConversionTask struct {
+	index   int
+	rule    ir.ScriptRule
+	pattern string
+	count   int
+
+	patterns []string
+}
+
 // ArrsGroup 单个 .arrs 分组（按 routing action 拆分）。
 type ArrsGroup struct {
 	Content  string // .arrs 文件内容
@@ -747,19 +766,47 @@ func (c *Converter) convertScriptRules(ctx context.Context, m *ir.Module, report
 	for path, count := range pathCounts {
 		if count > 1 {
 			dupTotal += count
-			report.AddWarning(fmt.Sprintf("脚本 %s 被 %d 条规则引用（运行时将创建 %d 个独立脚本上下文，建议审查模块是否可精简）", path, count, count))
+			report.AddWarning(fmt.Sprintf("脚本 %s 被 %d 条原始规则引用，转换器会尝试合并同 phase/script-path/argument 的规则", path, count))
 		}
 	}
 	if dupTotal > 0 {
-		report.AddWarning(fmt.Sprintf("共 %d 条规则引用了重复的 script-path，输出文件大小和运行时内存均被放大", dupTotal))
+		report.AddWarning(fmt.Sprintf("共 %d 条原始规则引用了重复的 script-path，若 phase/argument 等选项不同仍会保留独立脚本上下文", dupTotal))
 	}
+	maxScriptBytes := c.Opts.MaxScriptBytes
+	if maxScriptBytes <= 0 {
+		maxScriptBytes = 1024 * 1024
+	}
+	maxScriptFetches := c.Opts.MaxScriptFetches
+	if maxScriptFetches <= 0 {
+		maxScriptFetches = 45
+	}
+	scriptBudgetSkipped := make(map[string]string)
+	uniqueScriptOrder := make([]string, 0, len(pathCounts))
+	seenScripts := make(map[string]bool)
+	for _, s := range scripts {
+		if s.ScriptPath == "" || seenScripts[s.ScriptPath] {
+			continue
+		}
+		seenScripts[s.ScriptPath] = true
+		uniqueScriptOrder = append(uniqueScriptOrder, s.ScriptPath)
+	}
+	for idx, path := range uniqueScriptOrder {
+		if idx >= maxScriptFetches {
+			msg := fmt.Sprintf("脚本下载数量超过上限 %d，已跳过: %s", maxScriptFetches, path)
+			scriptBudgetSkipped[path] = msg
+			report.AddScriptErr(msg)
+			continue
+		}
+	}
+
+	tasks := mergeScriptRulesForConversion(scripts, c.Opts.GeneralizeHost, c.Hostnames, report)
 
 	// 预计算每条脚本的行模板
 	type result struct {
 		index int
 		line  string
 	}
-	results := make([]result, len(scripts))
+	results := make([]result, len(tasks))
 
 	// 信号量控制并发
 	concurrency := c.Opts.Concurrency
@@ -773,19 +820,29 @@ func (c *Converter) convertScriptRules(ctx context.Context, m *ir.Module, report
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 
-	for i, s := range scripts {
-		i, s := i, s
+	for i, task := range tasks {
+		i, task := i, task
 		wg.Add(1)
 		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			pattern := ConvertURLPatternWithHostnames(s.Pattern, c.Opts.GeneralizeHost, c.Hostnames)
-			results[i].index = i
+			s := task.rule
+			results[i].index = task.index
 
 			if s.ScriptPath == "" {
 				report.AddSkipped(fmt.Sprintf("脚本无 script-path: %s", s.Raw))
+				return
+			}
+			if msg := scriptBudgetSkipped[s.ScriptPath]; msg != "" {
+				report.AddScriptErr(msg)
+				b64 := notFetchedPlaceholder(s.ScriptPath)
+				op := "100"
+				if c.Opts.UseStreamScript {
+					op = "101"
+				}
+				results[i].line = fmt.Sprintf("%d, %s, %s, %s", s.Phase, op, task.pattern, b64)
 				return
 			}
 
@@ -798,7 +855,7 @@ func (c *Converter) convertScriptRules(ctx context.Context, m *ir.Module, report
 				// 单个脚本下载独立超时
 				sctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 				defer cancel()
-				b64, err = FetchAndEncodeScript(sctx, c.Fetcher, s.ScriptPath, c.BaseURL, c.Opts.FetchScripts, s.Phase, c.Opts.UseStreamScript, c.Opts.WrapScripts, s.Argument)
+				b64, err = FetchAndEncodeScript(sctx, c.Fetcher, s.ScriptPath, c.BaseURL, c.Opts.FetchScripts, s.Phase, c.Opts.UseStreamScript, c.Opts.WrapScripts, s.Argument, maxScriptBytes)
 			}
 			if err != nil {
 				report.AddScriptErr(fmt.Sprintf("脚本下载失败 %s: %v", s.ScriptPath, err))
@@ -810,18 +867,97 @@ func (c *Converter) convertScriptRules(ctx context.Context, m *ir.Module, report
 			if c.Opts.UseStreamScript {
 				op = "101"
 			}
-			results[i].line = fmt.Sprintf("%d, %s, %s, %s", s.Phase, op, pattern, b64)
+			results[i].line = fmt.Sprintf("%d, %s, %s, %s", s.Phase, op, task.pattern, b64)
 		}()
 	}
 	wg.Wait()
 
 	// 按原顺序输出
-	for i := range scripts {
+	for i := range tasks {
 		if results[i].line != "" {
 			lines = append(lines, results[i].line)
 		}
 	}
 	return lines
+}
+
+func mergeScriptRulesForConversion(scripts []ir.ScriptRule, generalize bool, hostnames []string, report *Report) []scriptConversionTask {
+	tasks := make([]scriptConversionTask, 0, len(scripts))
+	byKey := make(map[scriptMergeKey]int)
+	for i, s := range scripts {
+		pattern := ConvertURLPatternWithHostnames(s.Pattern, generalize, hostnames)
+		if s.ScriptPath == "" {
+			tasks = append(tasks, scriptConversionTask{
+				index:   i,
+				rule:    s,
+				pattern: pattern,
+				count:   1,
+			})
+			continue
+		}
+		key := scriptMergeKey{
+			phase:        s.Phase,
+			scriptPath:   s.ScriptPath,
+			argument:     s.Argument,
+			requiresBody: s.RequiresBody,
+			binaryBody:   s.BinaryBody,
+			maxSize:      s.MaxSize,
+			engine:       s.Engine,
+		}
+		if taskIdx, ok := byKey[key]; ok {
+			tasks[taskIdx].patterns = append(tasks[taskIdx].patterns, pattern)
+			tasks[taskIdx].pattern = unionAMRSPattern(tasks[taskIdx].patterns)
+			tasks[taskIdx].count++
+			continue
+		}
+		byKey[key] = len(tasks)
+		tasks = append(tasks, scriptConversionTask{
+			index:    i,
+			rule:     s,
+			pattern:  pattern,
+			count:    1,
+			patterns: []string{pattern},
+		})
+	}
+	mergedRules := 0
+	for _, task := range tasks {
+		if task.count > 1 {
+			mergedRules += task.count - 1
+			report.AddWarning(fmt.Sprintf("同 phase/script-path/argument 的 %d 条脚本规则已合并为 1 条 URL union 规则: %s", task.count, task.rule.ScriptPath))
+		}
+	}
+	if mergedRules > 0 {
+		report.AddWarning(fmt.Sprintf("脚本规则合并减少了 %d 条重复脚本上下文", mergedRules))
+	}
+	return tasks
+}
+
+func unionAMRSPattern(patterns []string) string {
+	seen := make(map[string]bool, len(patterns))
+	uniq := make([]string, 0, len(patterns))
+	for _, p := range patterns {
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		uniq = append(uniq, p)
+	}
+	if len(uniq) == 0 {
+		return ""
+	}
+	if len(uniq) == 1 {
+		return uniq[0]
+	}
+	var b strings.Builder
+	for i, p := range uniq {
+		if i > 0 {
+			b.WriteString("|")
+		}
+		b.WriteString("(?:")
+		b.WriteString(p)
+		b.WriteString(")")
+	}
+	return b.String()
 }
 
 // addEncodingPreprocess 为含缓冲 body 处理的 URL 添加 accept-encoding 预处理对。

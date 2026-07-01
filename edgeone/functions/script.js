@@ -36,12 +36,13 @@ export async function onRequest(context) {
   const phase = query.phase === '1' ? 1 : 0;
   const wrap = query.wrap === 'true';
   const argument = query.argument || '';
+  const maxScriptBytes = lib.positiveIntInput(query.maxScriptBytes, 1024 * 1024);
   const baseURL = query.base || '';
   const resolved = lib.resolveScriptPath(rawScript, baseURL);
   const userAgent = lib.getUserAgent(baseURL);
 
   try {
-    const source = await lib.fetchAndRewriteScript(resolved, true, phase, false, userAgent, wrap, argument);
+    const source = await lib.fetchAndRewriteScript(resolved, true, phase, false, userAgent, wrap, argument, maxScriptBytes);
     return new Response(source, {
       status: 200,
       headers: {

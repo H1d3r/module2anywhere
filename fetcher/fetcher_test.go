@@ -2,6 +2,10 @@
 package fetcher
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -97,6 +101,25 @@ func TestExtractQuantumultXResourceURLs_Invalid(t *testing.T) {
 	_, err = ExtractQuantumultXResourceURLs("https://quantumult.app/x/open-app/add-resource?remote-resource=not-json")
 	if err == nil {
 		t.Errorf("expected error for bad JSON")
+	}
+}
+
+func TestFetchWithLimitRejectsLargeResponse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "large.plugin")
+	if err := os.WriteFile(path, []byte("hello world!"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := New().FetchWithLimit(context.Background(), path, 5)
+	if err == nil || !strings.Contains(err.Error(), "超过大小限制") {
+		t.Fatalf("FetchWithLimit error = %v, want size limit error", err)
+	}
+}
+
+func TestFetchBlocksLocalhost(t *testing.T) {
+	_, err := New().Fetch(context.Background(), "http://127.0.0.1/test.plugin")
+	if err == nil || !strings.Contains(err.Error(), "不允许拉取") {
+		t.Fatalf("Fetch localhost error = %v, want blocked host error", err)
 	}
 }
 
