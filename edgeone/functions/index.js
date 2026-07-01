@@ -30,6 +30,7 @@ const HTML = `<!DOCTYPE html>
   .btn-secondary:hover { background: #a5b4fc; }
   .btn-import { background: #10b981; color: #fff; }
   .btn-import:hover { background: #34d399; }
+  .hint { font-size: 0.75rem; color: var(--muted); margin-top: 0.5rem; line-height: 1.4; }
   .options { display: flex; gap: 1rem; margin-top: 1rem; flex-wrap: wrap; }
   .options label { display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; color: var(--muted); cursor: pointer; }
   .options input[type="checkbox"] { accent-color: var(--accent); }
@@ -55,7 +56,7 @@ const HTML = `<!DOCTYPE html>
 <body>
 <div class="container">
   <h1>module2anywhere</h1>
-  <p class="subtitle">将 Loon .plugin / Surge .sgmodule 模块转换为 Anywhere 规则集</p>
+  <p class="subtitle">将 Loon .plugin / Surge .sgmodule / QuantumultX .conf 模块转换为 Anywhere 规则集</p>
 
   <div class="card">
     <label for="url-input">模块文件 URL</label>
@@ -64,8 +65,10 @@ const HTML = `<!DOCTYPE html>
       <label><input type="checkbox" id="opt-fetch" checked> 下载脚本</label>
       <label><input type="checkbox" id="opt-generalize"> 主机泛化</label>
       <label><input type="checkbox" id="opt-wrap"> 包装执行模式</label>
+      <label><input type="checkbox" id="opt-loader"> 远程加载脚本</label>
     </div>
-    <p style="font-size:0.75rem;color:var(--muted);margin-top:0.5rem;line-height:1.4;">包装执行模式：将上游脚本源码原样编码，运行时构造 $request/$response/$persistentStore 等兼容全局变量后执行。适用于 wloc.js 等自包含跨平台脚本，默认关闭。</p>
+    <p class="hint">包装执行模式：将上游脚本源码原样编码，运行时构造 $request/$response/$persistentStore 等兼容全局变量后执行。适用于 wloc.js 等自包含跨平台脚本，默认关闭。</p>
+    <p class="hint">远程加载脚本：.amrs 默认仍使用内联脚本；勾选后仅内嵌轻量 loader，运行时从本服务 /script.js 拉取转换后的脚本，可减少规则文件体积和重复脚本内存占用，首次命中需要网络。</p>
     <div class="btn-group">
       <button class="btn-primary" onclick="doConvert('mitm')">转换 MITM 规则 <span class="tag tag-mitm">.amrs</span></button>
       <button class="btn-secondary" onclick="doConvert('rule')">转换路由规则 <span class="tag tag-rule">.arrs</span></button>
@@ -85,7 +88,7 @@ const HTML = `<!DOCTYPE html>
   <div id="error-area" class="error" style="display:none;"></div>
 
   <div class="links">
-    <p>API 接口：<a href="/mitm.amrs?url=EXAMPLE">GET /mitm.amrs?url=...</a> | <a href="/rule.arrs?url=EXAMPLE">GET /rule.arrs?url=...</a> | <a href="/direct.arrs?url=EXAMPLE">GET /direct.arrs?url=...</a> | <a href="/reject.arrs?url=EXAMPLE">GET /reject.arrs?url=...</a> | <a href="/deeplink?url=EXAMPLE">GET /deeplink?url=...</a></p>
+    <p>API 接口：<a href="/mitm.amrs?url=EXAMPLE">GET /mitm.amrs?url=...</a> | <a href="/rule.arrs?url=EXAMPLE">GET /rule.arrs?url=...</a> | <a href="/direct.arrs?url=EXAMPLE">GET /direct.arrs?url=...</a> | <a href="/reject.arrs?url=EXAMPLE">GET /reject.arrs?url=...</a> | <a href="/deeplink?url=EXAMPLE">GET /deeplink?url=...</a>（远程加载脚本加 <code>scriptMode=loader</code>）</p>
     <p style="margin-top:0.5rem;">参考文档：<a href="https://github.com/NodePassProject/Anywhere" target="_blank">Anywhere</a> | <a href="https://github.com/H1d3r/module2anywhere" target="_blank">module2anywhere</a></p>
   </div>
 </div>
@@ -96,12 +99,14 @@ function getParams() {
   const fetchScripts = document.getElementById('opt-fetch').checked;
   const generalize = document.getElementById('opt-generalize').checked;
   const wrap = document.getElementById('opt-wrap').checked;
-  return { url, fetchScripts, generalize, wrap };
+  const loader = document.getElementById('opt-loader').checked;
+  return { url, fetchScripts, generalize, wrap, loader };
 }
 
 function buildURL(endpoint, params) {
   const searchParams = new URLSearchParams({ url: params.url, fetch: params.fetchScripts, generalize: params.generalize });
   if (params.wrap) searchParams.set('wrap', 'true');
+  if (params.loader) searchParams.set('scriptMode', 'loader');
   return endpoint + '?' + searchParams.toString();
 }
 
