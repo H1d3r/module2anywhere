@@ -248,18 +248,20 @@ func inferHostnameSuffixFromHostPattern(part string) string {
 		return ""
 	}
 	originalLabels := append([]string(nil), filtered...)
-	if len(originalLabels) > 2 {
-		filtered = originalLabels[len(originalLabels)-2:]
+	registrable := registrableHostnameSuffix(originalLabels)
+	if registrable == "" {
+		return ""
 	}
 	if len(originalLabels) == 2 && strings.ContainsAny(originalLabels[0], `\[]()+*?`) {
 		return ""
 	}
+	filtered = strings.Split(registrable, ".")
 	for _, label := range filtered {
 		if strings.ContainsAny(label, `\[]()+*?`) {
 			return ""
 		}
 	}
-	host := strings.ToLower(strings.Join(filtered, "."))
+	host := strings.ToLower(registrable)
 	if isUnsafeInferredHostnameSuffix(host) {
 		return ""
 	}
@@ -349,6 +351,9 @@ func isUnsafeInferredHostnameSuffix(host string) bool {
 	if !strings.Contains(host, ".") {
 		return true
 	}
+	if isIPLiteral(host) {
+		return true
+	}
 	for _, r := range host {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '-' {
 			continue
@@ -357,6 +362,92 @@ func isUnsafeInferredHostnameSuffix(host string) bool {
 	}
 	switch host {
 	case "com", "net", "org", "top", "cn", "tv", "cc", "io", "app", "co", "me", "xyz", "site", "vip":
+		return true
+	}
+	return false
+}
+
+func registrableHostnameSuffix(labels []string) string {
+	labels = sanitizeHostnameLabels(labels)
+	if len(labels) < 2 || allNumericLabels(labels) {
+		return ""
+	}
+	keep := 2
+	if len(labels) >= 3 && isTwoPartPublicSuffix(labels[len(labels)-2], labels[len(labels)-1]) {
+		keep = 3
+	}
+	if len(labels) < keep {
+		return ""
+	}
+	return strings.Join(labels[len(labels)-keep:], ".")
+}
+
+func sanitizeHostnameLabels(labels []string) []string {
+	out := make([]string, 0, len(labels))
+	for _, label := range labels {
+		label = strings.TrimSpace(strings.Trim(label, "-"))
+		if label != "" {
+			out = append(out, label)
+		}
+	}
+	return out
+}
+
+func allNumericLabels(labels []string) bool {
+	if len(labels) == 0 {
+		return false
+	}
+	for _, label := range labels {
+		for _, r := range label {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isIPLiteral(host string) bool {
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+	if strings.Contains(host, ":") {
+		for _, r := range host {
+			if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || r == ':' || r == '.' {
+				continue
+			}
+			return false
+		}
+		return strings.Contains(host, ":")
+	}
+	parts := strings.Split(host, ".")
+	if len(parts) != 4 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || len(part) > 3 {
+			return false
+		}
+		n := 0
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return false
+			}
+			n = n*10 + int(r-'0')
+		}
+		if n > 255 {
+			return false
+		}
+	}
+	return true
+}
+
+func isTwoPartPublicSuffix(second, top string) bool {
+	switch top {
+	case "cn", "hk", "tw", "jp", "kr", "uk", "au", "nz", "br", "mx", "tr", "za", "sg", "my", "id", "th", "vn", "in", "ru":
+	default:
+		return false
+	}
+	switch second {
+	case "com", "net", "org", "edu", "gov", "ac", "co", "ne", "or", "go":
 		return true
 	}
 	return false

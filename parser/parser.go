@@ -341,7 +341,7 @@ func normalizeHostnameCandidates(raw string) []string {
 			item = item[:idx]
 		}
 		item = strings.Trim(item, ".")
-		if item == "" || strings.ContainsAny(item, "*?") || isPublicHostnameSuffix(item) || !validHostnameSuffix(item) {
+		if item == "" || strings.ContainsAny(item, "*?") || isPublicHostnameSuffix(item) || isIPLiteral(item) || !validHostnameSuffix(item) {
 			return candidates
 		}
 		for _, existing := range candidates {
@@ -380,6 +380,56 @@ func validHostnameSuffix(host string) bool {
 func isPublicHostnameSuffix(host string) bool {
 	switch host {
 	case "com", "net", "org", "top", "cn", "tv", "cc", "io", "app", "co", "me", "xyz", "site", "vip":
+		return true
+	}
+	parts := strings.Split(host, ".")
+	if len(parts) == 2 && isTwoPartPublicSuffix(parts[0], parts[1]) {
+		return true
+	}
+	return false
+}
+
+func isIPLiteral(host string) bool {
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+	if strings.Contains(host, ":") {
+		for _, r := range host {
+			if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || r == ':' || r == '.' {
+				continue
+			}
+			return false
+		}
+		return strings.Contains(host, ":")
+	}
+	parts := strings.Split(host, ".")
+	if len(parts) != 4 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || len(part) > 3 {
+			return false
+		}
+		n := 0
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return false
+			}
+			n = n*10 + int(r-'0')
+		}
+		if n > 255 {
+			return false
+		}
+	}
+	return true
+}
+
+func isTwoPartPublicSuffix(second, top string) bool {
+	switch top {
+	case "cn", "hk", "tw", "jp", "kr", "uk", "au", "nz", "br", "mx", "tr", "za", "sg", "my", "id", "th", "vn", "in", "ru":
+	default:
+		return false
+	}
+	switch second {
+	case "com", "net", "org", "edu", "gov", "ac", "co", "ne", "or", "go":
 		return true
 	}
 	return false

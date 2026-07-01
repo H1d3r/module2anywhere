@@ -155,7 +155,7 @@ function normalizeHostnameCandidates(raw) {
   const add = (item) => {
     item = String(item || "").trim();
     item = item.replace(/:\d+$/, "").replace(/^\.+|\.+$/g, "");
-    if (!item || /[*?]/.test(item) || isUnsafeHostnameSuffix(item) || !validHostnameSuffix(item)) return;
+    if (!item || /[*?]/.test(item) || isUnsafeHostnameSuffix(item) || isIPLiteral(item) || !validHostnameSuffix(item)) return;
     if (!candidates.includes(item)) candidates.push(item);
   };
   if (value.startsWith("*.")) {
@@ -180,7 +180,34 @@ function validHostnameSuffix(host) {
 
 function isUnsafeHostnameSuffix(host) {
   if (!host || host.indexOf(".") < 0) return true;
+  if (isIPLiteral(host)) return true;
+  const labels = String(host).split(".");
+  if (labels.length === 2 && isTwoPartPublicSuffix(labels[0], labels[1])) return true;
   return /^(?:com|net|org|top|cn|tv|cc|io|app|co|me|xyz|site|vip)$/.test(host);
+}
+
+function isIPLiteral(host) {
+  host = String(host || "").trim().toLowerCase().replace(/^\[|\]$/g, "");
+  if (host.indexOf(":") >= 0) {
+    for (const ch of host) {
+      if ((ch >= "0" && ch <= "9") || (ch >= "a" && ch <= "f") || ch === ":" || ch === ".") continue;
+      return false;
+    }
+    return true;
+  }
+  const parts = host.split(".");
+  if (parts.length !== 4) return false;
+  for (const part of parts) {
+    if (!part || part.length > 3 || !/^\d+$/.test(part)) return false;
+    const n = Number(part);
+    if (n > 255) return false;
+  }
+  return true;
+}
+
+function isTwoPartPublicSuffix(second, top) {
+  if (!/^(?:cn|hk|tw|jp|kr|uk|au|nz|br|mx|tr|za|sg|my|id|th|vn|in|ru)$/.test(top)) return false;
+  return /^(?:com|net|org|edu|gov|ac|co|ne|or|go)$/.test(second);
 }
 
 // dedupStrings 字符串去重，保持顺序。
@@ -380,13 +407,23 @@ function inferHostnameSuffixFromHostPattern(part) {
   }
   const labels = part.split(".").map((v) => v.replace(/^-+|-+$/g, "")).filter(Boolean);
   if (labels.length < 2) return "";
-  const tail = labels.slice(-2);
+  const host = registrableHostnameSuffix(labels);
+  if (!host) return "";
+  const tail = host.split(".");
   if (labels.length === 2 && /[\\[\]()+*?]/.test(labels[0])) return "";
   for (const label of tail) {
     if (/[\\[\]()+*?]/.test(label)) return "";
   }
-  const host = tail.join(".").toLowerCase();
   return isUnsafeHostnameSuffix(host) ? "" : host;
+}
+
+function registrableHostnameSuffix(labels) {
+  labels = (labels || []).map((v) => String(v || "").trim().replace(/^-+|-+$/g, "")).filter(Boolean);
+  if (labels.length < 2 || labels.every((label) => /^\d+$/.test(label))) return "";
+  let keep = 2;
+  if (labels.length >= 3 && isTwoPartPublicSuffix(labels[labels.length - 2], labels[labels.length - 1])) keep = 3;
+  if (labels.length < keep) return "";
+  return labels.slice(labels.length - keep).join(".").toLowerCase();
 }
 
 function hasStaticHostnameTail(hostPattern) {
